@@ -12,34 +12,37 @@ export interface MiningSession {
 }
 
 const MINING_DURATION_MS = 60 * 60 * 1000;
-const BASE_SHIB_REWARD = 500000;
 
 interface MiningContextValue {
   session: MiningSession | null;
   status: MiningStatus;
   timeRemaining: number;
   progress: number;
-  startMining: (multiplier?: number) => Promise<boolean>;
+  startMining: (multiplier?: number, baseMiningRate?: number) => Promise<boolean>;
   claimReward: () => Promise<number>;
   shibReward: number;
+  baseMiningRate: number;
+  setBaseMiningRate: (rate: number) => void;
 }
 
 const MiningContext = createContext<MiningContextValue | null>(null);
 
 export function MiningProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { firebaseUser } = useAuth();
   const [session, setSession] = useState<MiningSession | null>(null);
   const [timeRemaining, setTimeRemaining] = useState(0);
+  const [baseMiningRate, setBaseMiningRate] = useState(500000);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const storageKey = user ? `shib_mining_${user.id}` : null;
+  const uid = firebaseUser?.uid;
+  const storageKey = uid ? `shib_mining_${uid}` : null;
 
   useEffect(() => {
-    if (user) loadSession();
+    if (uid) loadSession();
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [user]);
+  }, [uid]);
 
   async function loadSession() {
     if (!storageKey) return;
@@ -55,6 +58,8 @@ export function MiningProvider({ children }: { children: ReactNode }) {
             setSession(completed);
             await AsyncStorage.setItem(storageKey, JSON.stringify(completed));
           } else {
+            const remaining = s.duration - elapsed;
+            setTimeRemaining(remaining);
             startTimer(s);
           }
         }
@@ -82,8 +87,9 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     }, 1000);
   }
 
-  async function startMining(multiplier: number = 1): Promise<boolean> {
+  async function startMining(multiplier: number = 1, miningRate?: number): Promise<boolean> {
     if (!storageKey) return false;
+    if (miningRate) setBaseMiningRate(miningRate);
     const newSession: MiningSession = {
       startTime: Date.now(),
       duration: MINING_DURATION_MS,
@@ -99,10 +105,11 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
   async function claimReward(): Promise<number> {
     if (!storageKey || !session || session.status !== 'ready_to_claim') return 0;
-    const reward = Math.floor(BASE_SHIB_REWARD * session.multiplier);
+    const reward = Math.floor(baseMiningRate * session.multiplier);
     const resetSession: MiningSession = { ...session, status: 'idle' };
     setSession(resetSession);
     setTimeRemaining(0);
+    if (intervalRef.current) clearInterval(intervalRef.current);
     await AsyncStorage.setItem(storageKey, JSON.stringify(resetSession));
     return reward;
   }
@@ -112,12 +119,12 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     ? Math.min(1, (session.duration - timeRemaining) / session.duration)
     : session?.status === 'ready_to_claim' ? 1 : 0;
 
-  const shibReward = session ? Math.floor(BASE_SHIB_REWARD * session.multiplier) : BASE_SHIB_REWARD;
+  const shibReward = session ? Math.floor(baseMiningRate * session.multiplier) : baseMiningRate;
 
   const value = useMemo(() => ({
     session, status, timeRemaining, progress,
-    startMining, claimReward, shibReward,
-  }), [session, status, timeRemaining, progress, shibReward]);
+    startMining, claimReward, shibReward, baseMiningRate, setBaseMiningRate,
+  }), [session, status, timeRemaining, progress, shibReward, baseMiningRate]);
 
   return <MiningContext.Provider value={value}>{children}</MiningContext.Provider>;
 }

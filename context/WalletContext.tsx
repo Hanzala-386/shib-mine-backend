@@ -29,17 +29,26 @@ function generateId(): string {
 }
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { firebaseUser } = useAuth();
   const [shibBalance, setShibBalance] = useState(0);
   const [powerTokens, setPowerTokens] = useState(10);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [initialized, setInitialized] = useState(false);
 
-  const storageKey = user ? `shib_wallet_${user.id}` : null;
+  const uid = firebaseUser?.uid;
+  const storageKey = uid ? `shib_wallet_${uid}` : null;
 
   useEffect(() => {
-    if (user) loadWallet();
-  }, [user]);
+    if (uid) {
+      setInitialized(false);
+      loadWallet();
+    } else {
+      setShibBalance(0);
+      setPowerTokens(10);
+      setTransactions([]);
+    }
+  }, [uid]);
 
   async function loadWallet() {
     if (!storageKey) return;
@@ -50,10 +59,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         setShibBalance(data.shibBalance ?? 0);
         setPowerTokens(data.powerTokens ?? 10);
         setTransactions(data.transactions ?? []);
+        setInitialized(true);
       } else {
         setShibBalance(0);
         setPowerTokens(10);
         setTransactions([]);
+        setInitialized(true);
+        await AsyncStorage.setItem(storageKey, JSON.stringify({ shibBalance: 0, powerTokens: 10, transactions: [] }));
       }
     } catch (e) {
       console.error('Error loading wallet', e);

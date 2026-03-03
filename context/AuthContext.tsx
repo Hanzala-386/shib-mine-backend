@@ -1,112 +1,144 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  auth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  firebaseSignOut,
+  sendEmailVerification,
+  onAuthStateChanged,
+  type FirebaseUser,
+} from '@/lib/firebase';
 
-export interface User {
-  id: string;
+export interface UserProfile {
+  uid: string;
   email: string;
   displayName: string;
+  username: string;
   referralCode: string;
   referredBy?: string;
   createdAt: number;
+  emailVerified: boolean;
 }
 
+const ADMIN_EMAIL = 'hanzala386@gmail.com';
+
 interface AuthContextValue {
-  user: User | null;
+  user: UserProfile | null;
+  firebaseUser: FirebaseUser | null;
   isLoading: boolean;
-  signUp: (email: string, password: string, displayName: string, referralCode?: string) => Promise<void>;
-  signIn: (email: string, password: string) => Promise<void>;
+  isAdmin: boolean;
+  signUp: (email: string, password: string, username: string, displayName: string, referralCode?: string) => Promise<{ needsVerification: boolean }>;
+  signIn: (email: string, password: string) => Promise<{ needsVerification: boolean }>;
   signOut: () => Promise<void>;
-  updateUser: (updates: Partial<User>) => Promise<void>;
+  resendVerification: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-
-function generateId(): string {
-  return Date.now().toString() + Math.random().toString(36).substr(2, 9);
-}
 
 function generateReferralCode(): string {
   return Math.random().toString(36).substr(2, 6).toUpperCase();
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    loadUser();
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      setFirebaseUser(fbUser);
+      if (fbUser && fbUser.emailVerified) {
+        const profile = await loadProfile(fbUser.uid);
+        if (profile) {
+          setUser({ ...profile, emailVerified: true });
+        }
+      } else {
+        setUser(null);
+      }
+      setIsLoading(false);
+    });
+    return unsubscribe;
   }, []);
 
-  async function loadUser() {
+  async function loadProfile(uid: string): Promise<UserProfile | null> {
     try {
-      const stored = await AsyncStorage.getItem('shib_current_user');
-      if (stored) {
-        setUser(JSON.parse(stored));
-      }
-    } catch (e) {
-      console.error('Error loading user', e);
-    } finally {
-      setIsLoading(false);
-    }
+      const raw = await AsyncStorage.getItem(`shib_profile_${uid}`);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
   }
 
-  async function signUp(email: string, password: string, displayName: string, referralCode?: string) {
-    const allUsersRaw = await AsyncStorage.getItem('shib_all_users');
-    const allUsers: Record<string, { email: string; password: string; user: User }> = allUsersRaw ? JSON.parse(allUsersRaw) : {};
+  async function saveProfile(profile: UserProfile) {
+    await AsyncStorage.setItem(`shib_profile_${profile.uid}`, JSON.stringify(profile));
+  }
 
-    if (allUsers[email.toLowerCase()]) {
-      throw new Error('An account with this email already exists.');
-    }
-
-    const newUser: User = {
-      id: generateId(),
+  async function signUp(email: string, password: string, username: string, displayName: string, referralCode?: string): Promise<{ needsVerification: boolean }> {
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    const profile: UserProfile = {
+      uid: cred.user.uid,
       email: email.toLowerCase(),
       displayName,
+      username,
       referralCode: generateReferralCode(),
       referredBy: referralCode?.toUpperCase(),
       createdAt: Date.now(),
+      emailVerified: false,
     };
-
-    allUsers[email.toLowerCase()] = { email: email.toLowerCase(), password, user: newUser };
-    await AsyncStorage.setItem('shib_all_users', JSON.stringify(allUsers));
-    await AsyncStorage.setItem('shib_current_user', JSON.stringify(newUser));
-    setUser(newUser);
+    await saveProfile(profile);
+    await sendEmailVerification(cred.user);
+    setFirebaseUser(cred.user);
+    return { needsVerification: true };
   }
 
-  async function signIn(email: string, password: string) {
-    const allUsersRaw = await AsyncStorage.getItem('shib_all_users');
-    const allUsers: Record<string, { email: string; password: string; user: User }> = allUsersRaw ? JSON.parse(allUsersRaw) : {};
-
-    const record = allUsers[email.toLowerCase()];
-    if (!record) throw new Error('No account found with this email.');
-    if (record.password !== password) throw new Error('Incorrect password.');
-
-    await AsyncStorage.setItem('shib_current_user', JSON.stringify(record.user));
-    setUser(record.user);
+  async function signIn(email: string, password: string): Promise<{ needsVerification: boolean }> {
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    if (!cred.user.emailVerified) {
+      return { needsVerification: true };
+    }
+    const profile = await loadProfile(cred.user.uid);
+    if (profile) {
+      const updated = { ...profile, emailVerified: true };
+      await saveProfile(updated);
+      setUser(updated);
+    }
+    setFirebaseUser(cred.user);
+    return { needsVerification: false };
   }
 
   async function signOut() {
-    await AsyncStorage.removeItem('shib_current_user');
+    await firebaseSignOut(auth);
     setUser(null);
+    setFirebaseUser(null);
   }
 
-  async function updateUser(updates: Partial<User>) {
-    if (!user) return;
-    const updated = { ...user, ...updates };
-
-    const allUsersRaw = await AsyncStorage.getItem('shib_all_users');
-    const allUsers: Record<string, { email: string; password: string; user: User }> = allUsersRaw ? JSON.parse(allUsersRaw) : {};
-    if (allUsers[user.email]) {
-      allUsers[user.email].user = updated;
-      await AsyncStorage.setItem('shib_all_users', JSON.stringify(allUsers));
+  async function resendVerification() {
+    if (firebaseUser) {
+      await sendEmailVerification(firebaseUser);
     }
-    await AsyncStorage.setItem('shib_current_user', JSON.stringify(updated));
-    setUser(updated);
   }
+
+  async function refreshUser() {
+    if (firebaseUser) {
+      await firebaseUser.reload();
+      if (firebaseUser.emailVerified) {
+        const profile = await loadProfile(firebaseUser.uid);
+        if (profile) {
+          const updated = { ...profile, emailVerified: true };
+          await saveProfile(updated);
+          setUser(updated);
+          setFirebaseUser({ ...firebaseUser });
+        }
+      }
+    }
+  }
+
+  const isAdmin = firebaseUser?.email?.toLowerCase() === ADMIN_EMAIL;
 
   const value = useMemo(() => ({
-    user, isLoading, signUp, signIn, signOut, updateUser,
-  }), [user, isLoading]);
+    user, firebaseUser, isLoading, isAdmin,
+    signUp, signIn, signOut, resendVerification, refreshUser,
+  }), [user, firebaseUser, isLoading, isAdmin]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

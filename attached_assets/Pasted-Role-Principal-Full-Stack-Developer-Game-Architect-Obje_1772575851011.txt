@@ -1,0 +1,61 @@
+Role: Principal Full-Stack Developer & Game Architect.
+Objective: Build a professional Android App using React Native. Use PocketBase for the database and Firebase for Authentication. All game assets are located in the /assets folder.
+
+1. Advanced Authentication (Firebase Email OTP)
+Signup Form: Build a premium UI with fields for Username, Email, Password, and Confirm Password.
+
+Integrate Firebase JS SDK using this config:
+const firebaseConfig = { apiKey: 'AIzaSyDQnt9_QENqlHtMprocQnJVQkB-4IyBgjg', authDomain: 'shib-mine.firebaseapp.com', projectId: 'shib-mine', storageBucket: 'shib-mine.firebasestorage.app', messagingSenderId: '1032738643319', appId: '1:1032738643319:web:057ba2235420353b2a1572', measurementId: 'G-5TYK49Z19W' };
+
+Logic: Integrate Firebase Auth. When a user signs up, send a Verification OTP/Link to their email.
+
+Database Entry: Only after email verification, create a record in the PocketBase users collection.
+
+Security: Use unique session tokens to ensure that if a user logs in on a new device, the old session is managed correctly, preventing any timer or balance glitches.
+
+2. Knife Hit Mini-Game (Premium UI & Mechanics)
+Assets Integration: Use files from the /assets folder:
+
+Targets: Use the circular wooden logs (Wood sprites) and Bosses for higher levels.
+
+Knives: Use the metallic knife sprites for the player.
+
+Audio: Trigger specific sounds for: Knife_Throw, Wood_Hit, Knife_Collision, and Level_Win.
+
+Gameplay: Smooth rotation of the log with variable speeds. Tap to throw.
+
+Rewards: Every level win gives Power Tokens (Default: 3). Show an "AdMob Rewarded Video" button to Double the Tokens.
+
+3. Real-Time Mining Dashboard
+Rolling Counter: The main balance must show a Fast-Rolling Number Animation (smoothly incrementing every 100ms).
+
+Formula: Display balance based on: Current_Balance + (Mining_Rate * Elapsed_Time).
+
+State Persistence: Use the start_time from PocketBase to ensure that if the app is closed, the mining continues accurately on the server.
+
+4. Full Admin Command Center (Security & Economy)
+Login: Strictly restricted to hanzala386@gmail.com with a password and mandatory Email OTP.
+
+Admin Controls (Live Updates):
+
+Mining Settings: Set the 'Entry Fee' (e.g., 5 tokens) and 'Base Mining Rate'.
+
+Booster Management: Set token costs for 2x, 4x, 6x, and 10x boosters.
+
+Ads Management: Update AdMob App ID, Banner ID, Interstitial ID, Rewarded ID and Unity Game ID directly from the panel.
+
+Withdrawal Settings: Set Binance % fees, BEP-20 Flat fees, and Minimum Withdrawal limits for Tiers 1, 2, and 3.
+
+5. Ads Implementation Strategy
+AdMob Banner: Sticky at the very bottom of the screen.
+
+Unity Interstitial: Must play after the user spends 5 tokens but before the mining timer starts.
+
+AdMob Rewarded: Used in the Game to double tokens and in the Wallet for withdrawal verification.
+
+6. Referral & Social System
+Referral Logic: 6-digit unique code for every user.
+
+Reward: Referrer earns 10% of every claim made by the referred user.
+
+Native Sharing: Use the Android Native Share sheet to share the referral code with a professional message and link.
