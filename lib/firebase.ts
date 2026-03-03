@@ -1,6 +1,10 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { Platform } from 'react-native';
 import {
+  initializeAuth,
   getAuth,
+  indexedDBLocalPersistence,
+  inMemoryPersistence,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
@@ -19,8 +23,35 @@ const firebaseConfig = {
   measurementId: 'G-5TYK49Z19W',
 };
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+
+function createAuth() {
+  try {
+    return getAuth(app);
+  } catch { }
+
+  if (Platform.OS === 'web') {
+    try {
+      return initializeAuth(app, { persistence: indexedDBLocalPersistence });
+    } catch {
+      return getAuth(app);
+    }
+  }
+
+  try {
+    const { getReactNativePersistence } = require('@firebase/auth/react-native');
+    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+    return initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) });
+  } catch {
+    try {
+      return initializeAuth(app, { persistence: inMemoryPersistence });
+    } catch {
+      return getAuth(app);
+    }
+  }
+}
+
+const auth = createAuth();
 
 export {
   auth,

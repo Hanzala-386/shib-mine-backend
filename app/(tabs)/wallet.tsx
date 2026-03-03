@@ -26,16 +26,17 @@ function timeAgo(ts: number): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-const TX_ICONS: Record<Transaction['type'], { name: string; color: string; lib: string }> = {
+const TX_ICONS: Record<string, { name: string; color: string; lib: string }> = {
   mining_claim: { name: 'pickaxe', color: Colors.gold, lib: 'material-community' },
   game_reward: { name: 'game-controller', color: Colors.neonOrange, lib: 'ionicons' },
   booster_purchase: { name: 'lightning-bolt', color: '#2196F3', lib: 'material-community' },
   referral_bonus: { name: 'people', color: '#4CAF50', lib: 'ionicons' },
   mining_fee: { name: 'cash-minus', color: '#FF3D57', lib: 'material-community' },
+  default: { name: 'swap-horizontal', color: Colors.textMuted, lib: 'ionicons' },
 };
 
-function TxIcon({ type }: { type: Transaction['type'] }) {
-  const conf = TX_ICONS[type];
+function TxIcon({ type }: { type: string }) {
+  const conf = TX_ICONS[type] ?? TX_ICONS['default'];
   if (conf.lib === 'material-community') {
     return <MaterialCommunityIcons name={conf.name as any} size={20} color={conf.color} />;
   }
@@ -44,13 +45,14 @@ function TxIcon({ type }: { type: Transaction['type'] }) {
 
 function TransactionItem({ tx }: { tx: Transaction }) {
   const isNegative = tx.amount < 0;
+  const iconConf = TX_ICONS[tx.type] ?? TX_ICONS['default'];
   return (
     <View style={styles.txItem}>
-      <View style={[styles.txIconWrap, { backgroundColor: TX_ICONS[tx.type].color + '20' }]}>
+      <View style={[styles.txIconWrap, { backgroundColor: iconConf.color + '20' }]}>
         <TxIcon type={tx.type} />
       </View>
       <View style={styles.txInfo}>
-        <Text style={styles.txDesc}>{tx.description}</Text>
+        <Text style={styles.txDesc} numberOfLines={1}>{tx.description}</Text>
         <Text style={styles.txTime}>{timeAgo(tx.timestamp)}</Text>
       </View>
       <View style={styles.txAmountWrap}>

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, ScrollView, Alert, ActivityIndicator, Platform,
+  View, Text, StyleSheet, Pressable, ScrollView, Alert, Platform,
   Animated as RNAnimated,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -15,6 +15,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useWallet } from '@/context/WalletContext';
 import { useMining } from '@/context/MiningContext';
 import { useAdmin } from '@/context/AdminContext';
+import { adService } from '@/lib/AdService';
 import Colors from '@/constants/colors';
 
 function formatTime(ms: number) {
@@ -35,7 +36,6 @@ function formatShib(val: number) {
 function useRollingNumber(target: number, duration = 600) {
   const [displayed, setDisplayed] = useState(target);
   const animVal = useRef(new RNAnimated.Value(target)).current;
-  const currentRef = useRef(target);
 
   useEffect(() => {
     RNAnimated.timing(animVal, {
@@ -56,11 +56,16 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { powerTokens, shibBalance, addShib, spendPowerTokens } = useWallet();
-  const { status, timeRemaining, progress, startMining, claimReward, shibReward, session, baseMiningRate } = useMining();
+  const { status, timeRemaining, progress, startMining, claimReward, shibReward, session, baseMiningRate, displayedShibBalance } = useMining();
   const { settings } = useAdmin();
+  const [showAdLoader, setShowAdLoader] = useState(false);
 
-  const displayedShib = useRollingNumber(shibBalance, 800);
   const displayedPT = useRollingNumber(powerTokens, 400);
+
+  const liveBalance = status === 'mining'
+    ? shibBalance + displayedShibBalance
+    : shibBalance;
+  const displayedShibFinal = useRollingNumber(liveBalance, status === 'mining' ? 100 : 800);
 
   const rotation = useSharedValue(0);
   const pulse = useSharedValue(1);
@@ -110,16 +115,24 @@ export default function HomeScreen() {
   }));
   const glowStyle = useAnimatedStyle(() => ({ opacity: glowOpacity.value }));
 
-  async function handleStartMining(multiplier = 1, cost = settings.miningEntryFee) {
-    const totalCost = multiplier > 1 ? settings.miningEntryFee + cost : settings.miningEntryFee;
+  async function handleStartMining(multiplier = 1, boosterCost = 0) {
+    const totalCost = settings.miningEntryFee + boosterCost;
     if (powerTokens < totalCost) {
       Alert.alert('Insufficient Tokens', `You need ${totalCost} Power Tokens to start mining.`);
       return;
     }
     const spent = await spendPowerTokens(totalCost, `Mining fee${multiplier > 1 ? ` (${multiplier}x)` : ''}`, 'mining_fee');
     if (!spent) return;
-    await startMining(multiplier, baseMiningRate);
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    setShowAdLoader(true);
+    await adService.showUnityInterstitial(
+      async () => {
+        setShowAdLoader(false);
+        await startMining(multiplier, settings.baseMiningRate);
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      },
+      () => setShowAdLoader(false),
+    );
   }
 
   async function handleClaim() {
@@ -152,7 +165,6 @@ export default function HomeScreen() {
         end={{ x: 0.5, y: 0.5 }}
       />
       <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.scroll, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 16) }]}
       >
@@ -168,6 +180,18 @@ export default function HomeScreen() {
             </View>
           </View>
         </Animated.View>
+
+        {status === 'mining' && (
+          <Animated.View entering={FadeInDown.delay(50).springify()} style={styles.liveBalanceCard}>
+            <LinearGradient
+              colors={['rgba(244,196,48,0.1)', 'rgba(255,107,0,0.05)']}
+              style={styles.liveBalanceInner}
+            >
+              <Text style={styles.liveLabel}>Mining in progress — Live Balance</Text>
+              <Text style={styles.liveValue}>{formatShib(displayedShibFinal)} SHIB</Text>
+            </LinearGradient>
+          </Animated.View>
+        )}
 
         <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.miningCore}>
           <Animated.View style={[styles.outerGlow, glowStyle]} />
@@ -224,17 +248,21 @@ export default function HomeScreen() {
               <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` as any }]} />
             </View>
             <Text style={styles.progressLabel}>
-              {Math.round(progress * 100)}% complete — {session?.multiplier ?? 1}x speed — {formatShib(shibReward)} SHIB
+              {Math.round(progress * 100)}% — {session?.multiplier ?? 1}x speed — {formatShib(shibReward)} SHIB
             </Text>
           </Animated.View>
         )}
 
         {status === 'idle' && (
           <Animated.View entering={FadeInDown.delay(300).springify()} style={styles.actionsArea}>
-            <Pressable style={({ pressed }) => [styles.actionBtn, { opacity: pressed ? 0.85 : 1 }]} onPress={() => handleStartMining()}>
+            <Pressable
+              style={({ pressed }) => [styles.actionBtn, { opacity: pressed ? 0.85 : 1 }]}
+              onPress={() => handleStartMining()}
+              disabled={showAdLoader}
+            >
               <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.actionGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                 <MaterialCommunityIcons name="pickaxe" size={20} color="#000" />
-                <Text style={styles.actionText}>Start Mining</Text>
+                <Text style={styles.actionText}>{showAdLoader ? 'Loading Ad...' : 'Start Mining'}</Text>
                 <View style={styles.feeTag}>
                   <Text style={styles.feeText}>{settings.miningEntryFee} PT</Text>
                 </View>
@@ -279,7 +307,7 @@ export default function HomeScreen() {
         <Animated.View entering={FadeInDown.delay(450).springify()} style={styles.statsRow}>
           <View style={styles.statCard}>
             <MaterialCommunityIcons name="bitcoin" size={20} color={Colors.gold} />
-            <Text style={styles.statValue}>{formatShib(displayedShib)}</Text>
+            <Text style={styles.statValue}>{formatShib(displayedShibFinal)}</Text>
             <Text style={styles.statLabel}>SHIB Balance</Text>
           </View>
           <View style={styles.statCard}>
@@ -292,7 +320,7 @@ export default function HomeScreen() {
         <View style={styles.adBanner}>
           <LinearGradient colors={['rgba(255,107,0,0.08)', 'rgba(244,196,48,0.05)']} style={styles.adBannerInner}>
             <Ionicons name="tv-outline" size={14} color={Colors.textMuted} />
-            <Text style={styles.adBannerText}>Ad space — AdMob Banner</Text>
+            <Text style={styles.adBannerText}>AdMob Banner Ad</Text>
           </LinearGradient>
         </View>
       </ScrollView>
@@ -303,7 +331,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scroll: { paddingHorizontal: 20, paddingBottom: 120 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   greeting: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary },
   userName: { fontFamily: 'Inter_700Bold', fontSize: 21, color: Colors.textPrimary, marginTop: 2 },
   balanceBadge: {
@@ -313,6 +341,13 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(244,196,48,0.25)',
   },
   balanceText: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.gold },
+  liveBalanceCard: { marginBottom: 12, borderRadius: 14, overflow: 'hidden' },
+  liveBalanceInner: {
+    padding: 14, alignItems: 'center',
+    borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)', borderRadius: 14,
+  },
+  liveLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, marginBottom: 4 },
+  liveValue: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.gold },
   miningCore: { alignItems: 'center', justifyContent: 'center', height: 270, marginBottom: 16 },
   outerGlow: { position: 'absolute', width: 240, height: 240, borderRadius: 120, backgroundColor: Colors.gold, opacity: 0.12 },
   rotatingRing: { position: 'absolute', width: 220, height: 220, alignItems: 'center', justifyContent: 'center' },

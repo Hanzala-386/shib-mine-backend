@@ -46,6 +46,7 @@
     "firebase": "^12.10.0",
     "http-proxy-middleware": "^3.0.5",
     "pg": "^8.16.3",
+    "pocketbase": "^0.26.8",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",

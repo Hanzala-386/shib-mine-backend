@@ -9,9 +9,11 @@ import {
   onAuthStateChanged,
   type FirebaseUser,
 } from '@/lib/firebase';
+import { pbAPI, type PBUser } from '@/lib/pocketbase';
 
 export interface UserProfile {
   uid: string;
+  pbId: string;
   email: string;
   displayName: string;
   username: string;
@@ -41,6 +43,20 @@ function generateReferralCode(): string {
   return Math.random().toString(36).substr(2, 6).toUpperCase();
 }
 
+function pbUserToProfile(pbUser: PBUser): UserProfile {
+  return {
+    uid: pbUser.uid,
+    pbId: pbUser.id,
+    email: pbUser.email,
+    displayName: pbUser.displayName,
+    username: pbUser.username,
+    referralCode: pbUser.referralCode,
+    referredBy: pbUser.referredBy,
+    createdAt: new Date(pbUser.created).getTime(),
+    emailVerified: true,
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
@@ -50,10 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       setFirebaseUser(fbUser);
       if (fbUser && fbUser.emailVerified) {
-        const profile = await loadProfile(fbUser.uid);
-        if (profile) {
-          setUser({ ...profile, emailVerified: true });
-        }
+        await loadOrCreatePbUser(fbUser);
       } else {
         setUser(null);
       }
@@ -62,30 +75,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, []);
 
-  async function loadProfile(uid: string): Promise<UserProfile | null> {
+  async function loadOrCreatePbUser(fbUser: FirebaseUser): Promise<void> {
     try {
-      const raw = await AsyncStorage.getItem(`shib_profile_${uid}`);
-      return raw ? JSON.parse(raw) : null;
-    } catch { return null; }
-  }
-
-  async function saveProfile(profile: UserProfile) {
-    await AsyncStorage.setItem(`shib_profile_${profile.uid}`, JSON.stringify(profile));
+      const pbUser = await pbAPI.getUserByUid(fbUser.uid);
+      if (pbUser) {
+        setUser(pbUserToProfile(pbUser));
+      } else {
+        const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
+        if (cached) {
+          const pending = JSON.parse(cached);
+          const created = await pbAPI.createUser({
+            uid: fbUser.uid,
+            email: fbUser.email ?? '',
+            username: pending.username,
+            displayName: pending.displayName,
+            referralCode: pending.referralCode,
+            referredBy: pending.referredBy,
+          });
+          await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
+          setUser(pbUserToProfile(created));
+        }
+      }
+    } catch (e) {
+      console.warn('[Auth] PocketBase unavailable, using local cache', e);
+      const cached = await AsyncStorage.getItem(`shib_profile_${fbUser.uid}`);
+      if (cached) setUser(JSON.parse(cached));
+    }
   }
 
   async function signUp(email: string, password: string, username: string, displayName: string, referralCode?: string): Promise<{ needsVerification: boolean }> {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
-    const profile: UserProfile = {
+    const pending = {
       uid: cred.user.uid,
-      email: email.toLowerCase(),
-      displayName,
       username,
+      displayName,
       referralCode: generateReferralCode(),
       referredBy: referralCode?.toUpperCase(),
-      createdAt: Date.now(),
-      emailVerified: false,
     };
-    await saveProfile(profile);
+    await AsyncStorage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify(pending));
     await sendEmailVerification(cred.user);
     setFirebaseUser(cred.user);
     return { needsVerification: true };
@@ -94,14 +121,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function signIn(email: string, password: string): Promise<{ needsVerification: boolean }> {
     const cred = await signInWithEmailAndPassword(auth, email, password);
     if (!cred.user.emailVerified) {
+      setFirebaseUser(cred.user);
       return { needsVerification: true };
     }
-    const profile = await loadProfile(cred.user.uid);
-    if (profile) {
-      const updated = { ...profile, emailVerified: true };
-      await saveProfile(updated);
-      setUser(updated);
-    }
+    await loadOrCreatePbUser(cred.user);
     setFirebaseUser(cred.user);
     return { needsVerification: false };
   }
@@ -121,14 +144,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function refreshUser() {
     if (firebaseUser) {
       await firebaseUser.reload();
-      if (firebaseUser.emailVerified) {
-        const profile = await loadProfile(firebaseUser.uid);
-        if (profile) {
-          const updated = { ...profile, emailVerified: true };
-          await saveProfile(updated);
-          setUser(updated);
-          setFirebaseUser({ ...firebaseUser });
-        }
+      const refreshed = auth.currentUser;
+      if (refreshed?.emailVerified) {
+        setFirebaseUser(refreshed);
+        await loadOrCreatePbUser(refreshed);
       }
     }
   }
