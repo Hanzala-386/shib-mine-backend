@@ -1,20 +1,18 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from './AuthContext';
-import { pbAPI, type PBMiningSession } from '@/lib/pocketbase';
+import { api } from '@/lib/api';
 
 export type MiningStatus = 'idle' | 'mining' | 'ready_to_claim';
 
 export interface MiningSession {
   pbSessionId?: string;
   startTime: number;
-  duration: number;
+  durationMs: number;
   multiplier: number;
   status: MiningStatus;
-  reward: number;
+  expectedReward: number;
 }
-
-const MINING_DURATION_MS = 60 * 60 * 1000;
 
 interface MiningContextValue {
   session: MiningSession | null;
@@ -23,195 +21,230 @@ interface MiningContextValue {
   elapsedMs: number;
   progress: number;
   displayedShibBalance: number;
-  startMining: (multiplier?: number, baseMiningRate?: number) => Promise<boolean>;
+  startMining: (multiplier?: number) => Promise<boolean>;
   claimReward: () => Promise<number>;
   shibReward: number;
-  baseMiningRate: number;
-  setBaseMiningRate: (rate: number) => void;
+  miningRatePerSec: number;
+  setMiningRatePerSec: (rate: number) => void;
+  durationMinutes: number;
+  setDurationMinutes: (m: number) => void;
 }
 
 const MiningContext = createContext<MiningContextValue | null>(null);
 
-function pbSessionToLocal(pb: PBMiningSession): MiningSession {
-  const startTime = new Date(pb.startTime).getTime();
-  const elapsed = Date.now() - startTime;
-  const status: MiningStatus = pb.status === 'claimed'
-    ? 'idle'
-    : elapsed >= pb.duration
-      ? 'ready_to_claim'
-      : 'mining';
-  return {
-    pbSessionId: pb.id,
-    startTime,
-    duration: pb.duration,
-    multiplier: pb.multiplier,
-    status,
-    reward: pb.reward,
-  };
-}
-
 export function MiningProvider({ children }: { children: ReactNode }) {
-  const { user, firebaseUser } = useAuth();
+  const { user, pbUser, refreshBalance } = useAuth();
   const [session, setSession] = useState<MiningSession | null>(null);
   const [timeRemaining, setTimeRemaining] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [baseMiningRate, setBaseMiningRate] = useState(500000);
+  const [miningRatePerSec, setMiningRatePerSec] = useState(0.01736);
+  const [durationMinutes, setDurationMinutes] = useState(60);
   const [displayedShibBalance, setDisplayedShibBalance] = useState(0);
+
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shibIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionRef = useRef<MiningSession | null>(null);
 
-  const uid = firebaseUser?.uid;
-  const pbId = user?.pbId;
+  const uid = user?.uid;
+  const pbId = pbUser?.pbId;
   const cacheKey = uid ? `shib_mining_${uid}` : null;
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   useEffect(() => {
     if (uid) loadSession();
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      if (shibIntervalRef.current) clearInterval(shibIntervalRef.current);
+      clearAllTimers();
     };
-  }, [uid]);
+  }, [uid, pbId]);
+
+  function clearAllTimers() {
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    if (shibIntervalRef.current) { clearInterval(shibIntervalRef.current); shibIntervalRef.current = null; }
+  }
 
   async function loadSession() {
     try {
+      // First try server for active session
       if (pbId) {
-        const pbSession = await pbAPI.getActiveMiningSession(pbId);
-        if (pbSession) {
-          const local = pbSessionToLocal(pbSession);
+        const res = await api.getActiveMining(pbId);
+        if (res.session) {
+          const s = res.session;
+          const startTime = new Date(s.startTime.replace(' ', 'T').endsWith('Z') ? s.startTime : s.startTime + 'Z').getTime();
+          const durationMs = s.durationMs;
+          const elapsed = Date.now() - startTime;
+          const status: MiningStatus = elapsed >= durationMs ? 'ready_to_claim' : 'mining';
+          const local: MiningSession = {
+            pbSessionId: s.id,
+            startTime,
+            durationMs,
+            multiplier: 1,
+            status,
+            expectedReward: miningRatePerSec * (durationMs / 1000),
+          };
           setSession(local);
-          if (local.status === 'mining') {
-            const elapsed = Date.now() - local.startTime;
-            const remaining = Math.max(0, local.duration - elapsed);
-            setTimeRemaining(remaining);
+          if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(local));
+          if (status === 'mining') {
+            setTimeRemaining(Math.max(0, durationMs - elapsed));
             setElapsedMs(elapsed);
             startTimers(local);
           }
-          if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(local));
           return;
         }
       }
 
+      // Fall back to local cache
       if (cacheKey) {
         const raw = await AsyncStorage.getItem(cacheKey);
         if (raw) {
           const s: MiningSession = JSON.parse(raw);
+          const elapsed = Date.now() - s.startTime;
           if (s.status === 'mining') {
-            const elapsed = Date.now() - s.startTime;
-            if (elapsed >= s.duration) {
+            if (elapsed >= s.durationMs) {
               const completed = { ...s, status: 'ready_to_claim' as MiningStatus };
               setSession(completed);
               await AsyncStorage.setItem(cacheKey, JSON.stringify(completed));
             } else {
-              const remaining = s.duration - elapsed;
               setSession(s);
-              setTimeRemaining(remaining);
+              setTimeRemaining(s.durationMs - elapsed);
               setElapsedMs(elapsed);
               startTimers(s);
             }
-          } else {
+          } else if (s.status === 'ready_to_claim') {
             setSession(s);
           }
         }
       }
     } catch (e) {
-      console.warn('[Mining] Error loading session', e);
+      console.warn('[Mining] loadSession error', e);
     }
   }
 
   function startTimers(s: MiningSession) {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (shibIntervalRef.current) clearInterval(shibIntervalRef.current);
+    clearAllTimers();
 
     intervalRef.current = setInterval(() => {
       const elapsed = Date.now() - s.startTime;
-      const remaining = Math.max(0, s.duration - elapsed);
+      const remaining = Math.max(0, s.durationMs - elapsed);
       setTimeRemaining(remaining);
       setElapsedMs(elapsed);
+
       if (remaining === 0) {
-        if (intervalRef.current) clearInterval(intervalRef.current);
-        if (shibIntervalRef.current) clearInterval(shibIntervalRef.current);
-        setSession(prev => {
+        clearAllTimers();
+        setSession((prev) => {
           if (!prev) return null;
-          const completed = { ...prev, status: 'ready_to_claim' as MiningStatus };
-          if (cacheKey) AsyncStorage.setItem(cacheKey, JSON.stringify(completed));
-          return completed;
+          const done = { ...prev, status: 'ready_to_claim' as MiningStatus };
+          if (cacheKey) AsyncStorage.setItem(cacheKey, JSON.stringify(done));
+          return done;
         });
       }
     }, 1000);
 
     shibIntervalRef.current = setInterval(() => {
-      const elapsed = Date.now() - s.startTime;
-      const rate = baseMiningRate * s.multiplier;
-      const accumulated = Math.floor((rate * Math.min(elapsed, s.duration)) / s.duration);
+      const elapsed = Math.min(Date.now() - s.startTime, s.durationMs);
+      const rate = miningRatePerSec * s.multiplier;
+      const accumulated = rate * (elapsed / 1000);
       setDisplayedShibBalance(accumulated);
     }, 100);
   }
 
-  async function startMining(multiplier: number = 1, miningRate?: number): Promise<boolean> {
-    const rate = miningRate ?? baseMiningRate;
-    if (miningRate) setBaseMiningRate(miningRate);
-
-    const newSession: MiningSession = {
-      startTime: Date.now(),
-      duration: MINING_DURATION_MS,
-      multiplier,
-      status: 'mining',
-      reward: Math.floor(rate * multiplier),
-    };
+  async function startMining(multiplier = 1): Promise<boolean> {
+    if (!pbId) return false;
 
     try {
-      if (pbId) {
-        const pbSession = await pbAPI.startMiningSession(pbId, multiplier, rate);
-        newSession.pbSessionId = pbSession.id;
-      }
-    } catch (e) {
-      console.warn('[Mining] PocketBase startMining failed, using local', e);
-    }
+      const res = await api.startMining({
+        pbId,
+        multiplier,
+        miningRatePerSec,
+        durationMinutes,
+      });
 
-    setSession(newSession);
-    setTimeRemaining(MINING_DURATION_MS);
-    setElapsedMs(0);
-    setDisplayedShibBalance(0);
-    if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(newSession));
-    startTimers(newSession);
-    return true;
+      const startTime = new Date(
+        res.startTime.includes('T') ? res.startTime : res.startTime.replace(' ', 'T') + 'Z',
+      ).getTime();
+
+      const newSession: MiningSession = {
+        pbSessionId: res.id,
+        startTime,
+        durationMs: res.durationMs,
+        multiplier,
+        status: 'mining',
+        expectedReward: res.expectedReward,
+      };
+
+      setSession(newSession);
+      setTimeRemaining(res.durationMs);
+      setElapsedMs(0);
+      setDisplayedShibBalance(0);
+      if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(newSession));
+      startTimers(newSession);
+      return true;
+    } catch (e) {
+      console.warn('[Mining] startMining failed', e);
+      return false;
+    }
   }
 
   async function claimReward(): Promise<number> {
-    if (!session || session.status !== 'ready_to_claim') return 0;
-    const reward = session.reward;
+    const s = sessionRef.current;
+    if (!s || s.status !== 'ready_to_claim' || !pbId) return 0;
+
+    const elapsed = Math.min(Date.now() - s.startTime, s.durationMs);
+    const reward = miningRatePerSec * s.multiplier * (elapsed / 1000);
 
     try {
-      if (pbId && session.pbSessionId) {
-        await pbAPI.claimMiningSession(session.pbSessionId, pbId, reward);
+      if (s.pbSessionId) {
+        const res = await api.claimMining({
+          sessionId: s.pbSessionId,
+          pbId,
+          reward,
+        });
+        await refreshBalance();
+        const reset: MiningSession = { ...s, status: 'idle' };
+        setSession(reset);
+        setTimeRemaining(0);
+        setElapsedMs(0);
+        setDisplayedShibBalance(0);
+        clearAllTimers();
+        if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(reset));
+        return res.reward;
       }
     } catch (e) {
-      console.warn('[Mining] PocketBase claim failed, using local', e);
+      console.warn('[Mining] claimReward failed', e);
     }
 
-    const reset: MiningSession = { ...session, status: 'idle' };
+    const reset: MiningSession = { ...s, status: 'idle' };
     setSession(reset);
     setTimeRemaining(0);
     setElapsedMs(0);
     setDisplayedShibBalance(0);
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (shibIntervalRef.current) clearInterval(shibIntervalRef.current);
+    clearAllTimers();
     if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(reset));
     return reward;
   }
 
   const status: MiningStatus = session?.status ?? 'idle';
-  const progress = session?.status === 'mining'
-    ? Math.min(1, elapsedMs / MINING_DURATION_MS)
-    : session?.status === 'ready_to_claim' ? 1 : 0;
+  const progress =
+    session?.status === 'mining'
+      ? Math.min(1, elapsedMs / (session.durationMs || 1))
+      : session?.status === 'ready_to_claim'
+        ? 1
+        : 0;
 
-  const shibReward = session ? session.reward : Math.floor(baseMiningRate);
+  const shibReward =
+    session
+      ? miningRatePerSec * (session.multiplier || 1) * ((session.durationMs || 0) / 1000)
+      : miningRatePerSec * durationMinutes * 60;
 
   const value = useMemo(() => ({
     session, status, timeRemaining, elapsedMs, progress,
     displayedShibBalance,
-    startMining, claimReward, shibReward, baseMiningRate, setBaseMiningRate,
-  }), [session, status, timeRemaining, elapsedMs, progress, displayedShibBalance, shibReward, baseMiningRate]);
+    startMining, claimReward, shibReward,
+    miningRatePerSec, setMiningRatePerSec,
+    durationMinutes, setDurationMinutes,
+  }), [session, status, timeRemaining, elapsedMs, progress, displayedShibBalance, shibReward, miningRatePerSec, durationMinutes]);
 
   return <MiningContext.Provider value={value}>{children}</MiningContext.Provider>;
 }

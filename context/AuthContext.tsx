@@ -9,14 +9,13 @@ import {
   onAuthStateChanged,
   type FirebaseUser,
 } from '@/lib/firebase';
-import { pbAPI, type PBUser } from '@/lib/pocketbase';
+import { api, type PBUser } from '@/lib/api';
 
 export interface UserProfile {
   uid: string;
   pbId: string;
   email: string;
   displayName: string;
-  username: string;
   referralCode: string;
   referredBy?: string;
   createdAt: number;
@@ -30,11 +29,13 @@ interface AuthContextValue {
   firebaseUser: FirebaseUser | null;
   isLoading: boolean;
   isAdmin: boolean;
-  signUp: (email: string, password: string, username: string, displayName: string, referralCode?: string) => Promise<{ needsVerification: boolean }>;
+  signUp: (email: string, password: string, displayName: string, referredBy?: string) => Promise<{ needsVerification: boolean }>;
   signIn: (email: string, password: string) => Promise<{ needsVerification: boolean }>;
   signOut: () => Promise<void>;
   resendVerification: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  refreshBalance: () => Promise<void>;
+  pbUser: PBUser | null;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -43,22 +44,22 @@ function generateReferralCode(): string {
   return Math.random().toString(36).substr(2, 6).toUpperCase();
 }
 
-function pbUserToProfile(pbUser: PBUser): UserProfile {
+function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
   return {
-    uid: pbUser.uid,
-    pbId: pbUser.id,
-    email: pbUser.email,
-    displayName: pbUser.displayName,
-    username: pbUser.username,
-    referralCode: pbUser.referralCode,
-    referredBy: pbUser.referredBy,
-    createdAt: new Date(pbUser.created).getTime(),
-    emailVerified: true,
+    uid: fbUser.uid,
+    pbId: u.pbId,
+    email: u.email,
+    displayName: u.displayName,
+    referralCode: u.referralCode,
+    referredBy: u.referredBy || undefined,
+    createdAt: new Date(u.created).getTime(),
+    emailVerified: fbUser.emailVerified,
   };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [pbUser, setPbUser] = useState<PBUser | null>(null);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -66,51 +67,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       setFirebaseUser(fbUser);
       if (fbUser && fbUser.emailVerified) {
-        await loadOrCreatePbUser(fbUser);
+        await syncWithServer(fbUser);
       } else {
         setUser(null);
+        setPbUser(null);
       }
       setIsLoading(false);
     });
     return unsubscribe;
   }, []);
 
-  async function loadOrCreatePbUser(fbUser: FirebaseUser): Promise<void> {
+  async function syncWithServer(fbUser: FirebaseUser): Promise<void> {
     try {
-      const pbUser = await pbAPI.getUserByUid(fbUser.uid);
-      if (pbUser) {
-        setUser(pbUserToProfile(pbUser));
-      } else {
+      // First try to fetch existing user
+      let pb = await api.getUser(fbUser.uid).catch(() => null);
+
+      if (!pb) {
+        // Check for pending signup data
         const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
-        if (cached) {
-          const pending = JSON.parse(cached);
-          const created = await pbAPI.createUser({
-            uid: fbUser.uid,
-            email: fbUser.email ?? '',
-            username: pending.username,
-            displayName: pending.displayName,
-            referralCode: pending.referralCode,
-            referredBy: pending.referredBy,
-          });
-          await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
-          setUser(pbUserToProfile(created));
-        }
+        const pending = cached ? JSON.parse(cached) : {};
+        pb = await api.syncUser({
+          firebaseUid: fbUser.uid,
+          email: fbUser.email ?? '',
+          displayName: pending.displayName || fbUser.displayName || fbUser.email?.split('@')[0] || '',
+          referralCode: pending.referralCode || generateReferralCode(),
+          referredBy: pending.referredBy || '',
+        });
+        if (cached) await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
+      }
+
+      if (pb) {
+        setPbUser(pb);
+        setUser(pbToProfile(pb, fbUser));
+        await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
       }
     } catch (e) {
-      console.warn('[Auth] PocketBase unavailable, using local cache', e);
+      console.warn('[Auth] Server sync failed, using cache', e);
       const cached = await AsyncStorage.getItem(`shib_profile_${fbUser.uid}`);
       if (cached) setUser(JSON.parse(cached));
     }
   }
 
-  async function signUp(email: string, password: string, username: string, displayName: string, referralCode?: string): Promise<{ needsVerification: boolean }> {
+  async function signUp(
+    email: string,
+    password: string,
+    displayName: string,
+    referredBy?: string,
+  ): Promise<{ needsVerification: boolean }> {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
     const pending = {
-      uid: cred.user.uid,
-      username,
       displayName,
       referralCode: generateReferralCode(),
-      referredBy: referralCode?.toUpperCase(),
+      referredBy: referredBy?.toUpperCase() || '',
     };
     await AsyncStorage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify(pending));
     await sendEmailVerification(cred.user);
@@ -124,21 +132,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setFirebaseUser(cred.user);
       return { needsVerification: true };
     }
-    await loadOrCreatePbUser(cred.user);
     setFirebaseUser(cred.user);
+    await syncWithServer(cred.user);
     return { needsVerification: false };
   }
 
   async function signOut() {
     await firebaseSignOut(auth);
     setUser(null);
+    setPbUser(null);
     setFirebaseUser(null);
   }
 
   async function resendVerification() {
-    if (firebaseUser) {
-      await sendEmailVerification(firebaseUser);
-    }
+    if (firebaseUser) await sendEmailVerification(firebaseUser);
   }
 
   async function refreshUser() {
@@ -147,7 +154,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const refreshed = auth.currentUser;
       if (refreshed?.emailVerified) {
         setFirebaseUser(refreshed);
-        await loadOrCreatePbUser(refreshed);
+        await syncWithServer(refreshed);
+      }
+    }
+  }
+
+  async function refreshBalance() {
+    if (firebaseUser) {
+      try {
+        const pb = await api.getUser(firebaseUser.uid);
+        if (pb) {
+          setPbUser(pb);
+          setUser(pbToProfile(pb, firebaseUser));
+        }
+      } catch (e) {
+        console.warn('[Auth] refreshBalance failed', e);
       }
     }
   }
@@ -155,9 +176,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isAdmin = firebaseUser?.email?.toLowerCase() === ADMIN_EMAIL;
 
   const value = useMemo(() => ({
-    user, firebaseUser, isLoading, isAdmin,
-    signUp, signIn, signOut, resendVerification, refreshUser,
-  }), [user, firebaseUser, isLoading, isAdmin]);
+    user, firebaseUser, isLoading, isAdmin, pbUser,
+    signUp, signIn, signOut, resendVerification, refreshUser, refreshBalance,
+  }), [user, firebaseUser, isLoading, isAdmin, pbUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

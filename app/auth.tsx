@@ -54,7 +54,7 @@ export default function AuthScreen() {
           Alert.alert('Email Not Verified', 'Please check your email and verify your account before signing in.');
         }
       } else {
-        await signUp(email.trim(), password, username.trim(), displayName.trim(), referralCode.trim() || undefined);
+        await signUp(email.trim(), password, displayName.trim() || username.trim(), referralCode.trim() || undefined);
       }
     } catch (e: any) {
       const msg = e.code === 'auth/email-already-in-use'

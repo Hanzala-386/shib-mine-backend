@@ -24,12 +24,12 @@ function formatDate(ts: number): string {
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
-  const { user, signOut, isAdmin } = useAuth();
-  const { shibBalance, powerTokens, transactions } = useWallet();
+  const { user, pbUser, signOut, isAdmin } = useAuth();
+  const { shibBalance, powerTokens } = useWallet();
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
 
-  const miningCount = transactions.filter(t => t.type === 'mining_claim').length;
-  const gameWins = transactions.filter(t => t.type === 'game_reward').length;
+  const miningCount = pbUser?.totalClaims ?? 0;
+  const gameWins = pbUser?.totalWins ?? 0;
 
   async function handleSignOut() {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
@@ -55,7 +55,6 @@ export default function ProfileScreen() {
         end={{ x: 0.5, y: 0.5 }}
       />
       <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.scroll, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 16), paddingBottom: 120 }]}
       >
@@ -64,7 +63,6 @@ export default function ProfileScreen() {
             <Text style={styles.avatarText}>{initials}</Text>
           </LinearGradient>
           <Text style={styles.displayName}>{user?.displayName}</Text>
-          <Text style={styles.username}>@{user?.username}</Text>
           <Text style={styles.email}>{user?.email}</Text>
           {user?.createdAt && (
             <Text style={styles.joinDate}>Member since {formatDate(user.createdAt)}</Text>
@@ -98,7 +96,6 @@ export default function ProfileScreen() {
         <Animated.View entering={FadeInDown.delay(300).springify()}>
           <Text style={styles.sectionTitle}>Account</Text>
           <View style={styles.menuGroup}>
-            <MenuItem icon="person-outline" label="Username" value={`@${user?.username ?? ''}`} />
             <MenuItem icon="mail-outline" label="Email" value={user?.email ?? ''} />
             <MenuItem icon="gift-outline" label="Referral Code" value={user?.referralCode ?? ''} />
             <MenuItem icon="lightning-bolt" iconLib="material-community" label="Power Tokens" value={`${powerTokens} PT`} />
@@ -196,7 +193,6 @@ const styles = StyleSheet.create({
   avatar: { width: 78, height: 78, borderRadius: 39, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
   avatarText: { fontFamily: 'Inter_700Bold', fontSize: 26, color: '#000' },
   displayName: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.textPrimary },
-  username: { fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.neonOrange },
   email: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary },
   joinDate: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted },
   adminBadge: {

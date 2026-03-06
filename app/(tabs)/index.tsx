@@ -30,7 +30,7 @@ function formatShib(val: number) {
   if (val >= 1_000_000_000) return `${(val / 1_000_000_000).toFixed(2)}B`;
   if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(2)}M`;
   if (val >= 1_000) return `${(val / 1_000).toFixed(1)}K`;
-  return val.toLocaleString();
+  return val.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
 function useRollingNumber(target: number, duration = 600) {
@@ -44,7 +44,7 @@ function useRollingNumber(target: number, duration = 600) {
       useNativeDriver: false,
     }).start();
     const listener = animVal.addListener(({ value }) => {
-      setDisplayed(Math.round(value));
+      setDisplayed(value);
     });
     return () => animVal.removeListener(listener);
   }, [target]);
@@ -54,9 +54,12 @@ function useRollingNumber(target: number, duration = 600) {
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
-  const { powerTokens, shibBalance, addShib, spendPowerTokens } = useWallet();
-  const { status, timeRemaining, progress, startMining, claimReward, shibReward, session, baseMiningRate, displayedShibBalance } = useMining();
+  const { user, pbUser } = useAuth();
+  const { powerTokens, shibBalance, spendPowerTokens } = useWallet();
+  const {
+    status, timeRemaining, progress, startMining, claimReward,
+    shibReward, session, miningRatePerSec, displayedShibBalance,
+  } = useMining();
   const { settings } = useAdmin();
   const [showAdLoader, setShowAdLoader] = useState(false);
 
@@ -71,11 +74,13 @@ export default function HomeScreen() {
   const pulse = useSharedValue(1);
   const glowOpacity = useSharedValue(0.4);
 
+  const boostCosts = settings?.boostCosts ?? { '2x': 200, '4x': 400, '6x': 600, '10x': 800 };
+
   const BOOSTERS = [
-    { label: '2x', multiplier: 2, cost: settings.boosterCosts['2x'], color: '#4CAF50' },
-    { label: '4x', multiplier: 4, cost: settings.boosterCosts['4x'], color: '#2196F3' },
-    { label: '6x', multiplier: 6, cost: settings.boosterCosts['6x'], color: Colors.neonOrange },
-    { label: '10x', multiplier: 10, cost: settings.boosterCosts['10x'], color: Colors.gold },
+    { label: '2x', multiplier: 2, cost: boostCosts['2x'], color: '#4CAF50' },
+    { label: '4x', multiplier: 4, cost: boostCosts['4x'], color: '#2196F3' },
+    { label: '6x', multiplier: 6, cost: boostCosts['6x'], color: Colors.neonOrange },
+    { label: '10x', multiplier: 10, cost: boostCosts['10x'], color: Colors.gold },
   ];
 
   useEffect(() => {
@@ -116,20 +121,27 @@ export default function HomeScreen() {
   const glowStyle = useAnimatedStyle(() => ({ opacity: glowOpacity.value }));
 
   async function handleStartMining(multiplier = 1, boosterCost = 0) {
-    const totalCost = settings.miningEntryFee + boosterCost;
-    if (powerTokens < totalCost) {
-      Alert.alert('Insufficient Tokens', `You need ${totalCost} Power Tokens to start mining.`);
+    if (!pbUser) {
+      Alert.alert('Not Ready', 'Account sync in progress. Please wait a moment.');
       return;
     }
-    const spent = await spendPowerTokens(totalCost, `Mining fee${multiplier > 1 ? ` (${multiplier}x)` : ''}`, 'mining_fee');
-    if (!spent) return;
+    if (boosterCost > 0 && powerTokens < boosterCost) {
+      Alert.alert('Insufficient Tokens', `You need ${boosterCost} Power Tokens for this booster.`);
+      return;
+    }
+    if (boosterCost > 0) {
+      const spent = await spendPowerTokens(boosterCost);
+      if (!spent) return;
+    }
 
     setShowAdLoader(true);
     await adService.showUnityInterstitial(
       async () => {
         setShowAdLoader(false);
-        await startMining(multiplier, settings.baseMiningRate);
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        const started = await startMining(multiplier);
+        if (started) {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
       },
       () => setShowAdLoader(false),
     );
@@ -139,16 +151,14 @@ export default function HomeScreen() {
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const reward = await claimReward();
     if (reward > 0) {
-      await addShib(reward, 'Mining session reward');
       Alert.alert('Reward Claimed!', `You earned ${formatShib(reward)} SHIB!`);
     }
   }
 
   async function handleBooster(b: typeof BOOSTERS[0]) {
-    const totalCost = settings.miningEntryFee + b.cost;
     Alert.alert(
       `${b.label} Speed Boost`,
-      `Spend ${totalCost} Power Tokens to mine at ${b.label} speed?\n\nReward: ${formatShib(shibReward * b.multiplier)} SHIB`,
+      `Spend ${b.cost} Power Tokens to mine at ${b.label} speed?\n\nReward: ~${formatShib(shibReward * b.multiplier)} SHIB`,
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Start', onPress: () => handleStartMining(b.multiplier, b.cost) },
@@ -176,7 +186,7 @@ export default function HomeScreen() {
             </View>
             <View style={styles.balanceBadge}>
               <MaterialCommunityIcons name="lightning-bolt" size={14} color={Colors.gold} />
-              <Text style={styles.balanceText}>{displayedPT} PT</Text>
+              <Text style={styles.balanceText}>{Math.floor(displayedPT)} PT</Text>
             </View>
           </View>
         </Animated.View>
@@ -248,7 +258,7 @@ export default function HomeScreen() {
               <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` as any }]} />
             </View>
             <Text style={styles.progressLabel}>
-              {Math.round(progress * 100)}% — {session?.multiplier ?? 1}x speed — {formatShib(shibReward)} SHIB
+              {Math.round(progress * 100)}% — {session?.multiplier ?? 1}x speed — ~{formatShib(shibReward)} SHIB
             </Text>
           </Animated.View>
         )}
@@ -264,11 +274,11 @@ export default function HomeScreen() {
                 <MaterialCommunityIcons name="pickaxe" size={20} color="#000" />
                 <Text style={styles.actionText}>{showAdLoader ? 'Loading Ad...' : 'Start Mining'}</Text>
                 <View style={styles.feeTag}>
-                  <Text style={styles.feeText}>{settings.miningEntryFee} PT</Text>
+                  <Text style={styles.feeText}>FREE</Text>
                 </View>
               </LinearGradient>
             </Pressable>
-            <Text style={styles.rewardPreview}>Earns ~{formatShib(shibReward)} SHIB in 60 min</Text>
+            <Text style={styles.rewardPreview}>Earns ~{formatShib(shibReward)} SHIB in {settings?.miningDurationMinutes ?? 60} min</Text>
           </Animated.View>
         )}
 
@@ -277,7 +287,7 @@ export default function HomeScreen() {
             <Pressable style={({ pressed }) => [styles.actionBtn, { opacity: pressed ? 0.85 : 1 }]} onPress={handleClaim}>
               <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.actionGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                 <Ionicons name="checkmark-circle" size={22} color="#000" />
-                <Text style={styles.actionText}>Claim {formatShib(shibReward)} SHIB</Text>
+                <Text style={styles.actionText}>Claim ~{formatShib(shibReward)} SHIB</Text>
               </LinearGradient>
             </Pressable>
           </Animated.View>
@@ -298,7 +308,7 @@ export default function HomeScreen() {
               >
                 <Text style={[styles.boosterLabel, { color: b.color }]}>{b.label}</Text>
                 <MaterialCommunityIcons name="lightning-bolt" size={16} color={b.color} />
-                <Text style={styles.boosterCost}>{settings.miningEntryFee + b.cost} PT</Text>
+                <Text style={styles.boosterCost}>{b.cost} PT</Text>
               </Pressable>
             ))}
           </View>
@@ -312,7 +322,7 @@ export default function HomeScreen() {
           </View>
           <View style={styles.statCard}>
             <MaterialCommunityIcons name="lightning-bolt" size={20} color={Colors.neonOrange} />
-            <Text style={styles.statValue}>{displayedPT}</Text>
+            <Text style={styles.statValue}>{Math.floor(displayedPT)}</Text>
             <Text style={styles.statLabel}>Power Tokens</Text>
           </View>
         </Animated.View>

@@ -1,168 +1,111 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { pbAPI, type PBSettings } from '@/lib/pocketbase';
+import { api, type AppSettings } from '@/lib/api';
 import { configureAds } from '@/lib/AdService';
 
-export interface AdminSettings {
-  pbId?: string;
-  miningEntryFee: number;
-  baseMiningRate: number;
-  boosterCosts: { '2x': number; '4x': number; '6x': number; '10x': number };
-  admob: {
-    appId: string;
-    bannerId: string;
-    interstitialId: string;
-    rewardedId: string;
-  };
-  unity: {
-    gameId: string;
-    interstitialPlacementId: string;
-  };
-  withdrawal: {
-    binanceFeePercent: number;
-    bep20FlatFee: number;
-    minTier1: number;
-    minTier2: number;
-    minTier3: number;
-  };
-}
-
-const DEFAULT_SETTINGS: AdminSettings = {
-  miningEntryFee: 5,
-  baseMiningRate: 500000,
-  boosterCosts: { '2x': 10, '4x': 25, '6x': 50, '10x': 100 },
-  admob: { appId: '', bannerId: '', interstitialId: '', rewardedId: '' },
-  unity: { gameId: '', interstitialPlacementId: '' },
-  withdrawal: {
-    binanceFeePercent: 2,
-    bep20FlatFee: 5,
-    minTier1: 1000000,
-    minTier2: 500000,
-    minTier3: 250000,
-  },
-};
-
-const CACHE_KEY = 'shib_admin_settings_cache';
-
-function pbSettingsToLocal(pb: PBSettings): AdminSettings {
-  return {
-    pbId: pb.id,
-    miningEntryFee: pb.miningEntryFee,
-    baseMiningRate: pb.baseMiningRate,
-    boosterCosts: {
-      '2x': pb.boosterCost2x,
-      '4x': pb.boosterCost4x,
-      '6x': pb.boosterCost6x,
-      '10x': pb.boosterCost10x,
-    },
-    admob: {
-      appId: pb.admobAppId ?? '',
-      bannerId: pb.admobBannerId ?? '',
-      interstitialId: pb.admobInterstitialId ?? '',
-      rewardedId: pb.admobRewardedId ?? '',
-    },
-    unity: {
-      gameId: pb.unityGameId ?? '',
-      interstitialPlacementId: pb.unityInterstitialPlacementId ?? '',
-    },
-    withdrawal: {
-      binanceFeePercent: pb.binanceFeePercent,
-      bep20FlatFee: pb.bep20FlatFee,
-      minTier1: pb.minTier1,
-      minTier2: pb.minTier2,
-      minTier3: pb.minTier3,
-    },
-  };
-}
+export type { AppSettings };
 
 interface AdminContextValue {
-  settings: AdminSettings;
+  settings: AppSettings | null;
   isLoading: boolean;
-  updateSettings: (updates: Partial<AdminSettings>) => Promise<void>;
+  updateSettings: (updates: Partial<AppSettings>) => Promise<void>;
   refetch: () => Promise<void>;
 }
+
+const DEFAULT_SETTINGS: AppSettings = {
+  id: '',
+  miningRatePerSec: 0.01736,
+  powerTokenPerClick: 24,
+  miningDurationMinutes: 60,
+  tokensPerRound: 3,
+  boostCosts: { '2x': 200, '4x': 400, '6x': 600, '10x': 800 },
+  minWithdrawal1: 100,
+  minWithdrawal2: 1000,
+  minWithdrawal3: 8000,
+  showAds: false,
+  activeAdNetwork: '',
+  admobUnitId: '',
+  admobBannerUnitId: '',
+  applovinSdkKey: '',
+  applovinRewardedId: '',
+  unityGameId: '',
+  unityRewardedId: '',
+};
+
+const CACHE_KEY = 'shib_settings_cache_v2';
 
 const AdminContext = createContext<AdminContextValue | null>(null);
 
 export function AdminProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<AdminSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => { load(); }, []);
 
   async function load() {
     try {
+      // Load cache first for instant UI
       const cached = await AsyncStorage.getItem(CACHE_KEY);
       if (cached) {
-        const parsed = JSON.parse(cached);
+        const parsed: AppSettings = JSON.parse(cached);
         setSettings(parsed);
         applyAdsConfig(parsed);
+      } else {
+        setSettings(DEFAULT_SETTINGS);
       }
 
-      const pbSettings = await pbAPI.getSettings();
-      if (pbSettings) {
-        const local = pbSettingsToLocal(pbSettings);
-        setSettings(local);
-        applyAdsConfig(local);
-        await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(local));
-      }
+      // Fetch live from server
+      const fresh = await api.getSettings();
+      setSettings(fresh);
+      applyAdsConfig(fresh);
+      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(fresh));
     } catch (e) {
-      console.warn('[Admin] PocketBase unavailable, using cache', e);
+      console.warn('[Admin] Failed to fetch settings, using cache/defaults', e);
+      if (!settings) setSettings(DEFAULT_SETTINGS);
     } finally {
       setIsLoading(false);
     }
   }
 
-  function applyAdsConfig(s: AdminSettings) {
+  function applyAdsConfig(s: AppSettings) {
     configureAds({
-      admobBannerId: s.admob.bannerId,
-      admobInterstitialId: s.admob.interstitialId,
-      admobRewardedId: s.admob.rewardedId,
-      unityGameId: s.unity.gameId,
-      unityInterstitialPlacementId: s.unity.interstitialPlacementId,
+      admobBannerId: s.admobBannerUnitId,
+      admobInterstitialId: s.admobUnitId,
+      admobRewardedId: s.admobUnitId,
+      unityGameId: s.unityGameId,
+      unityInterstitialPlacementId: s.unityRewardedId,
     });
   }
 
-  async function updateSettings(updates: Partial<AdminSettings>) {
-    const merged = { ...settings, ...updates };
-
-    if (updates.boosterCosts) merged.boosterCosts = { ...settings.boosterCosts, ...updates.boosterCosts };
-    if (updates.admob) merged.admob = { ...settings.admob, ...updates.admob };
-    if (updates.unity) merged.unity = { ...settings.unity, ...updates.unity };
-    if (updates.withdrawal) merged.withdrawal = { ...settings.withdrawal, ...updates.withdrawal };
+  async function updateSettings(updates: Partial<AppSettings>) {
+    const current = settings || DEFAULT_SETTINGS;
+    const merged: AppSettings = {
+      ...current,
+      ...updates,
+      boostCosts: updates.boostCosts
+        ? { ...current.boostCosts, ...updates.boostCosts }
+        : current.boostCosts,
+    };
 
     setSettings(merged);
     await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(merged));
     applyAdsConfig(merged);
 
-    if (merged.pbId) {
+    if (merged.id) {
       try {
-        await pbAPI.updateSettings(merged.pbId, {
-          miningEntryFee: merged.miningEntryFee,
-          baseMiningRate: merged.baseMiningRate,
-          boosterCost2x: merged.boosterCosts['2x'],
-          boosterCost4x: merged.boosterCosts['4x'],
-          boosterCost6x: merged.boosterCosts['6x'],
-          boosterCost10x: merged.boosterCosts['10x'],
-          admobAppId: merged.admob.appId,
-          admobBannerId: merged.admob.bannerId,
-          admobInterstitialId: merged.admob.interstitialId,
-          admobRewardedId: merged.admob.rewardedId,
-          unityGameId: merged.unity.gameId,
-          unityInterstitialPlacementId: merged.unity.interstitialPlacementId,
-          binanceFeePercent: merged.withdrawal.binanceFeePercent,
-          bep20FlatFee: merged.withdrawal.bep20FlatFee,
-          minTier1: merged.withdrawal.minTier1,
-          minTier2: merged.withdrawal.minTier2,
-          minTier3: merged.withdrawal.minTier3,
-        });
+        await api.adminUpdateSettings(merged.id, updates);
       } catch (e) {
-        console.warn('[Admin] Failed to sync settings to PocketBase', e);
+        console.warn('[Admin] Failed to sync settings to server', e);
       }
     }
   }
 
-  const value = useMemo(() => ({ settings, isLoading, updateSettings, refetch: load }), [settings, isLoading]);
+  const value = useMemo(() => ({
+    settings,
+    isLoading,
+    updateSettings,
+    refetch: load,
+  }), [settings, isLoading]);
 
   return <AdminContext.Provider value={value}>{children}</AdminContext.Provider>;
 }
