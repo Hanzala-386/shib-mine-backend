@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, Pressable, Image, Alert, Platform,
   Dimensions, Animated, ActivityIndicator,
 } from 'react-native';
+import { Audio } from 'expo-av';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -40,12 +41,27 @@ const BOSS_IMGS = [
   `${BASE}Bosses/boss-Tire.png`,
   `${BASE}Bosses/boss-lid.png`,
 ];
+const TARGET_NORMAL = `${BASE}Target_Normal.png`;
+
 const KNIFE_SKINS = [
   `${BASE}Knives/Knife.png`,
   `${BASE}Knives/item knife-01.png`,
   `${BASE}Knives/item knife-02.png`,
   `${BASE}Knives/item knife-03.png`,
 ];
+
+/* ─── Level helpers ─────────────────────────────────────────────── */
+function isBossLevel(n: number) { return n % 5 === 0; }
+function randomBossImg() {
+  return BOSS_IMGS[Math.floor(Math.random() * BOSS_IMGS.length)];
+}
+// Sound keys we'll preload from the server
+const SOUND_FILES: Record<string, string> = {
+  throw: `${BASE}sound/UsedInGame/ev_throw_1.mp3`,
+  hit:   `${BASE}sound/UsedInGame/ev_knife_hit_1.mp3`,
+  clash: `${BASE}sound/UsedInGame/ev_hit_last.mp3`,
+  boss:  `${BASE}sound/UsedInGame/ev_boss_fight_legendary.mp3`,
+};
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 type Phase = 'menu' | 'playing' | 'game_over' | 'awarding' | 'reward';
@@ -90,13 +106,22 @@ export default function GamesScreen() {
   const levelRef      = useRef(1);
   const scoreRef      = useRef(0);
 
+  /* ── Sound refs ─────────────────────────────────────────── */
+  const soundsRef        = useRef<Record<string, Audio.Sound>>({});
+  const soundsLoadedRef  = useRef(false);
+
+  /* ── Boss / level refs ──────────────────────────────────── */
+  const isBossRef        = useRef(false);
+  const currentTargetRef = useRef(TARGET_NORMAL); // URL of current boss/target image
+
   /* ── React state — drives UI re-renders only when needed ── */
   const [phase, setPhase]           = useState<Phase>('menu');
   const [level, setLevel]           = useState(1);
   const [stuckKnives, setStuckKnives] = useState<StuckKnife[]>([]);
   const [knivesLeft, setKnivesLeft] = useState(LEVELS[0].knives);
   const [totalKnives, setTotalKnives] = useState(LEVELS[0].knives);
-  const [bossIdx, setBossIdx]       = useState(0);
+  const [isBoss, setIsBoss]         = useState(false);
+  const [targetImg, setTargetImg]   = useState(TARGET_NORMAL);
   const [skinIdx]                   = useState(() => Math.floor(Math.random() * KNIFE_SKINS.length));
   const [score, setScore]           = useState(0);
   const [ptEarned, setPtEarned]     = useState(0);
@@ -109,8 +134,9 @@ export default function GamesScreen() {
     const dt = lastTsRef.current ? Math.min((ts - lastTsRef.current) / 16.67, 3) : 1;
     lastTsRef.current = ts;
 
-    // Rotate boss
-    bossAngleRef.current += bossSpeedRef.current * bossDirRef.current * dt;
+    // Rotate boss — sin-wave variation grows with level (gives unpredictable feel)
+    const sinVariation = Math.sin(ts / 600) * 0.5 * Math.min(levelRef.current / 3, 2);
+    bossAngleRef.current += (bossSpeedRef.current + sinVariation) * bossDirRef.current * dt;
     bossRotAnim.setValue(bossAngleRef.current);
 
     // Move flying knife upward
@@ -150,12 +176,14 @@ export default function GamesScreen() {
 
     if (collision) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      playSound('clash');
       endGame();
       return;
     }
 
     // Stick the knife
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    playSound('hit');
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
     const newKnife: StuckKnife = { id, localAngle: local };
     stuckRef.current = [...stuckRef.current, newKnife];
@@ -182,18 +210,27 @@ export default function GamesScreen() {
     levelRef.current = nextLevel;
     scoreRef.current += nextLevel * 5;
 
-    const cfg = getLevel(nextLevel);
-    bossSpeedRef.current = cfg.speedDeg;
-    bossDirRef.current   = cfg.dir as 1 | -1;
-    knivesLeftRef.current = cfg.knives;
-    stuckRef.current = [];
+    const cfg     = getLevel(nextLevel);
+    const isBoss  = isBossLevel(nextLevel);
+    const imgUrl  = isBoss ? randomBossImg() : TARGET_NORMAL;
+
+    bossSpeedRef.current   = cfg.speedDeg;
+    bossDirRef.current     = cfg.dir as 1 | -1;
+    knivesLeftRef.current  = isBoss ? cfg.knives + 2 : cfg.knives; // boss levels need 2 extra knives
+    stuckRef.current       = [];
+    isBossRef.current      = isBoss;
+    currentTargetRef.current = imgUrl;
 
     setLevel(nextLevel);
     setScore(scoreRef.current);
-    setBossIdx(b => (b + 1) % BOSS_IMGS.length);
-    setKnivesLeft(cfg.knives);
-    setTotalKnives(cfg.knives);
+    setIsBoss(isBoss);
+    setTargetImg(imgUrl);
+    setKnivesLeft(knivesLeftRef.current);
+    setTotalKnives(knivesLeftRef.current);
     setStuckKnives([]);
+
+    if (isBoss) playSound('boss');
+
     resetKnifePosition();
     rafRef.current = requestAnimationFrame(gameLoop);
   }
@@ -219,11 +256,14 @@ export default function GamesScreen() {
     knivesLeftRef.current  = cfg.knives;
     stuckRef.current       = [];
     lastTsRef.current      = 0;
+    isBossRef.current      = false;
+    currentTargetRef.current = TARGET_NORMAL;
 
     bossRotAnim.setValue(0);
     setLevel(1);
     setScore(0);
-    setBossIdx(0);
+    setIsBoss(false);
+    setTargetImg(TARGET_NORMAL);
     setKnivesLeft(cfg.knives);
     setTotalKnives(cfg.knives);
     setStuckKnives([]);
@@ -246,6 +286,7 @@ export default function GamesScreen() {
     if (phaseRef.current !== 'playing' || isFlyingRef.current) return;
     isFlyingRef.current = true;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('throw');
   }
 
   /* ── Token awarding ─────────────────────────────────── */
@@ -285,6 +326,36 @@ export default function GamesScreen() {
       setIsLoadingAd(false);
       awardPT(ptEarned);
     }
+  }
+
+  /* ── Sound loading ──────────────────────────────────── */
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+        for (const [key, uri] of Object.entries(SOUND_FILES)) {
+          const { sound } = await Audio.Sound.createAsync({ uri });
+          if (mounted) soundsRef.current[key] = sound;
+        }
+        soundsLoadedRef.current = true;
+      } catch (e) {
+        console.warn('[Sound] preload failed', e);
+      }
+    })();
+    return () => {
+      mounted = false;
+      Object.values(soundsRef.current).forEach(s => s.unloadAsync().catch(() => {}));
+    };
+  }, []);
+
+  async function playSound(key: string) {
+    try {
+      const s = soundsRef.current[key];
+      if (!s) return;
+      await s.setPositionAsync(0);
+      await s.playAsync();
+    } catch { /* silent – sound is a bonus, not critical */ }
   }
 
   /* ── Cleanup on unmount ─────────────────────────────── */
@@ -337,13 +408,18 @@ export default function GamesScreen() {
       style={styles.root}
       onPress={isTappable ? handleTap : undefined}
     >
-      {/* ── Background ──────────────────────────────────── */}
+      {/* ── Background — darker red tint on boss levels ─── */}
       <Image
         source={{ uri: `${BASE}bg_wood.png` }}
         style={StyleSheet.absoluteFill}
         resizeMode="cover"
       />
-      <View style={[StyleSheet.absoluteFill, styles.bgOverlay]} />
+      <View
+        style={[
+          StyleSheet.absoluteFill,
+          isBoss ? styles.bgOverlayBoss : styles.bgOverlay,
+        ]}
+      />
 
       {/* ── HUD ─────────────────────────────────────────── */}
       <View style={[styles.hud, { paddingTop: topPad + 8 }]}>
@@ -388,10 +464,10 @@ export default function GamesScreen() {
             bossAnimStyle,
           ]}
         >
-          {/* Boss image */}
+          {/* Target / boss image */}
           {(phase === 'playing' || phase === 'game_over' || phase === 'awarding') && (
             <Image
-              source={{ uri: BOSS_IMGS[bossIdx] }}
+              source={{ uri: targetImg }}
               style={{ width: BOSS_SIZE, height: BOSS_SIZE, borderRadius: BOSS_R }}
               resizeMode="cover"
             />
@@ -449,6 +525,26 @@ export default function GamesScreen() {
         </View>
       )}
 
+      {/* ── BOSS BADGE ──────────────────────────────────────── */}
+      {phase === 'playing' && isBoss && (
+        <View
+          style={{
+            position: 'absolute',
+            alignSelf: 'center',
+            top: BOSS_CY - BOSS_R - 36,
+            backgroundColor: 'rgba(200,0,0,0.85)',
+            paddingHorizontal: 14,
+            paddingVertical: 4,
+            borderRadius: 12,
+            pointerEvents: 'none',
+          }}
+        >
+          <Text style={{ fontFamily: 'Inter_700Bold', fontSize: 11, color: '#fff', letterSpacing: 2 }}>
+            ⚔ BOSS LEVEL
+          </Text>
+        </View>
+      )}
+
       {/* ── TAP HINT ─────────────────────────────────────── */}
       {phase === 'playing' && (
         <View
@@ -464,24 +560,22 @@ export default function GamesScreen() {
         </View>
       )}
 
-      {/* ── GAME OVER OVERLAY ────────────────────────────── */}
+      {/* ── GAME OVER OVERLAY — centered above nav bar ─── */}
       {(phase === 'game_over' || phase === 'awarding' || phase === 'reward') && (
-        <View style={[styles.overlayWrapper, { pointerEvents: 'box-none' }]}>
-          <LinearGradient
-            colors={['rgba(0,0,0,0)', 'rgba(8,4,0,0.96)', '#080400']}
-            style={[styles.overlayGrad, { paddingBottom: botPad + 24 }]}
-          >
+        <View style={[styles.overlayFull, { paddingBottom: botPad }]}>
+          <View style={styles.overlayCard}>
+
             {/* Awarding state */}
             {phase === 'awarding' && (
-              <View style={styles.overlayCard}>
+              <>
                 <ActivityIndicator size="large" color={Colors.gold} />
                 <Text style={styles.awardText}>Saving tokens...</Text>
-              </View>
+              </>
             )}
 
             {/* Game over — pick reward */}
             {phase === 'game_over' && (
-              <View style={styles.overlayCard}>
+              <>
                 <Text style={styles.gameOverTag}>GAME OVER</Text>
                 <Text style={styles.scoreBig}>{score}</Text>
                 <Text style={styles.scoreTag}>score · level {level}</Text>
@@ -515,12 +609,12 @@ export default function GamesScreen() {
                 <Pressable style={styles.ghostBtn} onPress={handleCollect}>
                   <Text style={styles.ghostBtnText}>Collect {ptEarned} PT (no ad)</Text>
                 </Pressable>
-              </View>
+              </>
             )}
 
             {/* Reward success */}
             {phase === 'reward' && (
-              <View style={styles.overlayCard}>
+              <>
                 <Ionicons name="checkmark-circle" size={52} color={Colors.success} />
                 <Text style={styles.rewardTitle}>+{ptEarned} PT Added!</Text>
                 <Text style={styles.rewardSub}>Tokens saved to your wallet</Text>
@@ -534,9 +628,10 @@ export default function GamesScreen() {
                     <Text style={styles.bigBtnText}>Play Again</Text>
                   </LinearGradient>
                 </Pressable>
-              </View>
+              </>
             )}
-          </LinearGradient>
+
+          </View>
         </View>
       )}
     </Pressable>
@@ -551,6 +646,9 @@ const styles = StyleSheet.create({
   },
   bgOverlay: {
     backgroundColor: 'rgba(0,0,0,0.30)',
+  },
+  bgOverlayBoss: {
+    backgroundColor: 'rgba(80,0,0,0.55)',
   },
 
   /* HUD */
@@ -694,19 +792,24 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  /* Game-over overlay */
-  overlayWrapper: {
+  /* Game-over overlay — centered */
+  overlayFull: {
     ...StyleSheet.absoluteFillObject,
-    justifyContent: 'flex-end',
-  },
-  overlayGrad: {
-    paddingTop: 80,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.82)',
     paddingHorizontal: 20,
   },
   overlayCard: {
+    width: '100%',
     alignItems: 'center',
-    gap: 12,
-    paddingBottom: 8,
+    gap: 14,
+    backgroundColor: 'rgba(20,8,0,0.92)',
+    borderRadius: 24,
+    paddingVertical: 28,
+    paddingHorizontal: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.18)',
   },
 
   /* Awarding */
