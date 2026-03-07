@@ -7,20 +7,14 @@ async function request<T = any>(
   body?: object,
 ): Promise<T> {
   const url = new URL(path, getApiUrl()).toString();
-  console.log('[API]', method, url);
-  try {
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-    return data as T;
-  } catch (err: any) {
-    console.error('[API] request failed:', method, url, err.message);
-    throw err;
-  }
+  const res = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data as T;
 }
 
 export const api = {

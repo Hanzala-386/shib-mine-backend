@@ -79,16 +79,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function syncWithServer(fbUser: FirebaseUser): Promise<void> {
     try {
-      console.log('[Auth] syncWithServer uid=', fbUser.uid?.slice(0,8), 'email=', fbUser.email);
       // First try to fetch existing user
-      let pb = await api.getUser(fbUser.uid).catch((e) => { console.log('[Auth] getUser failed:', e.message); return null; });
-      console.log('[Auth] getUser result:', pb ? 'found' : 'null', pb?.referralCode);
+      let pb = await api.getUser(fbUser.uid).catch(() => null);
 
       if (!pb) {
         // Check for pending signup data
         const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
         const pending = cached ? JSON.parse(cached) : {};
-        console.log('[Auth] calling syncUser for', fbUser.email);
         pb = await api.syncUser({
           firebaseUid: fbUser.uid,
           email: fbUser.email ?? '',
@@ -96,7 +93,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           referralCode: pending.referralCode || generateReferralCode(),
           referredBy: pending.referredBy || '',
         });
-        console.log('[Auth] syncUser result:', pb ? 'ok' : 'null', 'code=', pb?.referralCode);
         if (cached) await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
       }
 

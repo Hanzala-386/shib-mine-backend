@@ -33,7 +33,6 @@ export default function ProfileScreen() {
   const miningCount = pbUser?.totalClaims ?? 0;
   const gameWins = pbUser?.totalWins ?? 0;
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
-  console.log('[Profile] render referralCode=', JSON.stringify(referralCode), 'user=', user?.email, 'pbUser=', pbUser?.email);
 
   // Refresh on mount to ensure referral code and stats are up-to-date from server
   useEffect(() => {
