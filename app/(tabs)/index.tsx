@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, Alert, Platform,
-  Animated as RNAnimated,
+  Animated as RNAnimated, ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -61,12 +61,11 @@ export default function HomeScreen() {
   const {
     status, timeRemaining, progress, startMining, claimReward,
     shibReward, session, miningRatePerSec, displayedShibBalance, miningEntryCost,
-    activeBooster, activateBooster,
+    activeBooster, activateBooster, isClaiming,
   } = useMining();
   const { settings } = useAdmin();
   const [showAdLoader, setShowAdLoader] = useState(false);
   const [showLowPtWarning, setShowLowPtWarning] = useState(false);
-  const [isClaiming, setIsClaiming] = useState(false);
 
   // Booster countdown timer
   const [now, setNow] = useState(Date.now());
@@ -161,15 +160,10 @@ export default function HomeScreen() {
 
   async function handleClaim() {
     if (isClaiming) return;
-    setIsClaiming(true);
-    try {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      const reward = await claimReward();
-      if (reward > 0) {
-        Alert.alert('Reward Claimed!', `You earned ${formatShib(reward)} SHIB!`);
-      }
-    } finally {
-      setIsClaiming(false);
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    const reward = await claimReward();
+    if (reward > 0) {
+      Alert.alert('Reward Claimed!', `You earned ${formatShib(reward)} SHIB!`);
     }
   }
 
@@ -350,7 +344,9 @@ export default function HomeScreen() {
               disabled={isClaiming}
             >
               <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.actionGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-                <Ionicons name="checkmark-circle" size={22} color="#000" />
+                {isClaiming
+                  ? <ActivityIndicator size="small" color="#000" />
+                  : <Ionicons name="checkmark-circle" size={22} color="#000" />}
                 <Text style={styles.actionText}>{isClaiming ? 'Claiming...' : `Claim ~${formatShib(shibReward)} SHIB`}</Text>
               </LinearGradient>
             </Pressable>

@@ -60,7 +60,8 @@ export const api = {
   getActiveMining: (pbId: string) =>
     request<{ session: ActiveSession | null }>('GET', `/api/app/mine/active/${pbId}`),
 
-  claimMining: (payload: { sessionId: string; pbId: string; reward: number }) =>
+  // reward is calculated 100% server-side — only sessionId + pbId sent
+  claimMining: (payload: { sessionId: string; pbId: string }) =>
     request<{ success: boolean; newShibBalance: number; reward: number }>(
       'POST',
       '/api/app/mine/claim',

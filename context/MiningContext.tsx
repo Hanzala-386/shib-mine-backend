@@ -21,6 +21,7 @@ interface MiningContextValue {
   elapsedMs: number;
   progress: number;
   displayedShibBalance: number;
+  isClaiming: boolean;
   startMining: () => Promise<{ success: boolean; error?: string }>;
   claimReward: () => Promise<number>;
   shibReward: number;
@@ -49,6 +50,9 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shibIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionRef = useRef<MiningSession | null>(null);
+  // Hard mutex: survives re-renders; prevents any concurrent claim attempt
+  const isClaimingRef = useRef(false);
+  const [isClaiming, setIsClaiming] = useState(false);
 
   const uid = user?.uid;
   const pbId = pbUser?.pbId;
@@ -232,41 +236,37 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   }
 
   async function claimReward(): Promise<number> {
+    // Hard mutex: ref check is synchronous — survives rapid re-renders
+    if (isClaimingRef.current) return 0;
     const s = sessionRef.current;
-    if (!s || s.status !== 'ready_to_claim' || !pbId) return 0;
+    if (!s || s.status !== 'ready_to_claim' || !s.pbSessionId || !pbId) return 0;
 
-    const elapsed = Math.min(Date.now() - s.startTime, s.durationMs);
-    const reward = miningRatePerSec * s.multiplier * (elapsed / 1000);
+    isClaimingRef.current = true;
+    setIsClaiming(true);
 
-    try {
-      if (s.pbSessionId) {
-        const res = await api.claimMining({
-          sessionId: s.pbSessionId,
-          pbId,
-          reward,
-        });
-        await refreshBalance();
-        const reset: MiningSession = { ...s, status: 'idle' };
-        setSession(reset);
-        setTimeRemaining(0);
-        setElapsedMs(0);
-        setDisplayedShibBalance(0);
-        clearAllTimers();
-        if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(reset));
-        return res.reward;
-      }
-    } catch (e) {
-      console.warn('[Mining] claimReward failed', e);
-    }
-
+    // Optimistically transition UI to idle immediately — prevents phantom Claim button
     const reset: MiningSession = { ...s, status: 'idle' };
     setSession(reset);
+    clearAllTimers();
     setTimeRemaining(0);
     setElapsedMs(0);
     setDisplayedShibBalance(0);
-    clearAllTimers();
     if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(reset));
-    return reward;
+
+    try {
+      // Send ONLY sessionId + pbId — server calculates reward authoritatively
+      const res = await api.claimMining({ sessionId: s.pbSessionId, pbId });
+      await refreshBalance();
+      return res.reward;
+    } catch (e: any) {
+      console.warn('[Mining] claimReward server error:', e.message);
+      // Session stays idle — don't revert the UI; user should see idle state
+      // If it was already claimed (409), this is correct behavior
+      return 0;
+    } finally {
+      isClaimingRef.current = false;
+      setIsClaiming(false);
+    }
   }
 
   async function activateBooster(multiplier: number): Promise<{ success: boolean; error?: string }> {
@@ -303,13 +303,13 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({
     session, status, timeRemaining, elapsedMs, progress,
-    displayedShibBalance,
+    displayedShibBalance, isClaiming,
     startMining, claimReward, shibReward,
     miningRatePerSec, setMiningRatePerSec,
     durationMinutes, setDurationMinutes,
     miningEntryCost,
     activeBooster, activateBooster,
-  }), [session, status, timeRemaining, elapsedMs, progress, displayedShibBalance, shibReward, miningRatePerSec, durationMinutes, miningEntryCost, activeBooster, activateBooster]);
+  }), [session, status, timeRemaining, elapsedMs, progress, displayedShibBalance, isClaiming, shibReward, miningRatePerSec, durationMinutes, miningEntryCost, activeBooster, activateBooster]);
 
   return <MiningContext.Provider value={value}>{children}</MiningContext.Provider>;
 }

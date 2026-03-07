@@ -662,13 +662,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   );
 
   // ── Mining: Claim ─────────────────────────────────────────────────────────
+  // 100% server-authoritative. Client sends only sessionId + pbId.
+  // Server validates: session ownership, not-yet-claimed, time elapsed.
+  // Reward is calculated exclusively server-side — no client input trusted.
   app.post("/api/app/mine/claim", async (req: Request, res: Response) => {
     try {
-      const { sessionId, pbId, reward } = req.body;
-      if (!sessionId || !pbId || reward === undefined)
-        return res.status(400).json({ error: "sessionId, pbId, reward required" });
+      const { sessionId, pbId } = req.body;
+      if (!sessionId || !pbId)
+        return res.status(400).json({ error: "sessionId and pbId required" });
 
-      // Fetch session and settings
+      // Fetch session and settings in parallel
       const [session, settings] = await Promise.all([
         pbGet(`/api/collections/mining_sessions/records/${sessionId}`),
         fetchSettings(),
@@ -677,29 +680,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (session.code) return res.status(404).json({ error: "Session not found" });
       if (!settings) return res.status(503).json({ error: "Settings unavailable" });
 
-      // Guard: prevent double-claim — one session = one claim only
+      // Guard 1: session must belong to this user
+      if (session.user !== pbId) {
+        return res.status(403).json({ error: "Session does not belong to this user" });
+      }
+
+      // Guard 2: one session = one claim only
       if (session.claimed_amount && session.claimed_amount > 0) {
         return res.status(409).json({ error: "Session already claimed" });
       }
 
-      // Server-side reward calculation
-      const boosterMultiplier = session.booster_multiplier || 1;
-      const miningRate = settings.mining_rate_per_sec || 0.01736;
+      // Guard 3: mining time must have actually elapsed
+      const startMs = new Date(session.start_time.replace(" ", "T") + "Z").getTime();
       const durationSec = (settings.mining_duration_minutes || 60) * 60;
-      const serverReward = miningRate * durationSec * boosterMultiplier;
-
-      // Verify within 5% tolerance
-      const diff = Math.abs(serverReward - reward);
-      const tolerance = serverReward * 0.05;
-      if (diff > tolerance) {
-        return res.status(400).json({ error: "Claim verification failed" });
+      const elapsed = Date.now() - startMs;
+      if (elapsed < durationSec * 1000) {
+        return res.status(400).json({ error: "Mining session not complete yet" });
       }
 
-      // Mark session claimed
-      await pbPatch(`/api/collections/mining_sessions/records/${sessionId}`, {
+      // Server-side reward — 100% authoritative, no client value accepted
+      const boosterMultiplier = session.booster_multiplier || 1;
+      const miningRate = settings.mining_rate_per_sec || 0.01736;
+      const serverReward = miningRate * durationSec * boosterMultiplier;
+
+      // Mark session claimed FIRST — any duplicate request now hits Guard 2
+      const claimPatch = await pbPatch(`/api/collections/mining_sessions/records/${sessionId}`, {
         claimed_amount: serverReward,
         is_verified: true,
       });
+      if (claimPatch.code) {
+        return res.status(500).json({ error: "Failed to mark session as claimed" });
+      }
 
       // Fetch user, update balance
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
