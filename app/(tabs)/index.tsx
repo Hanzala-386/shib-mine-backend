@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, Alert, Platform,
   Animated as RNAnimated,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, {
@@ -54,14 +55,24 @@ function useRollingNumber(target: number, duration = 600) {
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { user, pbUser } = useAuth();
-  const { powerTokens, shibBalance, spendPowerTokens } = useWallet();
+  const { powerTokens, shibBalance } = useWallet();
   const {
     status, timeRemaining, progress, startMining, claimReward,
     shibReward, session, miningRatePerSec, displayedShibBalance, miningEntryCost,
+    activeBooster, activateBooster,
   } = useMining();
   const { settings } = useAdmin();
   const [showAdLoader, setShowAdLoader] = useState(false);
+  const [showLowPtWarning, setShowLowPtWarning] = useState(false);
+
+  // Booster countdown timer
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const displayedPT = useRollingNumber(powerTokens, 400);
 
@@ -120,30 +131,23 @@ export default function HomeScreen() {
   }));
   const glowStyle = useAnimatedStyle(() => ({ opacity: glowOpacity.value }));
 
-  async function handleStartMining(multiplier = 1, boosterCost = 0) {
+  async function handleStartMining() {
     if (!pbUser) {
       Alert.alert('Not Ready', 'Account sync in progress. Please wait a moment.');
       return;
     }
-    // Check user has enough PT for entry cost + booster cost
-    const totalCost = miningEntryCost + boosterCost;
-    if (powerTokens < totalCost) {
-      Alert.alert(
-        'Insufficient Power Tokens',
-        `You need ${totalCost} PT to start mining${boosterCost > 0 ? ` (${miningEntryCost} entry + ${boosterCost} booster)` : ''}.`,
-      );
+
+    if (powerTokens < miningEntryCost) {
+      setShowLowPtWarning(true);
       return;
     }
-    if (boosterCost > 0) {
-      const spent = await spendPowerTokens(boosterCost);
-      if (!spent) return;
-    }
+    setShowLowPtWarning(false);
 
     setShowAdLoader(true);
     await adService.showUnityInterstitial(
       async () => {
         setShowAdLoader(false);
-        const result = await startMining(multiplier);
+        const result = await startMining();
         if (result.success) {
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } else {
@@ -163,14 +167,40 @@ export default function HomeScreen() {
   }
 
   async function handleBooster(b: typeof BOOSTERS[0]) {
-    Alert.alert(
-      `${b.label} Speed Boost`,
-      `Spend ${b.cost} Power Tokens to mine at ${b.label} speed?\n\nReward: ~${formatShib(shibReward * b.multiplier)} SHIB`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Start', onPress: () => handleStartMining(b.multiplier, b.cost) },
-      ]
-    );
+    if (powerTokens < b.cost) {
+      Alert.alert('Insufficient Power Tokens', `You need ${b.cost} PT to activate this booster.`);
+      return;
+    }
+
+    const isActive = activeBooster && activeBooster.expiresAt > now;
+    const isSame = isActive && activeBooster.multiplier === b.multiplier;
+
+    let title = `${b.label} Speed Boost`;
+    let msg = `Spend ${b.cost} Power Tokens to activate ${b.label} speed for 1 hour?`;
+
+    if (isActive) {
+      if (isSame) {
+        msg = `You already have ${b.label} active. Activating again will reset the 1 hour timer. Spend ${b.cost} PT?`;
+      } else {
+        const timeLeft = Math.max(0, activeBooster.expiresAt - now);
+        msg = `You have ${activeBooster.multiplier}x active for ${formatTime(timeLeft)}. Replace it with ${b.label} for ${b.cost} PT?`;
+      }
+    }
+
+    Alert.alert(title, msg, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Activate',
+        onPress: async () => {
+          const res = await activateBooster(b.multiplier);
+          if (res.success) {
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          } else {
+            Alert.alert('Error', res.error || 'Failed to activate booster.');
+          }
+        }
+      },
+    ]);
   }
 
   return (
@@ -272,8 +302,23 @@ export default function HomeScreen() {
 
         {status === 'idle' && (
           <Animated.View entering={FadeInDown.delay(300).springify()} style={styles.actionsArea}>
+            {showLowPtWarning && (
+              <Animated.View entering={FadeInDown.springify()} style={styles.warningCard}>
+                <View style={styles.warningHeader}>
+                  <MaterialCommunityIcons name="lightning-bolt" size={18} color={Colors.neonOrange} />
+                  <Text style={styles.warningTitle}>Not enough Power Tokens!</Text>
+                </View>
+                <Text style={styles.warningText}>Play games to win free PT and start mining.</Text>
+                <Pressable
+                  style={({ pressed }) => [styles.warningBtn, { opacity: pressed ? 0.8 : 1 }]}
+                  onPress={() => router.push('/(tabs)/games')}
+                >
+                  <Text style={styles.warningBtnText}>Play Games →</Text>
+                </Pressable>
+              </Animated.View>
+            )}
             <Pressable
-              style={({ pressed }) => [styles.actionBtn, { opacity: pressed ? 0.85 : 1 }]}
+              style={({ pressed }) => [styles.actionBtn, { opacity: (pressed || showAdLoader) ? 0.85 : 1 }]}
               onPress={() => handleStartMining()}
               disabled={showAdLoader}
             >
@@ -304,21 +349,36 @@ export default function HomeScreen() {
         <Animated.View entering={FadeInDown.delay(350).springify()} style={styles.boostersSection}>
           <Text style={styles.sectionTitle}>Speed Boosters</Text>
           <View style={styles.boostersGrid}>
-            {BOOSTERS.map((b) => (
-              <Pressable
-                key={b.label}
-                style={({ pressed }) => [
-                  styles.boosterCard,
-                  { opacity: (pressed || status !== 'idle') ? 0.6 : 1, borderColor: b.color + '35' },
-                ]}
-                onPress={() => handleBooster(b)}
-                disabled={status !== 'idle'}
-              >
-                <Text style={[styles.boosterLabel, { color: b.color }]}>{b.label}</Text>
-                <MaterialCommunityIcons name="lightning-bolt" size={16} color={b.color} />
-                <Text style={styles.boosterCost}>{b.cost} PT</Text>
-              </Pressable>
-            ))}
+            {BOOSTERS.map((b) => {
+              const isActive = activeBooster && activeBooster.multiplier === b.multiplier && activeBooster.expiresAt > now;
+              const anyActive = activeBooster && activeBooster.expiresAt > now;
+              const timeLeft = isActive ? Math.max(0, activeBooster.expiresAt - now) : 0;
+
+              return (
+                <Pressable
+                  key={b.label}
+                  style={({ pressed }) => [
+                    styles.boosterCard,
+                    {
+                      opacity: pressed ? 0.7 : 1,
+                      borderColor: isActive ? b.color : anyActive ? Colors.darkBorder : b.color + '35',
+                      backgroundColor: isActive ? b.color + '15' : Colors.darkCard,
+                    },
+                  ]}
+                  onPress={() => handleBooster(b)}
+                >
+                  <Text style={[styles.boosterLabel, { color: b.color }]}>{b.label}</Text>
+                  {isActive ? (
+                    <Text style={[styles.boosterTimer, { color: b.color }]}>{formatTime(timeLeft).substring(3)}</Text>
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons name="lightning-bolt" size={16} color={b.color} />
+                      <Text style={styles.boosterCost}>{b.cost} PT</Text>
+                    </>
+                  )}
+                </Pressable>
+              );
+            })}
           </View>
         </Animated.View>
 
@@ -385,6 +445,21 @@ const styles = StyleSheet.create({
   actionText: { fontFamily: 'Inter_700Bold', fontSize: 17, color: '#000' },
   feeTag: { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3, flexDirection: 'row', alignItems: 'center', gap: 2 },
   feeText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#000' },
+  warningCard: {
+    backgroundColor: 'rgba(255,107,0,0.1)',
+    borderRadius: 16,
+    padding: 16,
+    width: '100%',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,107,0,0.3)',
+    alignItems: 'center',
+  },
+  warningHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
+  warningTitle: { fontFamily: 'Inter_700Bold', fontSize: 14, color: Colors.neonOrange },
+  warningText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, textAlign: 'center', marginBottom: 12 },
+  warningBtn: { backgroundColor: Colors.neonOrange, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
+  warningBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#000' },
   rewardPreview: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, marginTop: 8 },
   boostersSection: { marginBottom: 22 },
   sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 },
@@ -392,6 +467,7 @@ const styles = StyleSheet.create({
   boosterCard: { flex: 1, backgroundColor: Colors.darkCard, borderRadius: 14, padding: 12, alignItems: 'center', gap: 4, borderWidth: 1 },
   boosterLabel: { fontFamily: 'Inter_700Bold', fontSize: 17 },
   boosterCost: { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted },
+  boosterTimer: { fontFamily: 'Inter_700Bold', fontSize: 14 },
   statsRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
   statCard: { flex: 1, backgroundColor: Colors.darkCard, borderRadius: 16, padding: 16, alignItems: 'center', gap: 6, borderWidth: 1, borderColor: Colors.darkBorder },
   statValue: { fontFamily: 'Inter_700Bold', fontSize: 18, color: Colors.textPrimary },

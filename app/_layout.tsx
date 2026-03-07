@@ -22,11 +22,11 @@ import Colors from "@/constants/colors";
 SplashScreen.preventAutoHideAsync();
 
 function RootLayoutNav() {
-  const { user, firebaseUser, isLoading } = useAuth();
+  const { user, firebaseUser, isLoading, pbUser } = useAuth();
   if (isLoading) return null;
 
-  const isVerified = user && firebaseUser?.emailVerified;
-  const hasPendingVerification = firebaseUser && !firebaseUser.emailVerified;
+  const isVerified = user && pbUser?.is_verified;
+  const hasPendingVerification = firebaseUser && !pbUser?.is_verified;
 
   return (
     <Stack screenOptions={{ headerShown: false }}>

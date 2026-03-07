@@ -21,7 +21,7 @@ interface MiningContextValue {
   elapsedMs: number;
   progress: number;
   displayedShibBalance: number;
-  startMining: (multiplier?: number) => Promise<{ success: boolean; error?: string }>;
+  startMining: () => Promise<{ success: boolean; error?: string }>;
   claimReward: () => Promise<number>;
   shibReward: number;
   miningRatePerSec: number;
@@ -29,6 +29,8 @@ interface MiningContextValue {
   durationMinutes: number;
   setDurationMinutes: (m: number) => void;
   miningEntryCost: number;
+  activeBooster: { multiplier: number; expiresAt: number } | null;
+  activateBooster: (multiplier: number) => Promise<{ success: boolean; error?: string }>;
 }
 
 const MiningContext = createContext<MiningContextValue | null>(null);
@@ -42,6 +44,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [displayedShibBalance, setDisplayedShibBalance] = useState(0);
   const [miningEntryCost, setMiningEntryCost] = useState(24);
+  const [activeBooster, setActiveBooster] = useState<{ multiplier: number; expiresAt: number } | null>(null);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shibIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -65,11 +68,31 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (uid) loadSession();
+    if (uid) {
+      loadSession();
+      loadActiveBooster();
+    }
     return () => {
       clearAllTimers();
     };
   }, [uid, pbId]);
+
+  async function loadActiveBooster() {
+    if (!pbId) return;
+    try {
+      const res = await api.getActiveBooster(pbId);
+      if (res.expiresAt) {
+        setActiveBooster({
+          multiplier: res.multiplier,
+          expiresAt: new Date(res.expiresAt).getTime(),
+        });
+      } else {
+        setActiveBooster(null);
+      }
+    } catch (e) {
+      console.warn('[Mining] loadActiveBooster error', e);
+    }
+  }
 
   function clearAllTimers() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
@@ -161,8 +184,12 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     }, 100);
   }
 
-  async function startMining(multiplier = 1): Promise<{ success: boolean; error?: string }> {
+  async function startMining(): Promise<{ success: boolean; error?: string }> {
     if (!pbId) return { success: false, error: 'Account not ready. Please wait.' };
+
+    const multiplier = activeBooster && activeBooster.expiresAt > Date.now() 
+      ? activeBooster.multiplier 
+      : 1;
 
     try {
       const res = await api.startMining({ pbId, multiplier });
@@ -235,6 +262,25 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     return reward;
   }
 
+  async function activateBooster(multiplier: number): Promise<{ success: boolean; error?: string }> {
+    if (!pbId) return { success: false, error: 'Account not ready. Please wait.' };
+    try {
+      const res = await api.activateBooster({ pbId, multiplier });
+      if (res.success) {
+        setActiveBooster({
+          multiplier: res.multiplier,
+          expiresAt: new Date(res.expiresAt).getTime(),
+        });
+        await refreshBalance();
+        return { success: true };
+      }
+      return { success: false, error: 'Failed to activate booster' };
+    } catch (e: any) {
+      console.warn('[Mining] activateBooster failed', e);
+      return { success: false, error: e.message || 'Failed to activate booster' };
+    }
+  }
+
   const status: MiningStatus = session?.status ?? 'idle';
   const progress =
     session?.status === 'mining'
@@ -255,7 +301,8 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     miningRatePerSec, setMiningRatePerSec,
     durationMinutes, setDurationMinutes,
     miningEntryCost,
-  }), [session, status, timeRemaining, elapsedMs, progress, displayedShibBalance, shibReward, miningRatePerSec, durationMinutes, miningEntryCost]);
+    activeBooster, activateBooster,
+  }), [session, status, timeRemaining, elapsedMs, progress, displayedShibBalance, shibReward, miningRatePerSec, durationMinutes, miningEntryCost, activeBooster, activateBooster]);
 
   return <MiningContext.Provider value={value}>{children}</MiningContext.Provider>;
 }

@@ -5,8 +5,8 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   firebaseSignOut,
-  sendEmailVerification,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   type FirebaseUser,
 } from '@/lib/firebase';
 import { api, type PBUser } from '@/lib/api';
@@ -29,13 +29,15 @@ interface AuthContextValue {
   firebaseUser: FirebaseUser | null;
   isLoading: boolean;
   isAdmin: boolean;
-  signUp: (email: string, password: string, displayName: string, referredBy?: string) => Promise<{ needsVerification: boolean }>;
-  signIn: (email: string, password: string) => Promise<{ needsVerification: boolean }>;
+  pbUser: PBUser | null;
+  signUp: (email: string, password: string, displayName: string, referredBy?: string) => Promise<{ needsVerification: boolean; pendingEmail: string }>;
+  signIn: (email: string, password: string) => Promise<{ needsVerification: boolean; pendingEmail?: string }>;
   signOut: () => Promise<void>;
-  resendVerification: () => Promise<void>;
+  verifyOtp: (email: string, code: string) => Promise<{ success: boolean; error?: string }>;
+  resendOtp: (email: string) => Promise<void>;
+  forgotPassword: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
   refreshBalance: () => Promise<void>;
-  pbUser: PBUser | null;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -53,7 +55,7 @@ function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
     referralCode: u.referralCode,
     referredBy: u.referredBy || undefined,
     createdAt: new Date(u.created).getTime(),
-    emailVerified: fbUser.emailVerified,
+    emailVerified: fbUser.emailVerified || u.is_verified,
   };
 }
 
@@ -66,8 +68,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       setFirebaseUser(fbUser);
-      if (fbUser && fbUser.emailVerified) {
-        await syncWithServer(fbUser);
+      if (fbUser) {
+        try {
+          const pb = await api.getUser(fbUser.uid);
+          if (pb?.is_verified) {
+            await syncWithServer(fbUser);
+          } else {
+            setUser(null);
+            setPbUser(pb || null);
+          }
+        } catch (e) {
+          setUser(null);
+          setPbUser(null);
+        }
       } else {
         setUser(null);
         setPbUser(null);
@@ -140,7 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     password: string,
     displayName: string,
     referredBy?: string,
-  ): Promise<{ needsVerification: boolean }> {
+  ): Promise<{ needsVerification: boolean; pendingEmail: string }> {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
     const pending = {
       displayName,
@@ -148,18 +161,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       referredBy: referredBy?.toUpperCase() || '',
     };
     await AsyncStorage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify(pending));
-    await sendEmailVerification(cred.user);
+    await api.sendOtp(email);
     setFirebaseUser(cred.user);
-    return { needsVerification: true };
+    return { needsVerification: true, pendingEmail: email };
   }
 
-  async function signIn(email: string, password: string): Promise<{ needsVerification: boolean }> {
+  async function signIn(email: string, password: string): Promise<{ needsVerification: boolean; pendingEmail?: string }> {
     const cred = await signInWithEmailAndPassword(auth, email, password);
-    if (!cred.user.emailVerified) {
-      setFirebaseUser(cred.user);
-      return { needsVerification: true };
-    }
     setFirebaseUser(cred.user);
+    try {
+      const pb = await api.getUser(cred.user.uid);
+      if (!pb.is_verified) {
+        await api.sendOtp(email);
+        return { needsVerification: true, pendingEmail: email };
+      }
+    } catch (e) {
+      // If user not in PB yet, it needs verification
+      await api.sendOtp(email);
+      return { needsVerification: true, pendingEmail: email };
+    }
+    
     await syncWithServer(cred.user);
     return { needsVerification: false };
   }
@@ -171,8 +192,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setFirebaseUser(null);
   }
 
-  async function resendVerification() {
-    if (firebaseUser) await sendEmailVerification(firebaseUser);
+  async function verifyOtp(email: string, code: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      await api.verifyOtp(email, code);
+      if (firebaseUser) {
+        await syncWithServer(firebaseUser);
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Invalid code' };
+    }
+  }
+
+  async function resendOtp(email: string) {
+    await api.sendOtp(email);
+  }
+
+  async function forgotPassword(email: string) {
+    await sendPasswordResetEmail(auth, email);
   }
 
   async function refreshUser() {
@@ -220,7 +257,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({
     user, firebaseUser, isLoading, isAdmin, pbUser,
-    signUp, signIn, signOut, resendVerification, refreshUser, refreshBalance,
+    signUp, signIn, signOut,
+    refreshUser, refreshBalance, verifyOtp, resendOtp, forgotPassword,
   }), [user, firebaseUser, isLoading, isAdmin, pbUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

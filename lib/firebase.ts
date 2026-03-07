@@ -9,6 +9,7 @@ import {
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
   sendEmailVerification,
+  sendPasswordResetEmail,
   onAuthStateChanged,
   type User as FirebaseUser,
 } from 'firebase/auth';
@@ -59,6 +60,7 @@ export {
   signInWithEmailAndPassword,
   firebaseSignOut,
   sendEmailVerification,
+  sendPasswordResetEmail,
   onAuthStateChanged,
   type FirebaseUser,
 };

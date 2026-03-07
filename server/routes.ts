@@ -2,8 +2,44 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "node:http";
 import https from "node:https";
 import http from "node:http";
+import nodemailer from "nodemailer";
 
 const PB_URL = "https://api.webcod.in";
+
+// ─── Temp OTP storage (for new users) ─────────────────────────────────────────
+const tempOtpMap = new Map<string, { code: string; expires: number }>();
+// Tracks emails that passed OTP but haven't been synced to PB yet
+const verifiedEmails = new Set<string>();
+
+// ─── Mailer setup ────────────────────────────────────────────────────────────
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: parseInt(process.env.SMTP_PORT || "587"),
+  secure: process.env.SMTP_SECURE === "true",
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
+async function sendEmail(to: string, code: string) {
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    try {
+      await transporter.sendMail({
+        from: `"Shiba Miner" <${process.env.SMTP_USER}>`,
+        to,
+        subject: "Verification Code",
+        text: `Your verification code is: ${code}`,
+        html: `<b>Your verification code is: ${code}</b>`,
+      });
+    } catch (e) {
+      console.error("[OTP] Failed to send email via SMTP:", e);
+      console.log(`[OTP] code for ${to}: ${code}`);
+    }
+  } else {
+    console.log(`[OTP] code for ${to}: ${code}`);
+  }
+}
 
 // ─── PocketBase HTTP helper ────────────────────────────────────────────────
 function pbHttp(
@@ -201,6 +237,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Create PB user (using PB built-in auth)
       const code = referralCode || generateReferralCode();
       const pbPassword = `SHIB_${firebaseUid}_SECURE`;
+      // Check if email was already OTP-verified (temp map flow for brand new users)
+      const alreadyVerified = verifiedEmails.has(email);
+      if (alreadyVerified) verifiedEmails.delete(email);
       const created = await pbPost("/api/collections/users/records", {
         email,
         password: pbPassword,
@@ -214,6 +253,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         power_tokens: 10,
         total_claims: 0,
         total_wins: 0,
+        is_verified: alreadyVerified,
       });
 
       if (created.code) {
@@ -237,6 +277,99 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error("[/api/app/auth/sync]", e.message);
       res.status(500).json({ error: "Sync failed" });
+    }
+  });
+
+  // ── OTP: Send ─────────────────────────────────────────────────────────────
+  app.post("/api/app/auth/send-otp", async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+      if (!email) return res.status(400).json({ error: "Email required" });
+
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const expires = Date.now() + 10 * 60 * 1000;
+
+      // Find user in PB
+      const r = await pbGet(
+        `/api/collections/users/records?filter=email="${email}"&perPage=1`,
+      );
+      const u = r.items?.[0];
+
+      if (u) {
+        const updated = await pbPatch(`/api/collections/users/records/${u.id}`, {
+          otp_code: code,
+          otp_expires: expires.toString(),
+        });
+        if (updated.code) return res.status(400).json({ error: updated.message });
+      } else {
+        // Temp storage for new users not yet synced
+        tempOtpMap.set(email, { code, expires });
+      }
+
+      await sendEmail(email, code);
+      res.json({ success: true, email });
+    } catch (e: any) {
+      console.error("[/api/app/auth/send-otp]", e.message);
+      res.status(500).json({ error: "Failed to send OTP" });
+    }
+  });
+
+  // ── OTP: Verify ──────────────────────────────────────────────────────────
+  app.post("/api/app/auth/verify-otp", async (req: Request, res: Response) => {
+    try {
+      const { email, otp } = req.body;
+      if (!email || !otp)
+        return res.status(400).json({ error: "Email and OTP required" });
+
+      let storedCode: string | undefined;
+      let storedExpires: number | undefined;
+      let pbUserId: string | undefined;
+
+      // Check PB
+      const r = await pbGet(
+        `/api/collections/users/records?filter=email="${email}"&perPage=1`,
+      );
+      const u = r.items?.[0];
+
+      if (u) {
+        storedCode = u.otp_code;
+        storedExpires = parseInt(u.otp_expires || "0");
+        pbUserId = u.id;
+      } else {
+        // Check temp map
+        const temp = tempOtpMap.get(email);
+        if (temp) {
+          storedCode = temp.code;
+          storedExpires = temp.expires;
+        }
+      }
+
+      if (!storedCode || !storedExpires || Date.now() > storedExpires) {
+        return res.status(400).json({ error: "Invalid or expired code" });
+      }
+
+      if (storedCode !== otp) {
+        return res.status(400).json({ error: "Invalid or expired code" });
+      }
+
+      // Valid OTP
+      if (pbUserId) {
+        await pbPatch(`/api/collections/users/records/${pbUserId}`, {
+          is_verified: true,
+          otp_code: "",
+        });
+      }
+      // Track verified status for new users not yet in PB
+      // syncUser will pick this up and create the user with is_verified: true
+      if (!pbUserId) {
+        verifiedEmails.add(email);
+      }
+      tempOtpMap.delete(email);
+
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/app/auth/verify-otp]", e.message);
+      res.status(500).json({ error: "Verification failed" });
     }
   });
 
@@ -289,10 +422,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
     },
   );
 
+  // ── Boosters: Activate ────────────────────────────────────────────────────
+  app.post("/api/app/boosters/activate", async (req: Request, res: Response) => {
+    try {
+      const { pbId, multiplier } = req.body;
+      if (!pbId || !multiplier)
+        return res.status(400).json({ error: "pbId and multiplier required" });
+
+      const [user, settings] = await Promise.all([
+        pbGet(`/api/collections/users/records/${pbId}`),
+        fetchSettings(),
+      ]);
+
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      if (!settings) return res.status(503).json({ error: "Settings unavailable" });
+
+      // Check for existing active booster
+      if (user.booster_expires) {
+        const expires = parseInt(user.booster_expires);
+        if (expires > Date.now()) {
+          return res.status(400).json({ error: "A booster is already active" });
+        }
+      }
+
+      // Determine cost
+      const costKey = `boost_${multiplier}x_cost`;
+      const cost = settings[costKey];
+      if (cost === undefined)
+        return res.status(400).json({ error: "Invalid multiplier" });
+
+      if ((user.power_tokens || 0) < cost) {
+        return res.status(400).json({ error: "Not enough Power Tokens" });
+      }
+
+      const expiresAt = (Date.now() + 3600000).toString();
+      const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens: user.power_tokens - cost,
+        active_booster_multiplier: multiplier,
+        booster_expires: expiresAt,
+      });
+
+      if (updated.code) return res.status(400).json({ error: updated.message });
+
+      res.json({
+        success: true,
+        multiplier,
+        expiresAt,
+        newPowerTokens: user.power_tokens - cost,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/boosters/activate]", e.message);
+      res.status(500).json({ error: "Failed to activate booster" });
+    }
+  });
+
+  // ── Boosters: Get active ──────────────────────────────────────────────────
+  app.get(
+    "/api/app/boosters/active/:pbId",
+    async (req: Request, res: Response) => {
+      try {
+        const { pbId } = req.params;
+        const user = await pbGet(`/api/collections/users/records/${pbId}`);
+        if (user.code) return res.status(404).json({ error: "User not found" });
+
+        const expires = user.booster_expires ? parseInt(user.booster_expires) : 0;
+        if (expires > Date.now()) {
+          return res.json({
+            multiplier: user.active_booster_multiplier || 1,
+            expiresAt: user.booster_expires,
+          });
+        }
+
+        // Auto-clear expired booster fields if they were set
+        if (user.active_booster_multiplier !== 1 || user.booster_expires) {
+          await pbPatch(`/api/collections/users/records/${pbId}`, {
+            active_booster_multiplier: 1,
+            booster_expires: "",
+          });
+        }
+
+        res.json({ multiplier: 1, expiresAt: null });
+      } catch (e: any) {
+        console.error("[/api/app/boosters/active]", e.message);
+        res.status(500).json({ error: "Failed to fetch booster" });
+      }
+    },
+  );
+
   // ── Mining: Start ─────────────────────────────────────────────────────────
   app.post("/api/app/mine/start", async (req: Request, res: Response) => {
     try {
-      const { pbId, multiplier } = req.body;
+      const { pbId } = req.body;
       if (!pbId)
         return res.status(400).json({ error: "pbId required" });
 
@@ -304,6 +524,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (userRecord.code)
         return res.status(404).json({ error: "User not found" });
+
+      // Calculate effective booster multiplier
+      let activeMultiplier = 1;
+      if (userRecord.booster_expires) {
+        const expires = parseInt(userRecord.booster_expires);
+        if (expires > Date.now()) {
+          activeMultiplier = userRecord.active_booster_multiplier || 1;
+        }
+      }
 
       // Deduct power_token_per_click as mining entry fee
       const ptCost = settings?.power_token_per_click || 24;
@@ -336,7 +565,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const rate = settings?.mining_rate_per_sec || 0.01736;
       const dur = settings?.mining_duration_minutes || 60;
-      const expectedReward = rate * dur * 60 * (multiplier || 1);
+      const expectedReward = rate * dur * 60 * activeMultiplier;
 
       const session = await pbPost("/api/collections/mining_sessions/records", {
         user: pbId,
@@ -344,6 +573,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         claimed_amount: 0,
         is_verified: false,
         ip_address: String(req.ip || req.socket?.remoteAddress || ""),
+        booster_multiplier: activeMultiplier,
       });
 
       if (session.code)
@@ -354,7 +584,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         pbId,
         startTime: session.start_time,
         durationMs: dur * 60 * 1000,
-        multiplier: multiplier || 1,
+        multiplier: activeMultiplier,
         expectedReward,
         miningRatePerSec: rate,
         ptDeducted: ptCost,
@@ -391,6 +621,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             startTime: s.start_time,
             durationMs: dur,
             status,
+            multiplier: s.booster_multiplier || 1,
           },
         });
       } catch (e: any) {
@@ -407,9 +638,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!sessionId || !pbId || reward === undefined)
         return res.status(400).json({ error: "sessionId, pbId, reward required" });
 
+      // Fetch session and settings
+      const [session, settings] = await Promise.all([
+        pbGet(`/api/collections/mining_sessions/records/${sessionId}`),
+        fetchSettings(),
+      ]);
+
+      if (session.code) return res.status(404).json({ error: "Session not found" });
+      if (!settings) return res.status(503).json({ error: "Settings unavailable" });
+
+      // Server-side reward calculation
+      const boosterMultiplier = session.booster_multiplier || 1;
+      const miningRate = settings.mining_rate_per_sec || 0.01736;
+      const durationSec = (settings.mining_duration_minutes || 60) * 60;
+      const serverReward = miningRate * durationSec * boosterMultiplier;
+
+      // Verify within 5% tolerance
+      const diff = Math.abs(serverReward - reward);
+      const tolerance = serverReward * 0.05;
+      if (diff > tolerance) {
+        return res.status(400).json({ error: "Claim verification failed" });
+      }
+
       // Mark session claimed
       await pbPatch(`/api/collections/mining_sessions/records/${sessionId}`, {
-        claimed_amount: reward,
+        claimed_amount: serverReward,
         is_verified: true,
       });
 
@@ -418,7 +671,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (user.code)
         return res.status(404).json({ error: "User not found" });
 
-      const newShib = (user.shib_balance || 0) + reward;
+      const newShib = (user.shib_balance || 0) + serverReward;
       const newClaims = (user.total_claims || 0) + 1;
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         shib_balance: newShib,
@@ -432,7 +685,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ).then(async (refRes) => {
           const referrer = refRes.items?.[0];
           if (referrer) {
-            const commission = Math.round(reward * 0.1);
+            const commission = Math.round(serverReward * 0.1);
             await pbPatch(`/api/collections/users/records/${referrer.id}`, {
               shib_balance: (referrer.shib_balance || 0) + commission,
             });
@@ -440,7 +693,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }).catch(() => { });
       }
 
-      res.json({ success: true, newShibBalance: newShib, reward });
+      res.json({ success: true, newShibBalance: newShib, reward: serverReward });
     } catch (e: any) {
       console.error("[/api/app/mine/claim]", e.message);
       res.status(500).json({ error: "Failed to claim reward" });
@@ -806,6 +1059,10 @@ function formatUser(u: any) {
     powerTokens: u.power_tokens || 10,
     totalClaims: u.total_claims || 0,
     totalWins: u.total_wins || 0,
+    is_verified: !!u.is_verified,
+    isVerified: !!u.is_verified,
+    activeBoosterMultiplier: u.active_booster_multiplier || 1,
+    boosterExpires: u.booster_expires || "",
     created: u.created,
   };
 }

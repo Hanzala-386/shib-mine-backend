@@ -22,6 +22,11 @@ export const api = {
   getSettings: () => request<AppSettings>('GET', '/api/app/settings'),
 
   // ── Auth ──────────────────────────────────────────────────────────────
+  sendOtp: (email: string) => request<{ success: boolean }>('POST', '/api/app/auth/send-otp', { email }),
+
+  verifyOtp: (email: string, otp: string) =>
+    request<{ success: boolean }>('POST', '/api/app/auth/verify-otp', { email, otp }),
+
   syncUser: (payload: {
     firebaseUid: string;
     email: string;
@@ -55,6 +60,21 @@ export const api = {
       'POST',
       '/api/app/mine/claim',
       payload,
+    ),
+
+  // ── Boosters ──────────────────────────────────────────────────────────
+  activateBooster: (payload: { pbId: string; multiplier: number }) =>
+    request<{
+      success: boolean;
+      multiplier: number;
+      expiresAt: string;
+      newPowerTokens: number;
+    }>('POST', '/api/app/boosters/activate', payload),
+
+  getActiveBooster: (pbId: string) =>
+    request<{ multiplier: number; expiresAt: string | null }>(
+      'GET',
+      `/api/app/boosters/active/${pbId}`,
     ),
 
   // ── Withdrawals ───────────────────────────────────────────────────────
@@ -117,6 +137,8 @@ export interface PBUser {
   powerTokens: number;
   totalClaims: number;
   totalWins: number;
+  is_verified: boolean;
+  isVerified?: boolean;
   created: string;
 }
 

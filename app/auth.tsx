@@ -15,7 +15,7 @@ type Mode = 'signin' | 'signup';
 
 export default function AuthScreen() {
   const insets = useSafeAreaInsets();
-  const { signIn, signUp } = useAuth();
+  const { signIn, signUp, forgotPassword } = useAuth();
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -49,10 +49,8 @@ export default function AuthScreen() {
     setIsLoading(true);
     try {
       if (mode === 'signin') {
-        const result = await signIn(email.trim(), password);
-        if (result.needsVerification) {
-          Alert.alert('Email Not Verified', 'Please check your email and verify your account before signing in.');
-        }
+        await signIn(email.trim(), password);
+        // If needsVerification, _layout.tsx will redirect to OTP screen automatically
       } else {
         await signUp(email.trim(), password, displayName.trim() || username.trim(), referralCode.trim() || undefined);
       }
@@ -150,6 +148,26 @@ export default function AuthScreen() {
               </LinearGradient>
             </Pressable>
 
+            {mode === 'signin' && (
+              <Pressable 
+                onPress={async () => {
+                  if (!email.trim()) {
+                    Alert.alert('Error', 'Please enter your email address first.');
+                    return;
+                  }
+                  try {
+                    await forgotPassword(email.trim());
+                    Alert.alert('Success', 'Reset link sent to your email.');
+                  } catch (e: any) {
+                    Alert.alert('Error', e.message || 'Could not send reset email.');
+                  }
+                }}
+                style={styles.forgotPasswordBtn}
+              >
+                <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+              </Pressable>
+            )}
+
             {mode === 'signup' && (
               <Text style={styles.termsText}>
                 A verification email will be sent to confirm your account. You receive 10 Power Tokens on your first login.
@@ -206,5 +224,7 @@ const styles = StyleSheet.create({
   submitBtn: { marginTop: 8 },
   submitGradient: { height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   submitText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
+  forgotPasswordBtn: { marginTop: 16, alignItems: 'center' },
+  forgotPasswordText: { fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.gold },
   termsText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, textAlign: 'center', marginTop: 14, lineHeight: 18 },
 });
