@@ -57,16 +57,8 @@ export default function ProfileScreen() {
   }
 
   async function handleSignOut() {
-    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out', style: 'destructive',
-        onPress: async () => {
-          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          await signOut();
-        },
-      },
-    ]);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    await signOut();
   }
 
   const initials = user?.displayName?.slice(0, 2).toUpperCase() ?? 'MM';
@@ -203,7 +195,7 @@ export default function ProfileScreen() {
 
         <Animated.View entering={FadeInDown.delay(600).springify()}>
           <View style={styles.menuGroup}>
-            <MenuItem icon="log-out-outline" label="Sign Out" danger onPress={handleSignOut} />
+            <MenuItem icon="log-out-outline" label="Sign Out" danger onPress={handleSignOut} testID="btn-signout" />
           </View>
         </Animated.View>
       </ScrollView>
@@ -220,15 +212,17 @@ interface MenuItemProps {
   danger?: boolean;
   onPress?: () => void;
   rightEl?: React.ReactNode;
+  testID?: string;
 }
 
-function MenuItem({ icon, iconLib = 'ionicons', label, labelColor, value, danger, onPress, rightEl }: MenuItemProps) {
+function MenuItem({ icon, iconLib = 'ionicons', label, labelColor, value, danger, onPress, rightEl, testID }: MenuItemProps) {
   const IconComp = iconLib === 'material-community' ? MaterialCommunityIcons : Ionicons;
   const color = danger ? Colors.error : labelColor ?? Colors.textPrimary;
   return (
     <Pressable
       style={({ pressed }) => [styles.menuItem, { opacity: pressed ? 0.7 : 1 }]}
       onPress={onPress}
+      testID={testID}
     >
       <View style={[styles.menuIconWrap, { backgroundColor: (danger ? Colors.error : Colors.neonOrange) + '20' }]}>
         <IconComp name={icon as any} size={17} color={danger ? Colors.error : Colors.neonOrange} />

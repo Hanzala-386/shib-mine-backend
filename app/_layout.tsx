@@ -23,10 +23,11 @@ SplashScreen.preventAutoHideAsync();
 
 function RootLayoutNav() {
   const { user, firebaseUser, isLoading, pbUser } = useAuth();
+
   if (isLoading) return null;
 
-  const isVerified = user && pbUser?.is_verified;
-  const hasPendingVerification = firebaseUser && !pbUser?.is_verified;
+  const isVerified = !!(user && pbUser?.is_verified);
+  const hasPendingVerification = !!(firebaseUser && !pbUser?.is_verified);
 
   return (
     <Stack screenOptions={{ headerShown: false }}>

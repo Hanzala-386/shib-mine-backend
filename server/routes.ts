@@ -373,6 +373,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Dev-only: Peek last OTP (development testing only) ───────────────────
+  if (process.env.NODE_ENV !== "production") {
+    app.get("/api/dev/peek-otp/:email", (req: Request, res: Response) => {
+      const email = decodeURIComponent(req.params.email);
+      const entry = tempOtpMap.get(email);
+      if (!entry) return res.status(404).json({ error: "No pending OTP" });
+      if (Date.now() > entry.expires) return res.status(410).json({ error: "OTP expired" });
+      res.json({ otp: entry.code, email });
+    });
+  }
+
   // ── Get user by Firebase UID ──────────────────────────────────────────────
   app.get("/api/app/user/:firebaseUid", async (req: Request, res: Response) => {
     try {

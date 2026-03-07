@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 import {
   auth,
   createUserWithEmailAndPassword,
@@ -30,8 +31,8 @@ interface AuthContextValue {
   isLoading: boolean;
   isAdmin: boolean;
   pbUser: PBUser | null;
-  signUp: (email: string, password: string, displayName: string, referredBy?: string) => Promise<{ needsVerification: boolean; pendingEmail: string }>;
-  signIn: (email: string, password: string) => Promise<{ needsVerification: boolean; pendingEmail?: string }>;
+  signUp: (email: string, password: string, displayName: string, referredBy?: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   verifyOtp: (email: string, code: string) => Promise<{ success: boolean; error?: string }>;
   resendOtp: (email: string) => Promise<void>;
@@ -55,8 +56,15 @@ function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
     referralCode: u.referralCode,
     referredBy: u.referredBy || undefined,
     createdAt: new Date(u.created).getTime(),
-    emailVerified: fbUser.emailVerified || u.is_verified,
+    emailVerified: u.is_verified,
   };
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -66,37 +74,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      setFirebaseUser(fbUser);
-      if (fbUser) {
-        try {
-          const pb = await api.getUser(fbUser.uid);
-          if (pb?.is_verified) {
-            await syncWithServer(fbUser);
-          } else {
-            setUser(null);
-            setPbUser(pb || null);
-          }
-        } catch (e) {
-          setUser(null);
-          setPbUser(null);
-        }
-      } else {
-        setUser(null);
-        setPbUser(null);
-      }
-      setIsLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
+      handleAuthStateChange(fbUser);
     });
     return unsubscribe;
   }, []);
 
-  async function syncWithServer(fbUser: FirebaseUser): Promise<void> {
+  async function handleAuthStateChange(fbUser: FirebaseUser | null) {
+    setFirebaseUser(fbUser);
+    if (!fbUser) {
+      setUser(null);
+      setPbUser(null);
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      // First try to fetch existing user
-      let pb = await api.getUser(fbUser.uid).catch(() => null);
+      const pb = await withTimeout(api.getUser(fbUser.uid), 8000, null);
+      if (pb?.is_verified) {
+        await syncWithServer(fbUser, pb);
+      } else {
+        setUser(null);
+        setPbUser(pb);
+      }
+    } catch {
+      setUser(null);
+      setPbUser(null);
+    }
+    setIsLoading(false);
+  }
+
+  async function syncWithServer(fbUser: FirebaseUser, existingPb?: PBUser | null): Promise<void> {
+    try {
+      let pb = existingPb ?? await api.getUser(fbUser.uid).catch(() => null);
 
       if (!pb) {
-        // Check for pending signup data
         const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
         const pending = cached ? JSON.parse(cached) : {};
         pb = await api.syncUser({
@@ -110,40 +122,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       if (pb) {
-        // If server returned empty referral code, assign one now and save it
         if (!pb.referralCode) {
           const code = generateReferralCode();
           pb = { ...pb, referralCode: code };
-          // Save to server in background (don't await)
-          api.syncUser({
-            firebaseUid: fbUser.uid,
-            email: fbUser.email ?? '',
-            referralCode: code,
-          }).then((updated) => {
-            if (updated.referralCode) pb = updated;
-          }).catch(() => {});
-          // Persist locally
+          api.syncUser({ firebaseUid: fbUser.uid, email: fbUser.email ?? '', referralCode: code })
+            .catch(() => {});
           await AsyncStorage.setItem(`shib_referral_${fbUser.uid}`, code);
         }
         setPbUser(pb);
         setUser(pbToProfile(pb, fbUser));
         await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
-        console.log('[Auth] user set, referralCode=', pb.referralCode);
+        if (pb.is_verified) {
+          setTimeout(() => {
+            try { router.replace('/(tabs)' as any); } catch {}
+          }, 100);
+        }
       }
     } catch (e) {
-      console.warn('[Auth] Server sync failed, using cache', e);
+      console.warn('[Auth] syncWithServer failed, checking cache', e);
       const cached = await AsyncStorage.getItem(`shib_profile_${fbUser.uid}`);
       if (cached) {
-        const cachedProfile = JSON.parse(cached);
-        // If cached profile has no referral code, generate one
-        if (!cachedProfile.referralCode) {
-          const storedCode = await AsyncStorage.getItem(`shib_referral_${fbUser.uid}`);
-          cachedProfile.referralCode = storedCode || generateReferralCode();
-          if (!storedCode) {
-            await AsyncStorage.setItem(`shib_referral_${fbUser.uid}`, cachedProfile.referralCode);
+        try {
+          const p = JSON.parse(cached);
+          if (!p.referralCode) {
+            const stored = await AsyncStorage.getItem(`shib_referral_${fbUser.uid}`);
+            p.referralCode = stored || generateReferralCode();
           }
-        }
-        setUser(cachedProfile);
+          setUser(p);
+        } catch {}
       }
     }
   }
@@ -153,7 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     password: string,
     displayName: string,
     referredBy?: string,
-  ): Promise<{ needsVerification: boolean; pendingEmail: string }> {
+  ): Promise<void> {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
     const pending = {
       displayName,
@@ -163,26 +169,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await AsyncStorage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify(pending));
     await api.sendOtp(email);
     setFirebaseUser(cred.user);
-    return { needsVerification: true, pendingEmail: email };
   }
 
-  async function signIn(email: string, password: string): Promise<{ needsVerification: boolean; pendingEmail?: string }> {
+  async function signIn(email: string, password: string): Promise<void> {
     const cred = await signInWithEmailAndPassword(auth, email, password);
     setFirebaseUser(cred.user);
+
+    let pb: PBUser | null = null;
     try {
-      const pb = await api.getUser(cred.user.uid);
-      if (!pb.is_verified) {
-        await api.sendOtp(email);
-        return { needsVerification: true, pendingEmail: email };
-      }
-    } catch (e) {
-      // If user not in PB yet, it needs verification
-      await api.sendOtp(email);
-      return { needsVerification: true, pendingEmail: email };
+      pb = await withTimeout(api.getUser(cred.user.uid), 8000, null);
+    } catch {
+      pb = null;
     }
-    
-    await syncWithServer(cred.user);
-    return { needsVerification: false };
+
+    if (pb?.is_verified) {
+      await syncWithServer(cred.user, pb);
+    } else {
+      setPbUser(pb);
+      await api.sendOtp(email).catch(() => {});
+    }
   }
 
   async function signOut() {
@@ -190,17 +195,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setPbUser(null);
     setFirebaseUser(null);
+    router.replace('/auth' as any);
   }
 
   async function verifyOtp(email: string, code: string): Promise<{ success: boolean; error?: string }> {
     try {
       await api.verifyOtp(email, code);
-      if (firebaseUser) {
-        await syncWithServer(firebaseUser);
+      const fbUser = firebaseUser ?? auth.currentUser;
+      if (fbUser) {
+        await syncWithServer(fbUser, null);
       }
       return { success: true };
     } catch (e: any) {
-      return { success: false, error: e.message || 'Invalid code' };
+      const msg = e?.message?.includes('400')
+        ? 'Invalid or expired code. Please try again.'
+        : e?.message || 'Verification failed.';
+      return { success: false, error: msg };
     }
   }
 
@@ -213,52 +223,68 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function refreshUser() {
-    if (firebaseUser) {
-      await firebaseUser.reload();
-      const refreshed = auth.currentUser;
-      if (refreshed?.emailVerified) {
-        setFirebaseUser(refreshed);
-        await syncWithServer(refreshed);
+    const fbUser = auth.currentUser;
+    if (fbUser) {
+      try {
+        await fbUser.reload();
+        const refreshed = auth.currentUser;
+        if (refreshed) {
+          const pb = await api.getUser(refreshed.uid).catch(() => null);
+          if (pb?.is_verified) {
+            await syncWithServer(refreshed, pb);
+          } else {
+            setFirebaseUser(refreshed);
+            setPbUser(pb);
+          }
+        }
+      } catch (e) {
+        console.warn('[Auth] refreshUser failed', e);
       }
     }
   }
 
   async function refreshBalance() {
-    if (firebaseUser) {
-      try {
-        let pb = await api.getUser(firebaseUser.uid).catch(() => null);
-        if (!pb) {
-          pb = await api.syncUser({
-            firebaseUid: firebaseUser.uid,
-            email: firebaseUser.email ?? '',
-            displayName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || '',
-          });
-        }
-        if (pb) {
-          // Client-side fallback: ensure referral code is always set
-          if (!pb.referralCode) {
-            const storedCode = await AsyncStorage.getItem(`shib_referral_${firebaseUser.uid}`);
-            pb = { ...pb, referralCode: storedCode || generateReferralCode() };
-            if (!storedCode) {
-              await AsyncStorage.setItem(`shib_referral_${firebaseUser.uid}`, pb.referralCode);
-            }
-          }
-          setPbUser(pb);
-          setUser(pbToProfile(pb, firebaseUser));
-          await AsyncStorage.setItem(`shib_profile_${firebaseUser.uid}`, JSON.stringify(pbToProfile(pb, firebaseUser)));
-        }
-      } catch (e) {
-        console.warn('[Auth] refreshBalance failed', e);
+    const fbUser = auth.currentUser;
+    if (!fbUser) return;
+    try {
+      let pb = await api.getUser(fbUser.uid).catch(() => null);
+      if (!pb) {
+        pb = await api.syncUser({
+          firebaseUid: fbUser.uid,
+          email: fbUser.email ?? '',
+          displayName: fbUser.displayName || fbUser.email?.split('@')[0] || '',
+        });
       }
+      if (pb) {
+        if (!pb.referralCode) {
+          const stored = await AsyncStorage.getItem(`shib_referral_${fbUser.uid}`);
+          pb = { ...pb, referralCode: stored || generateReferralCode() };
+        }
+        setPbUser(pb);
+        setUser(pbToProfile(pb, fbUser));
+        await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
+      }
+    } catch (e) {
+      console.warn('[Auth] refreshBalance failed', e);
     }
   }
 
-  const isAdmin = firebaseUser?.email?.toLowerCase() === ADMIN_EMAIL;
+  const isAdmin = !!(firebaseUser?.email?.toLowerCase() === ADMIN_EMAIL);
 
-  const value = useMemo(() => ({
-    user, firebaseUser, isLoading, isAdmin, pbUser,
-    signUp, signIn, signOut,
-    refreshUser, refreshBalance, verifyOtp, resendOtp, forgotPassword,
+  const value = useMemo<AuthContextValue>(() => ({
+    user,
+    firebaseUser,
+    isLoading,
+    isAdmin,
+    pbUser,
+    signUp,
+    signIn,
+    signOut,
+    refreshUser,
+    refreshBalance,
+    verifyOtp,
+    resendOtp,
+    forgotPassword,
   }), [user, firebaseUser, isLoading, isAdmin, pbUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
