@@ -1,13 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ActivityIndicator,
-  TextInput,
+  TextInput, Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Platform } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '@/context/AuthContext';
+import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
 export default function VerifyEmailScreen() {
@@ -18,11 +18,13 @@ export default function VerifyEmailScreen() {
   const [isResending, setIsResending] = useState(false);
   const [countdown, setCountdown] = useState(60);
   const [error, setError] = useState<string | null>(null);
-  const [resendMsg, setResendMsg] = useState('');
+  const [statusMsg, setStatusMsg] = useState('');
+  const [devOtp, setDevOtp] = useState<string | null>(null);
 
   const inputRefs = useRef<Array<TextInput | null>>([]);
   const verifyAttemptedRef = useRef(false);
 
+  // Countdown timer for resend button
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     if (countdown > 0) {
@@ -31,9 +33,22 @@ export default function VerifyEmailScreen() {
     return () => clearTimeout(timer);
   }, [countdown]);
 
+  // Dev mode only: fetch OTP from server so user can verify without an email
+  useEffect(() => {
+    if (!__DEV__) return;
+    const email = firebaseUser?.email;
+    if (!email) return;
+    const baseUrl = getApiUrl();
+    const url = new URL(`/api/dev/peek-otp/${encodeURIComponent(email)}`, baseUrl).toString();
+    fetch(url)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d?.otp) setDevOtp(d.otp); })
+      .catch(() => {});
+  }, [firebaseUser?.email]);
+
   const handleOtpChange = (value: string, index: number) => {
     setError(null);
-    setResendMsg('');
+    setStatusMsg('');
     const newOtp = [...otp];
 
     if (value.length > 1) {
@@ -82,6 +97,8 @@ export default function VerifyEmailScreen() {
         setOtp(['', '', '', '', '', '']);
         setTimeout(() => inputRefs.current[0]?.focus(), 50);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+        // Refresh dev OTP hint after failure
+        if (__DEV__) refreshDevOtp();
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       }
@@ -93,22 +110,41 @@ export default function VerifyEmailScreen() {
     }
   };
 
+  const refreshDevOtp = () => {
+    const email = firebaseUser?.email;
+    if (!email) return;
+    const baseUrl = getApiUrl();
+    const url = new URL(`/api/dev/peek-otp/${encodeURIComponent(email)}`, baseUrl).toString();
+    fetch(url)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d?.otp) setDevOtp(d.otp); })
+      .catch(() => {});
+  };
+
   const handleResend = async () => {
     if (countdown > 0 || isResending) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setIsResending(true);
     setError(null);
-    setResendMsg('');
+    setStatusMsg('');
+    setDevOtp(null);
     try {
       await resendOtp(firebaseUser?.email || '');
       setCountdown(60);
-      setResendMsg('New code sent to your email.');
+      setStatusMsg('New code sent to your email.');
+      verifyAttemptedRef.current = false;
+      setOtp(['', '', '', '', '', '']);
+      setTimeout(() => inputRefs.current[0]?.focus(), 50);
+      if (__DEV__) setTimeout(refreshDevOtp, 500);
     } catch {
       setError('Could not resend code. Please try again.');
     } finally {
       setIsResending(false);
     }
   };
+
+  const topPadding = insets.top + (Platform.OS === 'web' ? 67 : 60);
+  const bottomPadding = insets.bottom + (Platform.OS === 'web' ? 34 : 40);
 
   return (
     <View style={[styles.container, { backgroundColor: Colors.darkBg }]}>
@@ -119,15 +155,7 @@ export default function VerifyEmailScreen() {
         end={{ x: 0.5, y: 0.6 }}
       />
 
-      <View
-        style={[
-          styles.content,
-          {
-            paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 60),
-            paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 40),
-          },
-        ]}
-      >
+      <View style={[styles.content, { paddingTop: topPadding, paddingBottom: bottomPadding }]}>
         <View style={styles.header}>
           <View style={styles.iconCircle}>
             <Text style={styles.iconEmoji}>📧</Text>
@@ -138,6 +166,14 @@ export default function VerifyEmailScreen() {
             <Text style={styles.emailText}>{firebaseUser?.email}</Text>
           </Text>
         </View>
+
+        {/* Dev mode OTP hint */}
+        {__DEV__ && devOtp ? (
+          <View style={styles.devHint}>
+            <Text style={styles.devHintLabel}>DEV MODE — Code:</Text>
+            <Text style={styles.devHintCode}>{devOtp}</Text>
+          </View>
+        ) : null}
 
         <View style={styles.otpContainer}>
           {otp.map((digit, idx) => (
@@ -163,8 +199,8 @@ export default function VerifyEmailScreen() {
 
         {error ? (
           <Text style={styles.errorText}>{error}</Text>
-        ) : resendMsg ? (
-          <Text style={styles.successText}>{resendMsg}</Text>
+        ) : statusMsg ? (
+          <Text style={styles.successText}>{statusMsg}</Text>
         ) : (
           <Text style={styles.hintText}>
             {isVerifying ? 'Verifying…' : 'Code expires in 10 minutes'}
@@ -215,7 +251,7 @@ export default function VerifyEmailScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { flex: 1, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center' },
-  header: { alignItems: 'center', marginBottom: 40 },
+  header: { alignItems: 'center', marginBottom: 32 },
   iconCircle: {
     width: 72, height: 72, borderRadius: 36,
     backgroundColor: Colors.darkCard, borderWidth: 1, borderColor: Colors.darkBorder,
@@ -231,6 +267,13 @@ const styles = StyleSheet.create({
     textAlign: 'center', lineHeight: 22,
   },
   emailText: { fontFamily: 'Inter_600SemiBold', color: Colors.gold },
+  devHint: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: 'rgba(0,200,100,0.12)', borderRadius: 10, padding: 12,
+    marginBottom: 16, borderWidth: 1, borderColor: 'rgba(0,200,100,0.3)',
+  },
+  devHintLabel: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#00c864' },
+  devHintCode: { fontFamily: 'Inter_700Bold', fontSize: 18, color: '#00c864', letterSpacing: 4 },
   otpContainer: {
     flexDirection: 'row', justifyContent: 'center',
     gap: 10, marginBottom: 16,

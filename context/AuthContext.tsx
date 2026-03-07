@@ -60,24 +60,24 @@ function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
   };
 }
 
+// Prevents onAuthStateChanged from interfering while signIn/signUp is in progress
+let isAuthAction = false;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [pbUser, setPbUser] = useState<PBUser | null>(null);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Prevents onAuthStateChanged from interfering while signIn/signUp is in progress
-  const isAuthActionRef = useRef(false);
-
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (fbUser) => {
-      if (isAuthActionRef.current) return;
+      if (isAuthAction) return;
       handleAuthStateChange(fbUser);
     });
     return unsub;
   }, []);
 
-  // Only called on app startup / session restore — not during signIn/signUp
+  // App startup session restore — not called during active signIn/signUp
   async function handleAuthStateChange(fbUser: FirebaseUser | null) {
     if (!fbUser) {
       setUser(null);
@@ -90,16 +90,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setFirebaseUser(fbUser);
 
     try {
-      const pb = await Promise.race([
-        api.getUser(fbUser.uid),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-      ]).catch(() => null);
-
+      const pb = await api.getUser(fbUser.uid).catch(() => null);
       if (pb?.is_verified) {
         setPbUser(pb);
         setUser(pbToProfile(pb, fbUser));
+        await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
       } else {
-        // Logged in Firebase but not verified — show OTP screen
         setPbUser(pb ?? null);
         setUser(null);
       }
@@ -111,17 +107,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(false);
   }
 
+  // ── Sign Up ────────────────────────────────────────────────────────────────
+  // FLOW: Firebase create → navigate to OTP screen immediately → OTP sent in background
   async function signUp(
     email: string,
     password: string,
     displayName: string,
     referredBy?: string,
   ): Promise<void> {
-    isAuthActionRef.current = true;
+    isAuthAction = true;
     try {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
 
-      // Store pending display name & referral for when OTP is verified
       await AsyncStorage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify({
         displayName,
         referralCode: generateReferralCode(),
@@ -133,45 +130,75 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setIsLoading(false);
 
-      // Send OTP and navigate to verify screen immediately
-      api.sendOtp(email).catch(() => {});
+      // Navigate to OTP screen FIRST — then send OTP in background
       router.replace('/verify-email' as any);
+      api.sendOtp(email).catch((e) => console.warn('[Auth] OTP send failed:', e?.message));
     } finally {
-      isAuthActionRef.current = false;
+      isAuthAction = false;
     }
   }
 
+  // ── Sign In ────────────────────────────────────────────────────────────────
+  // FLOW:
+  //   verified (is_verified=true)  → go directly to /(tabs)
+  //   unverified (is_verified=false or no PB record) → OTP screen + send OTP
+  //   server error/timeout → throw so auth.tsx shows inline error
   async function signIn(email: string, password: string): Promise<void> {
-    isAuthActionRef.current = true;
+    isAuthAction = true;
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
       setFirebaseUser(cred.user);
+      setIsLoading(false);
 
-      // Fetch PB user to check verification status
-      const pb = await Promise.race([
-        api.getUser(cred.user.uid),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-      ]).catch(() => null);
+      // Fetch PB record with 6s timeout
+      let pb: PBUser | null = null;
+      let isServerError = false;
+
+      try {
+        pb = await Promise.race<PBUser | null>([
+          api.getUser(cred.user.uid),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Server timeout')), 6000)
+          ),
+        ]);
+      } catch (e: any) {
+        const msg = (e?.message || '').toLowerCase();
+        // "user not found" / "404" means no PB record — treat like unverified
+        if (msg.includes('not found') || msg.includes('404')) {
+          pb = null;
+          isServerError = false;
+        } else {
+          // Network / timeout / 5xx — undo Firebase login and surface error to UI
+          isServerError = true;
+        }
+      }
+
+      if (isServerError) {
+        await firebaseSignOut(auth);
+        setFirebaseUser(null);
+        throw new Error('Server unavailable. Please check your connection and try again.');
+      }
 
       if (pb?.is_verified) {
-        // Verified — load profile and go to tabs
+        // ✅ Verified user — go straight to the app
         setPbUser(pb);
         setUser(pbToProfile(pb, cred.user));
-        setIsLoading(false);
+        await AsyncStorage.setItem(`shib_profile_${cred.user.uid}`, JSON.stringify(pbToProfile(pb, cred.user)));
         router.replace('/(tabs)' as any);
       } else {
-        // Not verified — go to OTP screen
+        // 🔒 Not verified — send OTP and go to verify screen
         setPbUser(pb ?? null);
         setUser(null);
-        setIsLoading(false);
-        api.sendOtp(email).catch(() => {});
         router.replace('/verify-email' as any);
+        api.sendOtp(email).catch((e) => console.warn('[Auth] OTP send failed:', e?.message));
       }
     } finally {
-      isAuthActionRef.current = false;
+      isAuthAction = false;
+      setIsLoading(false);
     }
   }
 
+  // ── Sign Out ────────────────────────────────────────────────────────────────
   async function signOut() {
     await firebaseSignOut(auth);
     setUser(null);
@@ -180,15 +207,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.replace('/auth' as any);
   }
 
+  // ── Verify OTP ─────────────────────────────────────────────────────────────
+  // Called from verify-email.tsx after user enters code
+  // On success: creates/syncs PB user with is_verified=true → navigates to tabs
   async function verifyOtp(email: string, code: string): Promise<{ success: boolean; error?: string }> {
     try {
       await api.verifyOtp(email, code);
+
       const fbUser = auth.currentUser ?? firebaseUser;
       if (!fbUser) return { success: false, error: 'Session expired. Please sign in again.' };
 
-      // Sync user to PocketBase now that OTP is verified
+      // Sync / create PB user (server will set is_verified=true from the verifiedEmails set)
       const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
       const pending = cached ? JSON.parse(cached) : {};
+
       const pb = await api.syncUser({
         firebaseUid: fbUser.uid,
         email: fbUser.email ?? email,
@@ -196,19 +228,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         referralCode: pending.referralCode || generateReferralCode(),
         referredBy: pending.referredBy || '',
       });
+
       if (cached) await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
 
       if (pb?.is_verified) {
         setPbUser(pb);
         setUser(pbToProfile(pb, fbUser));
+        await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
         router.replace('/(tabs)' as any);
+      } else {
+        // Edge case: PB sync returned is_verified=false (shouldn't happen normally)
+        return { success: false, error: 'Verification failed on server. Please try again.' };
       }
 
       return { success: true };
     } catch (e: any) {
-      const msg = e?.message?.includes('400') || e?.message?.includes('Invalid')
-        ? 'Invalid or expired code. Please try again.'
-        : e?.message || 'Verification failed.';
+      const msg =
+        e?.message?.includes('400') || e?.message?.toLowerCase().includes('invalid')
+          ? 'Invalid or expired code. Please try again.'
+          : e?.message || 'Verification failed.';
       return { success: false, error: msg };
     }
   }

@@ -22,23 +22,74 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-async function sendEmail(to: string, code: string) {
+async function sendEmail(to: string, code: string): Promise<void> {
+  const subject = "Your SHIB Mine Verification Code";
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#1a1a2e;color:#fff;padding:32px;border-radius:12px;">
+      <h2 style="color:#f4c430;margin-bottom:8px;">SHIB Mine</h2>
+      <p style="color:#ccc;margin-bottom:24px;">Your verification code:</p>
+      <div style="background:#0d0d1a;border:2px solid #f4c430;border-radius:8px;padding:24px;text-align:center;margin-bottom:24px;">
+        <span style="font-size:36px;font-weight:bold;letter-spacing:12px;color:#f4c430;">${code}</span>
+      </div>
+      <p style="color:#999;font-size:13px;">This code expires in 10 minutes. If you didn't request this, ignore this email.</p>
+    </div>
+  `;
+
+  // 1. Try Resend (recommended)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const fromAddr = process.env.RESEND_FROM || "noreply@resend.dev";
+      const res = await new Promise<any>((resolve, reject) => {
+        const body = JSON.stringify({ from: `SHIB Mine <${fromAddr}>`, to: [to], subject, html });
+        const req = https.request({
+          hostname: "api.resend.com",
+          path: "/emails",
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+        }, (r) => {
+          let data = "";
+          r.on("data", (c) => data += c);
+          r.on("end", () => resolve({ status: r.statusCode, body: data }));
+        });
+        req.on("error", reject);
+        req.write(body);
+        req.end();
+      });
+      if (res.status >= 200 && res.status < 300) {
+        console.log(`[OTP] Sent via Resend to ${to}`);
+        return;
+      }
+      console.error("[OTP] Resend failed:", res.status, res.body);
+    } catch (e) {
+      console.error("[OTP] Resend error:", e);
+    }
+  }
+
+  // 2. Try SMTP fallback
   if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
     try {
       await transporter.sendMail({
-        from: `"Shiba Miner" <${process.env.SMTP_USER}>`,
+        from: `"SHIB Mine" <${process.env.SMTP_USER}>`,
         to,
-        subject: "Verification Code",
-        text: `Your verification code is: ${code}`,
-        html: `<b>Your verification code is: ${code}</b>`,
+        subject,
+        html,
+        text: `Your verification code is: ${code}. Expires in 10 minutes.`,
       });
+      console.log(`[OTP] Sent via SMTP to ${to}`);
+      return;
     } catch (e) {
-      console.error("[OTP] Failed to send email via SMTP:", e);
-      console.log(`[OTP] code for ${to}: ${code}`);
+      console.error("[OTP] SMTP failed:", e);
     }
-  } else {
-    console.log(`[OTP] code for ${to}: ${code}`);
   }
+
+  // 3. Dev fallback — log to console
+  console.log(`\n[OTP] ===========================`);
+  console.log(`[OTP] Code for ${to}: ${code}`);
+  console.log(`[OTP] ===========================\n`);
 }
 
 // ─── PocketBase HTTP helper ────────────────────────────────────────────────
