@@ -16,7 +16,7 @@ import Colors from '@/constants/colors';
 
 // ─── Asset paths (all use the SAME correct base) ─────────────────────────────
 const { width: SW } = Dimensions.get('window');
-const BASE = `${getApiUrl()}/game/Knife hit Template/`;
+const BASE = `${getApiUrl()}/game/`;
 
 // ─── Responsive dimensions — CONT_S ≤ SW so no overflow clipping ─────────────
 const BOSS_SIZE  = Math.min(Math.floor(SW * 0.48), 180);
@@ -245,7 +245,7 @@ export default function GamesScreen() {
     Animated.timing(knifeAnim, {
       toValue: -(KNIFE_START - HIT_Y),
       duration: 210,
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start(({ finished }) => { if (finished) handleKnifeHit(); });
   }, [inFlight, phase, knifeAnim, KNIFE_START, HIT_Y, handleKnifeHit]);
 
@@ -341,7 +341,7 @@ export default function GamesScreen() {
             <View key={i} style={[styles.stageDot, pos === i && styles.stageDotActive]} />
           ))}
           <Image
-            source={{ uri: `${BASE}GamePlay Screen/CrossKnife.png` }}
+            source={{ uri: `${BASE}GamePlay%20Screen/CrossKnife.png` }}
             style={[styles.stageKnifeIcon, pos === 5 && styles.stageKnifeIconActive]}
             resizeMode="contain"
           />
@@ -542,7 +542,7 @@ export default function GamesScreen() {
         <Modal visible={phase === 'game_over'} transparent animationType="fade">
           <View style={styles.modalBg}>
             <ImageBackground
-              source={{ uri: `${BASE}GamePlay Screen/gameOveScoreBG.png` }}
+              source={{ uri: `${BASE}GamePlay%20Screen/gameOveScoreBG.png` }}
               style={styles.goCard}
               resizeMode="stretch"
             >

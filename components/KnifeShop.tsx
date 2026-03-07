@@ -10,8 +10,8 @@ import { api } from '@/lib/api';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
-// ── CORRECT path includes "Knife hit Template/" ──────────────────────────────
-const BASE = `${getApiUrl()}/game/Knife hit Template/`;
+// ── /game route on server maps to public/game/Knife hit Template/ ────────────
+const BASE = `${getApiUrl()}/game/`;
 const KNIFE_PRICE = 200;
 
 export interface SkinDef {
@@ -23,15 +23,15 @@ export interface SkinDef {
 
 export const SKINS: SkinDef[] = [
   { id: 'knife_1',  name: 'Classic',  uri: `${BASE}Knives/Knife.png`,              isFree: true  },
-  { id: 'knife_2',  name: 'Blade II', uri: `${BASE}Knives/item knife-01.png`,       isFree: false },
-  { id: 'knife_3',  name: 'Blade III',uri: `${BASE}Knives/item knife-02.png`,       isFree: false },
-  { id: 'knife_4',  name: 'Blade IV', uri: `${BASE}Knives/item knife-03.png`,       isFree: false },
-  { id: 'knife_5',  name: 'Blade V',  uri: `${BASE}Knives/item knife-04.png`,       isFree: false },
-  { id: 'knife_6',  name: 'Blade VI', uri: `${BASE}Knives/item knife-05.png`,       isFree: false },
-  { id: 'knife_7',  name: 'Blade VII',uri: `${BASE}Knives/item knife-06.png`,       isFree: false },
+  { id: 'knife_2',  name: 'Blade II', uri: `${BASE}Knives/item%20knife-01.png`,     isFree: false },
+  { id: 'knife_3',  name: 'Blade III',uri: `${BASE}Knives/item%20knife-02.png`,     isFree: false },
+  { id: 'knife_4',  name: 'Blade IV', uri: `${BASE}Knives/item%20knife-03.png`,     isFree: false },
+  { id: 'knife_5',  name: 'Blade V',  uri: `${BASE}Knives/item%20knife-04.png`,     isFree: false },
+  { id: 'knife_6',  name: 'Blade VI', uri: `${BASE}Knives/item%20knife-05.png`,     isFree: false },
+  { id: 'knife_7',  name: 'Blade VII',uri: `${BASE}Knives/item%20knife-06.png`,     isFree: false },
   { id: 'knife_8',  name: 'Kunai',    uri: `${BASE}Kunai-1.png`,                    isFree: false },
-  { id: 'knife_9',  name: 'Blade IX', uri: `${BASE}Knives/item knife-07.png`,       isFree: false },
-  { id: 'knife_10', name: 'Blade X',  uri: `${BASE}Knives/item knife-08.png`,       isFree: false },
+  { id: 'knife_9',  name: 'Blade IX', uri: `${BASE}Knives/item%20knife-07.png`,     isFree: false },
+  { id: 'knife_10', name: 'Blade X',  uri: `${BASE}Knives/item%20knife-08.png`,     isFree: false },
 ];
 
 interface KnifeShopProps {
