@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Modal, Pressable, Image,
-  FlatList, ActivityIndicator, Alert,
+  FlatList, ActivityIndicator, Alert, ScrollView,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useWallet } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
@@ -11,7 +10,8 @@ import { api } from '@/lib/api';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
-const BASE = getApiUrl() + '/game/';
+// ── CORRECT path includes "Knife hit Template/" ──────────────────────────────
+const BASE = `${getApiUrl()}/game/Knife hit Template/`;
 const KNIFE_PRICE = 200;
 
 export interface SkinDef {
@@ -22,12 +22,16 @@ export interface SkinDef {
 }
 
 export const SKINS: SkinDef[] = [
-  { id: 'knife_1', name: 'Classic',  uri: `${BASE}Knives/Knife.png`,           isFree: true  },
-  { id: 'knife_2', name: 'Shadow',   uri: `${BASE}Knives/item knife-01.png`,   isFree: false },
-  { id: 'knife_3', name: 'Chrome',   uri: `${BASE}Knives/item knife-02.png`,   isFree: false },
-  { id: 'knife_4', name: 'Rustic',   uri: `${BASE}Knives/item knife-03.png`,   isFree: false },
-  { id: 'knife_5', name: 'Jade',     uri: `${BASE}Knives/item knife-04.png`,   isFree: false },
-  { id: 'knife_6', name: 'Kunai',    uri: `${BASE}Kunai-1.png`,                isFree: false },
+  { id: 'knife_1',  name: 'Classic',  uri: `${BASE}Knives/Knife.png`,              isFree: true  },
+  { id: 'knife_2',  name: 'Blade II', uri: `${BASE}Knives/item knife-01.png`,       isFree: false },
+  { id: 'knife_3',  name: 'Blade III',uri: `${BASE}Knives/item knife-02.png`,       isFree: false },
+  { id: 'knife_4',  name: 'Blade IV', uri: `${BASE}Knives/item knife-03.png`,       isFree: false },
+  { id: 'knife_5',  name: 'Blade V',  uri: `${BASE}Knives/item knife-04.png`,       isFree: false },
+  { id: 'knife_6',  name: 'Blade VI', uri: `${BASE}Knives/item knife-05.png`,       isFree: false },
+  { id: 'knife_7',  name: 'Blade VII',uri: `${BASE}Knives/item knife-06.png`,       isFree: false },
+  { id: 'knife_8',  name: 'Kunai',    uri: `${BASE}Kunai-1.png`,                    isFree: false },
+  { id: 'knife_9',  name: 'Blade IX', uri: `${BASE}Knives/item knife-07.png`,       isFree: false },
+  { id: 'knife_10', name: 'Blade X',  uri: `${BASE}Knives/item knife-08.png`,       isFree: false },
 ];
 
 interface KnifeShopProps {
@@ -43,7 +47,6 @@ export default function KnifeShop({ visible, equippedId, onClose, onEquip }: Kni
   const [purchasedItems, setPurchasedItems] = useState<string[]>(['knife_1']);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
-
   const pbId = pbUser?.pbId;
 
   const loadItems = useCallback(async () => {
@@ -67,7 +70,7 @@ export default function KnifeShop({ visible, equippedId, onClose, onEquip }: Kni
   async function handleBuy(skin: SkinDef) {
     if (!pbId) return;
     if (powerTokens < KNIFE_PRICE) {
-      Alert.alert('Not enough PT', `You need ${KNIFE_PRICE} Power Tokens to unlock this knife.`);
+      Alert.alert('Not enough PT', `You need ${KNIFE_PRICE} Power Tokens.`);
       return;
     }
     const idx = SKINS.findIndex(s => s.id === skin.id);
@@ -83,7 +86,7 @@ export default function KnifeShop({ visible, equippedId, onClose, onEquip }: Kni
       await refreshBalance();
       onEquip(skin.id);
     } catch (e: any) {
-      Alert.alert('Purchase failed', e.message || 'Please try again.');
+      Alert.alert('Purchase failed', e.message || 'Try again.');
     } finally {
       setLoadingId(null);
     }
@@ -97,29 +100,33 @@ export default function KnifeShop({ visible, equippedId, onClose, onEquip }: Kni
     const isBuying   = loadingId === item.id;
 
     return (
-      <View style={[styles.skinCard, isEquipped && styles.skinCardEquipped]}>
-        <View style={styles.skinImgWrap}>
-          <Image source={{ uri: item.uri }} style={styles.skinImg} resizeMode="contain" />
+      <View style={[styles.card, isEquipped && styles.cardEquipped]}>
+        {/* Knife image */}
+        <View style={styles.imgBox}>
+          <Image
+            source={{ uri: item.uri }}
+            style={styles.knifeImg}
+            resizeMode="contain"
+          />
           {isLocked && (
             <View style={styles.lockOverlay}>
-              <Ionicons name="lock-closed" size={22} color="rgba(255,255,255,0.7)" />
+              <Ionicons name="lock-closed" size={18} color="rgba(255,255,255,0.8)" />
             </View>
           )}
         </View>
-        <Text style={styles.skinName}>{item.name}</Text>
+
+        <Text style={styles.skinName} numberOfLines={1}>{item.name}</Text>
 
         {isEquipped ? (
-          <View style={styles.equippedBadge}>
-            <Text style={styles.equippedText}>Equipped</Text>
-          </View>
+          <View style={styles.equippedTag}><Text style={styles.equippedTagText}>✓ Equipped</Text></View>
         ) : isOwned ? (
           <Pressable style={styles.equipBtn} onPress={() => onEquip(item.id)}>
             <Text style={styles.equipBtnText}>Equip</Text>
           </Pressable>
         ) : isLocked ? (
-          <View style={styles.lockedBadge}>
-            <Ionicons name="lock-closed" size={11} color={Colors.textMuted} />
-            <Text style={styles.lockedText}>Locked</Text>
+          <View style={styles.lockedTag}>
+            <Ionicons name="lock-closed" size={9} color={Colors.textMuted} />
+            <Text style={styles.lockedTagText}>Locked</Text>
           </View>
         ) : (
           <Pressable
@@ -129,10 +136,7 @@ export default function KnifeShop({ visible, equippedId, onClose, onEquip }: Kni
           >
             {isBuying
               ? <ActivityIndicator size="small" color="#000" />
-              : <>
-                  <Ionicons name="flash" size={12} color="#000" />
-                  <Text style={styles.buyBtnText}>{KNIFE_PRICE} PT</Text>
-                </>
+              : <Text style={styles.buyBtnText}>⚡ {KNIFE_PRICE} PT</Text>
             }
           </Pressable>
         )}
@@ -144,21 +148,22 @@ export default function KnifeShop({ visible, equippedId, onClose, onEquip }: Kni
     <Modal visible={visible} animationType="slide" transparent presentationStyle="overFullScreen">
       <View style={styles.backdrop}>
         <View style={styles.sheet}>
+          {/* Header */}
           <View style={styles.header}>
-            <Ionicons name="storefront" size={22} color={Colors.gold} />
-            <Text style={styles.title}>Knife Shop</Text>
-            <Pressable onPress={onClose} hitSlop={12}>
-              <Ionicons name="close" size={24} color={Colors.textMuted} />
+            <Text style={styles.title}>🔪  Knife Shop</Text>
+            <Pressable onPress={onClose} hitSlop={14}>
+              <Ionicons name="close" size={22} color={Colors.textMuted} />
             </Pressable>
           </View>
 
-          <View style={styles.ptBar}>
+          {/* PT balance */}
+          <View style={styles.ptRow}>
             <Ionicons name="flash" size={14} color={Colors.gold} />
             <Text style={styles.ptText}>{powerTokens} PT available</Text>
           </View>
 
           {fetching ? (
-            <ActivityIndicator size="large" color={Colors.gold} style={{ marginTop: 40 }} />
+            <ActivityIndicator size="large" color={Colors.gold} style={{ marginVertical: 40 }} />
           ) : (
             <FlatList
               data={SKINS}
@@ -166,11 +171,11 @@ export default function KnifeShop({ visible, equippedId, onClose, onEquip }: Kni
               keyExtractor={i => i.id}
               numColumns={3}
               contentContainerStyle={styles.grid}
-              scrollEnabled={false}
+              scrollEnabled={true}
             />
           )}
 
-          <Text style={styles.hint}>Knives must be unlocked in order</Text>
+          <Text style={styles.seqHint}>Sequential unlock · 200 PT each</Text>
         </View>
       </View>
     </Modal>
@@ -178,148 +183,54 @@ export default function KnifeShop({ visible, equippedId, onClose, onEquip }: Kni
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    justifyContent: 'flex-end',
-  },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: '#120800',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingTop: 20,
-    paddingBottom: 32,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(244,196,48,0.2)',
+    backgroundColor: '#0d1a17',
+    borderTopLeftRadius: 22, borderTopRightRadius: 22,
+    paddingTop: 18, paddingBottom: 28,
+    borderTopWidth: 1, borderTopColor: 'rgba(244,196,48,0.2)',
+    maxHeight: '82%',
   },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    gap: 10,
-    marginBottom: 12,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, marginBottom: 10,
   },
-  title: {
-    flex: 1,
-    fontFamily: 'Inter_700Bold',
-    fontSize: 20,
-    color: Colors.gold,
-  },
-  ptBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginHorizontal: 20,
-    marginBottom: 16,
+  title: { fontFamily: 'Inter_700Bold', fontSize: 18, color: Colors.gold },
+  ptRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginHorizontal: 20, marginBottom: 14,
     backgroundColor: 'rgba(244,196,48,0.1)',
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(244,196,48,0.2)',
+    paddingHorizontal: 14, paddingVertical: 7,
+    borderRadius: 12, borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)',
   },
-  ptText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 14,
-    color: Colors.gold,
+  ptText: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.gold },
+  grid: { paddingHorizontal: 10, paddingBottom: 8 },
+  card: {
+    flex: 1, margin: 5, alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 14, paddingVertical: 12, paddingHorizontal: 6,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)',
+    gap: 7,
   },
-  grid: {
-    paddingHorizontal: 12,
-    gap: 10,
-  },
-  skinCard: {
-    flex: 1,
-    margin: 6,
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    gap: 8,
-  },
-  skinCardEquipped: {
-    borderColor: Colors.gold,
-    backgroundColor: 'rgba(244,196,48,0.08)',
-  },
-  skinImgWrap: {
-    width: 52,
-    height: 72,
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  skinImg: {
-    width: 52,
-    height: 72,
-  },
+  cardEquipped: { borderColor: Colors.gold, backgroundColor: 'rgba(244,196,48,0.08)' },
+  imgBox: { width: 46, height: 70, alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  knifeImg: { width: 46, height: 70 },
   lockOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 6, alignItems: 'center', justifyContent: 'center',
   },
-  skinName: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 11,
-    color: Colors.text,
-    textAlign: 'center',
-  },
-  equippedBadge: {
-    backgroundColor: Colors.gold,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  equippedText: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 10,
-    color: '#000',
-  },
+  skinName: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: Colors.text, textAlign: 'center' },
+  equippedTag: { backgroundColor: Colors.gold, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  equippedTagText: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#000' },
   equipBtn: {
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)',
   },
-  equipBtnText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 11,
-    color: Colors.text,
-  },
-  buyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: Colors.gold,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  buyBtnText: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 11,
-    color: '#000',
-  },
-  lockedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-  },
-  lockedText: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 10,
-    color: Colors.textMuted,
-  },
-  hint: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 11,
-    color: Colors.textMuted,
-    textAlign: 'center',
-    marginTop: 8,
-  },
+  equipBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: Colors.text },
+  buyBtn: { backgroundColor: Colors.gold, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  buyBtnText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#000' },
+  lockedTag: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  lockedTagText: { fontFamily: 'Inter_500Medium', fontSize: 9, color: Colors.textMuted },
+  seqHint: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, textAlign: 'center', marginTop: 8 },
 });
