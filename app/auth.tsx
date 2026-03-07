@@ -58,6 +58,12 @@ export default function AuthScreen() {
         setErrorMsg('Password must be at least 6 characters.');
         return;
       }
+      const ALLOWED_DOMAINS = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com'];
+      const emailDomain = email.trim().split('@')[1]?.toLowerCase() ?? '';
+      if (!ALLOWED_DOMAINS.includes(emailDomain)) {
+        setErrorMsg('Only Gmail, Yahoo, Outlook, Hotmail, and iCloud emails are allowed.');
+        return;
+      }
     }
 
     setIsLoading(true);

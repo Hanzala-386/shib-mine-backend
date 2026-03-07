@@ -101,7 +101,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
   async function loadSession() {
     try {
-      // First try server for active session
+      // Server is the single source of truth when pbId is available
       if (pbId) {
         const res = await api.getActiveMining(pbId);
         if (res.session) {
@@ -114,7 +114,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
             pbSessionId: s.id,
             startTime,
             durationMs,
-            multiplier: 1,
+            multiplier: s.multiplier || 1,
             status,
             expectedReward: miningRatePerSec * (durationMs / 1000),
           };
@@ -125,30 +125,37 @@ export function MiningProvider({ children }: { children: ReactNode }) {
             setElapsedMs(elapsed);
             startTimers(local);
           }
-          return;
+        } else {
+          // Server says no active unclaimed session — clear stale local cache
+          // This prevents a phantom "Claim" button after logout/login
+          if (cacheKey) await AsyncStorage.removeItem(cacheKey);
+          setSession(null);
         }
+        return;
       }
 
-      // Fall back to local cache
+      // No pbId yet — fall back to local cache only for 'mining' state (not 'ready_to_claim')
+      // We never show the Claim button from local cache alone to prevent phantom claims
       if (cacheKey) {
         const raw = await AsyncStorage.getItem(cacheKey);
         if (raw) {
           const s: MiningSession = JSON.parse(raw);
           const elapsed = Date.now() - s.startTime;
           if (s.status === 'mining') {
-            if (elapsed >= s.durationMs) {
-              const completed = { ...s, status: 'ready_to_claim' as MiningStatus };
-              setSession(completed);
-              await AsyncStorage.setItem(cacheKey, JSON.stringify(completed));
-            } else {
+            if (elapsed < s.durationMs) {
               setSession(s);
               setTimeRemaining(s.durationMs - elapsed);
               setElapsedMs(elapsed);
               startTimers(s);
+            } else {
+              // Timed out locally but no server yet — mark as completed locally,
+              // server will confirm on next load when pbId is available
+              const completed = { ...s, status: 'ready_to_claim' as MiningStatus };
+              setSession(completed);
+              await AsyncStorage.setItem(cacheKey, JSON.stringify(completed));
             }
-          } else if (s.status === 'ready_to_claim') {
-            setSession(s);
           }
+          // Do NOT restore 'ready_to_claim' from cache without server confirmation
         }
       }
     } catch (e) {

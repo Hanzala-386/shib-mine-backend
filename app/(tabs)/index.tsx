@@ -66,6 +66,7 @@ export default function HomeScreen() {
   const { settings } = useAdmin();
   const [showAdLoader, setShowAdLoader] = useState(false);
   const [showLowPtWarning, setShowLowPtWarning] = useState(false);
+  const [isClaiming, setIsClaiming] = useState(false);
 
   // Booster countdown timer
   const [now, setNow] = useState(Date.now());
@@ -159,10 +160,16 @@ export default function HomeScreen() {
   }
 
   async function handleClaim() {
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const reward = await claimReward();
-    if (reward > 0) {
-      Alert.alert('Reward Claimed!', `You earned ${formatShib(reward)} SHIB!`);
+    if (isClaiming) return;
+    setIsClaiming(true);
+    try {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const reward = await claimReward();
+      if (reward > 0) {
+        Alert.alert('Reward Claimed!', `You earned ${formatShib(reward)} SHIB!`);
+      }
+    } finally {
+      setIsClaiming(false);
     }
   }
 
@@ -337,10 +344,14 @@ export default function HomeScreen() {
 
         {status === 'ready_to_claim' && (
           <Animated.View entering={FadeInDown.delay(50).springify()} style={styles.actionsArea}>
-            <Pressable style={({ pressed }) => [styles.actionBtn, { opacity: pressed ? 0.85 : 1 }]} onPress={handleClaim}>
+            <Pressable
+              style={({ pressed }) => [styles.actionBtn, { opacity: (pressed || isClaiming) ? 0.6 : 1 }]}
+              onPress={handleClaim}
+              disabled={isClaiming}
+            >
               <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.actionGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                 <Ionicons name="checkmark-circle" size={22} color="#000" />
-                <Text style={styles.actionText}>Claim ~{formatShib(shibReward)} SHIB</Text>
+                <Text style={styles.actionText}>{isClaiming ? 'Claiming...' : `Claim ~${formatShib(shibReward)} SHIB`}</Text>
               </LinearGradient>
             </Pressable>
           </Animated.View>

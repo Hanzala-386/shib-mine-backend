@@ -44,6 +44,10 @@ function pbHttp(
         });
       },
     );
+    // 30-second hard timeout for all PocketBase requests
+    req.setTimeout(30_000, () => {
+      req.destroy(new Error("PocketBase request timed out after 30s"));
+    });
     req.on("error", reject);
     if (data) req.write(data);
     req.end();
@@ -672,6 +676,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (session.code) return res.status(404).json({ error: "Session not found" });
       if (!settings) return res.status(503).json({ error: "Settings unavailable" });
+
+      // Guard: prevent double-claim — one session = one claim only
+      if (session.claimed_amount && session.claimed_amount > 0) {
+        return res.status(409).json({ error: "Session already claimed" });
+      }
 
       // Server-side reward calculation
       const boosterMultiplier = session.booster_multiplier || 1;
