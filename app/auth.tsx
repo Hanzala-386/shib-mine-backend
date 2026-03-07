@@ -10,6 +10,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api';
 import Colors from '@/constants/colors';
 
 type Mode = 'signin' | 'signup';
@@ -65,7 +66,16 @@ export default function AuthScreen() {
       if (mode === 'signin') {
         await signIn(email.trim(), password);
       } else {
-        await signUp(email.trim(), password, displayName.trim(), referralCode.trim() || undefined);
+        const trimmedCode = referralCode.trim();
+        if (trimmedCode) {
+          const check = await api.validateReferralCode(trimmedCode);
+          if (!check.valid) {
+            setErrorMsg('Invalid Referral Code. Please check and try again.');
+            setIsLoading(false);
+            return;
+          }
+        }
+        await signUp(email.trim(), password, displayName.trim(), trimmedCode || undefined);
       }
     } catch (e: any) {
       const code = e?.code || '';

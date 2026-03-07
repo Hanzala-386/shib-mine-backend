@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, Share, ScrollView, Alert, Platform,
+  View, Text, StyleSheet, Pressable, Share, ScrollView, Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,15 +8,28 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api';
 import Colors from '@/constants/colors';
 
 export default function InviteScreen() {
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, pbUser } = useAuth();
   const [copied, setCopied] = useState(false);
 
   const referralCode = user?.referralCode ?? '------';
+  const pbId = pbUser?.pbId ?? '';
+
+  const { data: stats } = useQuery({
+    queryKey: ['/api/app/user/referral-stats', pbId],
+    queryFn: () => api.getReferralStats(pbId),
+    enabled: !!pbId,
+    staleTime: 30_000,
+  });
+
+  const referredCount = stats?.referredCount ?? 0;
+  const totalEarnings = stats?.totalEarnings ?? 0;
 
   async function copyCode() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -39,8 +52,8 @@ export default function InviteScreen() {
 
   const steps = [
     { icon: 'share-social', title: 'Share Your Code', desc: 'Send your referral code to friends via WhatsApp, Telegram, or any app.' },
-    { icon: 'person-add', title: 'Friend Signs Up', desc: 'Your friend creates an account and enters your referral code.' },
-    { icon: 'flash', title: 'Earn Commission', desc: 'You automatically earn 10% bonus on every SHIB claim your friend makes.' },
+    { icon: 'person-add', title: 'Friend Signs Up', desc: 'Your friend creates an account and enters your referral code. You get 30 PT instantly.' },
+    { icon: 'flash', title: 'Earn Commission', desc: 'You automatically earn 10% bonus on every SHIB claim and game reward your friend makes.' },
   ];
 
   return (
@@ -52,13 +65,12 @@ export default function InviteScreen() {
         end={{ x: 0.5, y: 0.5 }}
       />
       <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.scroll, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 16), paddingBottom: 120 }]}
       >
         <Animated.View entering={FadeInDown.delay(100).springify()}>
           <Text style={styles.pageTitle}>Invite & Earn</Text>
-          <Text style={styles.pageSubtitle}>Earn 10% commission on every friend's mining claim</Text>
+          <Text style={styles.pageSubtitle}>Get 30 PT instantly per referral + 10% lifetime commission</Text>
         </Animated.View>
 
         <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.codeCard}>
@@ -98,12 +110,12 @@ export default function InviteScreen() {
         <Animated.View entering={FadeInDown.delay(300).springify()} style={styles.statsRow}>
           <View style={styles.statCard}>
             <MaterialCommunityIcons name="account-group" size={22} color={Colors.neonOrange} />
-            <Text style={styles.statValue}>0</Text>
+            <Text style={styles.statValue}>{referredCount}</Text>
             <Text style={styles.statLabel}>Friends Referred</Text>
           </View>
           <View style={styles.statCard}>
             <MaterialCommunityIcons name="bitcoin" size={22} color={Colors.gold} />
-            <Text style={styles.statValue}>0</Text>
+            <Text style={styles.statValue}>{totalEarnings.toFixed(totalEarnings < 10 ? 2 : 0)}</Text>
             <Text style={styles.statLabel}>SHIB Earned</Text>
           </View>
         </Animated.View>
@@ -131,7 +143,7 @@ export default function InviteScreen() {
         {user?.referredBy && (
           <Animated.View entering={FadeInDown.delay(500).springify()} style={styles.referredBanner}>
             <Ionicons name="gift" size={20} color={Colors.gold} />
-            <Text style={styles.referredText}>Referred by code: <Text style={{ color: Colors.gold }}>{user.referredBy}</Text></Text>
+            <Text style={styles.referredText}>You were referred — you got <Text style={{ color: Colors.gold }}>30 PT</Text> at signup!</Text>
           </Animated.View>
         )}
       </ScrollView>
@@ -194,5 +206,5 @@ const styles = StyleSheet.create({
     padding: 14, marginTop: 8,
     borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)',
   },
-  referredText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textSecondary },
+  referredText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textSecondary, flex: 1 },
 });

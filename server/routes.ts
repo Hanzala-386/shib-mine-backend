@@ -110,10 +110,33 @@ function generateReferralCode() {
   return Math.random().toString(36).substr(2, 6).toUpperCase();
 }
 
+// ─── Ensure PB schema has referral_earnings field ──────────────────────────
+async function ensureReferralEarningsField() {
+  try {
+    const token = await getAdminToken();
+    const colls = await pbHttp("GET", "/api/collections?perPage=200", null, token);
+    const usersCol = (colls.items || []).find((c: any) => c.name === "users");
+    if (!usersCol) return;
+    const hasField = (usersCol.schema || []).some((f: any) => f.name === "referral_earnings");
+    if (hasField) return;
+    await pbHttp("PATCH", `/api/collections/${usersCol.id}`, {
+      schema: [
+        ...(usersCol.schema || []),
+        { name: "referral_earnings", type: "number", required: false },
+      ],
+    }, token);
+    console.log("[PB] Added referral_earnings field to users collection");
+  } catch (e: any) {
+    console.warn("[PB] Schema update skipped:", e.message);
+  }
+}
+
 // ─── Routes ────────────────────────────────────────────────────────────────
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Warm up admin token on startup
-  getAdminToken().catch((e) => console.warn("[PB] Startup auth failed:", e));
+  // Warm up admin token, ensure PB schema on startup
+  getAdminToken()
+    .then(() => ensureReferralEarningsField())
+    .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── Settings ──────────────────────────────────────────────────────────────
   app.get("/api/app/settings", async (_req: Request, res: Response) => {
@@ -147,6 +170,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error("[/api/app/settings]", e.message);
       res.status(500).json({ error: "Failed to fetch settings" });
+    }
+  });
+
+  // ── Referral: Validate code ────────────────────────────────────────────────
+  app.get("/api/app/auth/validate-referral", async (req: Request, res: Response) => {
+    try {
+      const code = (req.query.code as string || "").trim().toUpperCase();
+      if (!code) return res.status(400).json({ valid: false, error: "Code required" });
+      const r = await pbGet(
+        `/api/collections/users/records?filter=referral_code="${encodeURIComponent(code)}"&perPage=1&fields=id,display_name`,
+      );
+      const referrer = r.items?.[0];
+      if (!referrer) return res.json({ valid: false });
+      res.json({ valid: true, referrerName: referrer.display_name || "" });
+    } catch (e: any) {
+      console.error("[/api/app/auth/validate-referral]", e.message);
+      res.status(500).json({ valid: false, error: "Validation failed" });
+    }
+  });
+
+  // ── Referral: Stats ────────────────────────────────────────────────────────
+  app.get("/api/app/user/:pbId/referral-stats", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,referral_earnings`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      const referred = await pbGet(
+        `/api/collections/users/records?filter=referred_by="${pbId}"&perPage=1&fields=id`,
+      );
+      res.json({
+        referredCount: referred.totalItems || 0,
+        totalEarnings: user.referral_earnings || 0,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/user/referral-stats]", e.message);
+      res.status(500).json({ error: "Failed to fetch referral stats" });
     }
   });
 
@@ -200,7 +260,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (!u.firebase_uid) patches.firebase_uid = firebaseUid;
           if (!u.referral_code) patches.referral_code = referralCode || generateReferralCode();
           if (!u.display_name && displayName) patches.display_name = displayName;
-          if (!u.referred_by && referredBy) patches.referred_by = referredBy;
+          if (!u.referred_by && referrerPbId) patches.referred_by = referrerPbId;
           if (Object.keys(patches).length > 0) {
             const updated = await pbPatch(`/api/collections/users/records/${u.id}`, patches);
             if (!updated.code) u = { ...u, ...patches };
@@ -220,7 +280,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         firebase_uid: firebaseUid,
         display_name: displayName || email.split("@")[0],
         referral_code: code,
-        referred_by: referredBy || "",
+        referred_by: referrerPbId || "",
         shib_balance: 0,
         power_tokens: 10,
         total_claims: 0,
@@ -232,17 +292,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: created.message });
       }
 
-      // If referred, give referrer a small welcome bonus
+      // Give referrer 30 Power Tokens immediately on successful signup
       if (referrerPbId) {
-        pbGet(
-          `/api/collections/users/records/${referrerPbId}`,
-        ).then(async (referrer) => {
+        pbGet(`/api/collections/users/records/${referrerPbId}`).then(async (referrer) => {
           if (referrer?.id) {
             await pbPatch(`/api/collections/users/records/${referrerPbId}`, {
-              shib_balance: (referrer.shib_balance || 0) + 5,
+              power_tokens: (referrer.power_tokens || 10) + 30,
             });
           }
-        }).catch(() => { });
+        }).catch(() => {});
       }
 
       return res.json(formatUser(created));
@@ -307,7 +365,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         firebase_uid: firebaseUid,
         display_name: displayName || email.split("@")[0],
         referral_code: code,
-        referred_by: referredBy || "",
+        referred_by: referrerPbId || "",
         shib_balance: 0,
         power_tokens: 10,
         total_claims: 0,
@@ -317,11 +375,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (created.code) return res.status(400).json({ error: created.message });
 
+      // Give referrer 30 Power Tokens immediately on successful signup
       if (referrerPbId) {
         pbGet(`/api/collections/users/records/${referrerPbId}`)
           .then(async (r) => {
             if (r?.id) await pbPatch(`/api/collections/users/records/${referrerPbId}`, {
-              shib_balance: (r.shib_balance || 0) + 5,
+              power_tokens: (r.power_tokens || 10) + 30,
             });
           }).catch(() => {});
       }
@@ -645,19 +704,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         total_claims: newClaims,
       });
 
-      // 10% referral commission
+      // 10% referral commission — try direct PB ID first (new format), fallback to code (old format)
       if (user.referred_by) {
-        pbGet(
-          `/api/collections/users/records?filter=referral_code="${encodeURIComponent(user.referred_by)}"&perPage=1`,
-        ).then(async (refRes) => {
-          const referrer = refRes.items?.[0];
-          if (referrer) {
-            const commission = Math.round(serverReward * 0.1);
-            await pbPatch(`/api/collections/users/records/${referrer.id}`, {
-              shib_balance: (referrer.shib_balance || 0) + commission,
-            });
-          }
-        }).catch(() => { });
+        (async () => {
+          try {
+            let referrer: any = null;
+            const direct = await pbGet(`/api/collections/users/records/${user.referred_by}`);
+            if (!direct.code && direct.id) {
+              referrer = direct;
+            } else {
+              const byCode = await pbGet(
+                `/api/collections/users/records?filter=referral_code="${encodeURIComponent(user.referred_by)}"&perPage=1`,
+              );
+              referrer = byCode.items?.[0] || null;
+            }
+            if (referrer) {
+              const commission = Math.round(serverReward * 0.1);
+              await pbPatch(`/api/collections/users/records/${referrer.id}`, {
+                shib_balance: (referrer.shib_balance || 0) + commission,
+                referral_earnings: (referrer.referral_earnings || 0) + commission,
+              });
+            }
+          } catch (_) {}
+        })();
       }
 
       res.json({ success: true, newShibBalance: newShib, reward: serverReward });
@@ -977,6 +1046,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         total_wins: newWins,
       });
 
+      // 10% referral commission on game earnings
+      if (user.referred_by) {
+        (async () => {
+          try {
+            let referrer: any = null;
+            const direct = await pbGet(`/api/collections/users/records/${user.referred_by}`);
+            if (!direct.code && direct.id) {
+              referrer = direct;
+            } else {
+              const byCode = await pbGet(
+                `/api/collections/users/records?filter=referral_code="${encodeURIComponent(user.referred_by)}"&perPage=1`,
+              );
+              referrer = byCode.items?.[0] || null;
+            }
+            if (referrer) {
+              const commission = Math.round(amount * 0.1);
+              if (commission > 0) {
+                await pbPatch(`/api/collections/users/records/${referrer.id}`, {
+                  power_tokens: (referrer.power_tokens || 0) + commission,
+                  referral_earnings: (referrer.referral_earnings || 0) + commission,
+                });
+              }
+            }
+          } catch (_) {}
+        })();
+      }
+
       res.json({ success: true, newPowerTokens: newPT });
     } catch (e: any) {
       console.error("[/api/app/game/reward]", e.message);
@@ -1022,6 +1118,7 @@ function formatUser(u: any) {
     displayName: u.display_name || u.name || "",
     referralCode: u.referral_code || "",
     referredBy: u.referred_by || "",
+    referralEarnings: u.referral_earnings || 0,
     shibBalance: u.shib_balance || 0,
     powerTokens: u.power_tokens || 10,
     totalClaims: u.total_claims || 0,

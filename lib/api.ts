@@ -111,6 +111,19 @@ export const api = {
       { pbId, amount },
     ),
 
+  // ── Referral ──────────────────────────────────────────────────────────
+  validateReferralCode: (code: string) =>
+    request<{ valid: boolean; referrerName?: string }>(
+      'GET',
+      `/api/app/auth/validate-referral?code=${encodeURIComponent(code.trim().toUpperCase())}`,
+    ),
+
+  getReferralStats: (pbId: string) =>
+    request<{ referredCount: number; totalEarnings: number }>(
+      'GET',
+      `/api/app/user/${pbId}/referral-stats`,
+    ),
+
   // ── Admin ─────────────────────────────────────────────────────────────
   adminGetUsers: (page = 1) =>
     request<AdminUsersResponse>('GET', `/api/app/admin/users?page=${page}`),
@@ -138,6 +151,7 @@ export interface PBUser {
   displayName: string;
   referralCode: string;
   referredBy: string;
+  referralEarnings: number;
   shibBalance: number;
   powerTokens: number;
   totalClaims: number;

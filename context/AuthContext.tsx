@@ -20,6 +20,7 @@ export interface UserProfile {
   displayName: string;
   referralCode: string;
   referredBy?: string;
+  referralEarnings: number;
   createdAt: number;
   is_verified: boolean;
 }
@@ -56,6 +57,7 @@ function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
     displayName: u.displayName,
     referralCode: u.referralCode,
     referredBy: u.referredBy || undefined,
+    referralEarnings: u.referralEarnings || 0,
     createdAt: new Date(u.created).getTime(),
     is_verified: u.is_verified,
   };
