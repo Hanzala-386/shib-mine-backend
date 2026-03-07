@@ -82,7 +82,9 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 - `app/verify-email.tsx` — 6-digit OTP input screen
 - `app/admin.tsx` — Admin control panel
 - `app/(tabs)/index.tsx` — Home/Mining with rolling counter + booster cards
-- `app/(tabs)/games.tsx` — Knife Hit game
+- `app/(tabs)/games.tsx` — Knife Hit game (WebView → GDevelop HTML5 game hosted at `/game/`)
+- `public/game/Knife hit Template/` — Extracted game assets + custom `index.html` HTML5 engine
+- Express serves game at `/game/` static route (server/index.ts)
 - `app/(tabs)/invite.tsx` — Referral system
 - `app/(tabs)/wallet.tsx` — Wallet with BEP-20 + Binance Email withdrawal
 - `app/(tabs)/profile.tsx` — Profile with admin access

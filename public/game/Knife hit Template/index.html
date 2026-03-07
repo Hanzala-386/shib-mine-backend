@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<title>Knife Hit</title>
+<style>
+  @font-face { font-family:'BAUHS93'; src:url('BAUHS93.TTF'); }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#1a0a05;touch-action:none;}
+  canvas{display:block;margin:0 auto;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+/* ── Canvas setup ────────────────────────────────────── */
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+const W = 400, H = 660;
+canvas.width  = W;
+canvas.height = H;
+(function fitCanvas(){
+  const s = Math.min(window.innerWidth/W, window.innerHeight/H);
+  canvas.style.width  = (W*s)+'px';
+  canvas.style.height = (H*s)+'px';
+  canvas.style.position='absolute';
+  canvas.style.left=((window.innerWidth-W*s)/2)+'px';
+  canvas.style.top=((window.innerHeight-H*s)/2)+'px';
+})();
+window.addEventListener('resize',()=>{ (function(){
+  const s=Math.min(window.innerWidth/W,window.innerHeight/H);
+  canvas.style.width=(W*s)+'px';canvas.style.height=(H*s)+'px';
+  canvas.style.left=((window.innerWidth-W*s)/2)+'px';
+  canvas.style.top=((window.innerHeight-H*s)/2)+'px';
+})(); });
+
+/* ── Asset loader ────────────────────────────────────── */
+function loadImg(src){ const i=new Image(); i.src=src; return i; }
+function loadSound(src){ try{ const a=new Audio(src); a.preload='none'; return a; }catch(e){ return null; } }
+function playSound(a,vol=0.6){ if(!a)return; try{ const c=a.cloneNode(); c.volume=vol; c.play().catch(()=>{}); }catch(e){} }
+
+const BOSSES = [
+  loadImg('Bosses/boss-Ground.png'),
+  loadImg('Bosses/boss-Orange.png'),
+  loadImg('Bosses/boss-WaterMelon.png'),
+  loadImg('Bosses/boss-Meat.png'),
+  loadImg('Bosses/boss-Tire.png'),
+  loadImg('Bosses/boss-lid.png'),
+];
+const KNIFE_IMG = loadImg('Knives/Knife.png');
+const KNIFE_IMGS = Array.from({length:20},(_,i)=>loadImg(`Knives/item knife-${String(i+1).padStart(2,'0')}.png`));
+const BG_IMG  = loadImg('bg_wood.png');
+const BGSHEET = loadImg('background-sheet0.png');
+const RESTART_IMG = loadImg('GamePlay Screen/restartBtn.png');
+const SCORE_BG    = loadImg('GamePlay Screen/gameOveScoreBG.png');
+const NEWBEST_IMG = loadImg('GamePlay Screen/NewBest.png');
+
+const SND = {
+  throw:    loadSound('sound/UsedInGame/ev_throw_1.mp3'),
+  hit:      loadSound('sound/UsedInGame/ev_hit_1.mp3'),
+  hitKnife: loadSound('sound/UsedInGame/ev_boss_fight_hit.mp3'),
+  defeated: loadSound('sound/UsedInGame/ev_boss_defeated.mp3'),
+  gameover: loadSound('sound/UsedInGame/ev_hit_last.mp3'),
+  button:   loadSound('sound/UsedInGame/ev_button_click.mp3'),
+};
+
+/* ── Game state ──────────────────────────────────────── */
+const LOG_CX = W/2, LOG_CY = H/2 - 30;
+const LOG_R  = 80;
+const KNIFE_VIS_LEN = 90;
+const KNIFE_W = 9;
+const KNIFE_SPEED = 16;
+
+const LEVELS = [
+  {knives:8, speed:1.2, dir:1},
+  {knives:9, speed:1.5, dir:-1},
+  {knives:10,speed:1.8, dir:1},
+  {knives:9, speed:2.0, dir:-1},
+  {knives:11,speed:2.2, dir:1},
+  {knives:10,speed:2.5, dir:-1},
+];
+function getLvl(l){ return LEVELS[Math.min(l-1,LEVELS.length-1)]; }
+
+let state = 'menu';
+let level = 1;
+let score = 0;
+let highScore = Number(localStorage.getItem('kh_hi')||0);
+let knifeIndex = 0;
+let knivesOnLog = [];
+let flying    = null;
+let logAngle  = 0;
+let logSpeedRad = 0;
+let logDir = 1;
+let knivesLeft = 0;
+let totalKnives = 0;
+let lastTime = 0;
+let shakeTimer = 0;
+let shakeAmt  = 0;
+let levelComplete = false;
+let levelCompleteTimer = 0;
+let bossIndex = 0;
+let gameSentToApp = false;
+let selectedKnife = 0;
+
+/* ── Helpers ─────────────────────────────────────────── */
+function norm(a){ return ((a%Math.PI*2)+Math.PI*2)%(Math.PI*2); }
+function angleDiff(a,b){
+  let d = Math.abs(norm(a)-norm(b));
+  return Math.min(d, Math.PI*2-d);
+}
+function startLevel(){
+  const lv = getLvl(level);
+  knivesLeft = lv.knives;
+  totalKnives = lv.knives;
+  logSpeedRad = lv.speed * 0.012;
+  logDir = lv.dir;
+  knivesOnLog = [];
+  flying = null;
+  levelComplete = false;
+  levelCompleteTimer = 0;
+  bossIndex = (level-1) % BOSSES.length;
+  state = 'playing';
+}
+
+function throwKnife(){
+  if(flying || levelComplete) return;
+  if(knivesLeft <= 0) return;
+  flying = { x: LOG_CX, y: H - 80, vy: -KNIFE_SPEED };
+  playSound(SND.throw, 0.7);
+}
+
+function checkCollision(){
+  if(!flying) return;
+  const kx = flying.x, ky = flying.y;
+  const dist = Math.sqrt((kx-LOG_CX)**2 + (ky-LOG_CY)**2);
+  if(dist < LOG_R + KNIFE_VIS_LEN*0.15){
+    const impactAngle = Math.atan2(ky - LOG_CY, kx - LOG_CX);
+    const localAngle = impactAngle - logAngle;
+    for(const k of knivesOnLog){
+      if(angleDiff(localAngle, k.localAngle) < 0.18){
+        playSound(SND.hitKnife, 0.8);
+        triggerShake(10);
+        gameOver();
+        return;
+      }
+    }
+    playSound(SND.hit, 0.7);
+    knivesOnLog.push({ localAngle });
+    flying = null;
+    knivesLeft--;
+    score += 10;
+    triggerShake(3);
+    if(knivesLeft <= 0){
+      setTimeout(()=>{ nextLevel(); }, 600);
+      playSound(SND.defeated, 0.8);
+      levelComplete = true;
+      levelCompleteTimer = 0;
+    }
+  }
+}
+
+function nextLevel(){
+  level++;
+  score += level * 5;
+  startLevel();
+}
+
+function gameOver(){
+  state = 'gameover';
+  if(score > highScore){ highScore = score; localStorage.setItem('kh_hi',highScore); }
+  if(!gameSentToApp){
+    gameSentToApp = true;
+    const pt = Math.max(1, Math.floor(score / 20));
+    sendToApp('GAME_OVER', { score, pt, level });
+  }
+}
+
+function triggerShake(amt){ shakeAmt = amt; shakeTimer = 10; }
+
+function sendToApp(type, data){
+  const msg = JSON.stringify({ type, ...data });
+  if(window.ReactNativeWebView){
+    window.ReactNativeWebView.postMessage(msg);
+  } else {
+    console.log('[game→app]', msg);
+  }
+}
+
+/* ── Draw helpers ────────────────────────────────────── */
+function drawKnifeAt(cx, cy, angleDeg, imgIndex){
+  const img = KNIFE_IMGS[imgIndex] || KNIFE_IMG;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angleDeg * Math.PI/180);
+  if(img.complete && img.naturalWidth){
+    ctx.drawImage(img, -KNIFE_W/2, -KNIFE_VIS_LEN, KNIFE_W, KNIFE_VIS_LEN);
+  } else {
+    ctx.fillStyle='#C8C8C8';
+    ctx.fillRect(-KNIFE_W/2, -KNIFE_VIS_LEN, KNIFE_W, KNIFE_VIS_LEN);
+    ctx.fillStyle='#888';
+    ctx.fillRect(-KNIFE_W/2, -KNIFE_VIS_LEN, KNIFE_W, KNIFE_VIS_LEN*0.15);
+  }
+  ctx.restore();
+}
+
+function drawFlyingKnifeImg(x, y){
+  const img = KNIFE_IMGS[selectedKnife] || KNIFE_IMG;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(Math.PI);
+  if(img.complete && img.naturalWidth){
+    ctx.drawImage(img, -KNIFE_W/2, -KNIFE_VIS_LEN, KNIFE_W, KNIFE_VIS_LEN);
+  } else {
+    ctx.fillStyle='#C8C8C8';
+    ctx.fillRect(-KNIFE_W/2, -KNIFE_VIS_LEN, KNIFE_W, KNIFE_VIS_LEN);
+  }
+  ctx.restore();
+}
+
+function drawRoundedRect(x, y, w, h, r, fill, stroke){
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.arcTo(x+w, y, x+w, y+r, r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.arcTo(x+w, y+h, x+w-r, y+h, r);
+  ctx.lineTo(x+r, y+h);
+  ctx.arcTo(x, y+h, x, y+h-r, r);
+  ctx.lineTo(x, y+r);
+  ctx.arcTo(x, y, x+r, y, r);
+  ctx.closePath();
+  if(fill){ ctx.fillStyle=fill; ctx.fill(); }
+  if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=2; ctx.stroke(); }
+}
+
+/* ── Main game loop ──────────────────────────────────── */
+function update(ts){
+  const dt = Math.min((ts - lastTime) / 16.67, 3);
+  lastTime = ts;
+
+  if(state === 'playing'){
+    logAngle += logSpeedRad * logDir * dt;
+    if(shakeTimer > 0){ shakeTimer--; if(shakeTimer===0) shakeAmt=0; }
+
+    if(flying){
+      flying.y += flying.vy * dt;
+      checkCollision();
+      if(flying && flying.y < -KNIFE_VIS_LEN){ flying = null; knivesLeft--; if(knivesLeft<=0) gameOver(); }
+    }
+    if(levelComplete){ levelCompleteTimer += dt; }
+  }
+
+  draw(ts);
+  requestAnimationFrame(update);
+}
+
+function draw(ts){
+  ctx.clearRect(0,0,W,H);
+
+  const shake = shakeTimer > 0 ? (Math.random()-0.5)*shakeAmt*2 : 0;
+  ctx.save();
+  ctx.translate(shake, shake*0.5);
+
+  /* background */
+  if(BG_IMG.complete && BG_IMG.naturalWidth){
+    ctx.drawImage(BG_IMG, 0, 0, W, H);
+  } else {
+    ctx.fillStyle = '#2a1205'; ctx.fillRect(0,0,W,H);
+  }
+
+  if(state === 'menu'){
+    drawMenu();
+  } else if(state === 'playing'){
+    drawGame();
+  } else if(state === 'gameover'){
+    drawGame();
+    drawGameOver(ts);
+  }
+
+  ctx.restore();
+}
+
+function drawMenu(){
+  ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,W,H);
+
+  ctx.font = 'bold 52px BAUHS93, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f5c542';
+  ctx.shadowColor='#000'; ctx.shadowBlur=8;
+  ctx.fillText('KNIFE HIT', W/2, H/2 - 80);
+  ctx.shadowBlur = 0;
+
+  if(highScore > 0){
+    ctx.font = '18px BAUHS93, sans-serif';
+    ctx.fillStyle='rgba(255,255,255,0.7)';
+    ctx.fillText('BEST: ' + highScore, W/2, H/2 - 36);
+  }
+
+  drawRoundedRect(W/2-90, H/2-5, 180, 56, 14, '#f5c542');
+  ctx.font = 'bold 22px BAUHS93, sans-serif';
+  ctx.fillStyle = '#1a0a05';
+  ctx.fillText('TAP TO PLAY', W/2, H/2+28);
+}
+
+function drawGame(){
+  /* Log / Boss */
+  ctx.save();
+  ctx.translate(LOG_CX, LOG_CY);
+  ctx.rotate(logAngle);
+
+  const boss = BOSSES[bossIndex];
+  if(boss && boss.complete && boss.naturalWidth){
+    ctx.drawImage(boss, -LOG_R, -LOG_R, LOG_R*2, LOG_R*2);
+  } else {
+    ctx.beginPath();
+    ctx.arc(0,0,LOG_R,0,Math.PI*2);
+    ctx.fillStyle='#6B4C2A'; ctx.fill();
+    ctx.strokeStyle='#3D2A15'; ctx.lineWidth=6; ctx.stroke();
+  }
+
+  /* Stuck knives on log */
+  for(const k of knivesOnLog){
+    ctx.save();
+    ctx.rotate(k.localAngle);
+    const img = KNIFE_IMGS[selectedKnife] || KNIFE_IMG;
+    if(img.complete && img.naturalWidth){
+      ctx.drawImage(img, -KNIFE_W/2, -LOG_R - KNIFE_VIS_LEN, KNIFE_W, KNIFE_VIS_LEN);
+    } else {
+      ctx.fillStyle='#C0C0C0';
+      ctx.fillRect(-KNIFE_W/2, -LOG_R - KNIFE_VIS_LEN, KNIFE_W, KNIFE_VIS_LEN);
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+
+  /* Flying knife */
+  if(flying){
+    drawFlyingKnifeImg(flying.x, flying.y);
+  }
+
+  /* Waiting knife at bottom */
+  if(!flying && !levelComplete && knivesLeft > 0 && state === 'playing'){
+    drawFlyingKnifeImg(LOG_CX, H - 80);
+  }
+
+  /* HUD */
+  drawHUD();
+}
+
+function drawHUD(){
+  /* Level badge */
+  ctx.font = 'bold 20px BAUHS93, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillStyle='rgba(255,255,255,0.9)';
+  ctx.shadowColor='#000'; ctx.shadowBlur=4;
+  ctx.fillText('LVL ' + level, 16, 48);
+
+  /* Score */
+  ctx.textAlign = 'right';
+  ctx.fillText('PT ' + Math.max(1,Math.floor(score/20)), W-16, 48);
+  ctx.shadowBlur = 0;
+
+  /* Knife dots */
+  const total = totalKnives;
+  const left  = knivesLeft;
+  const dot   = 10;
+  const gap   = 14;
+  const startX = W/2 - (total*gap)/2;
+  for(let i=0; i<total; i++){
+    ctx.beginPath();
+    ctx.arc(startX + i*gap, H - 26, dot/2, 0, Math.PI*2);
+    ctx.fillStyle = i < (total - left) ? '#f5c542' : 'rgba(255,255,255,0.3)';
+    ctx.fill();
+  }
+}
+
+function drawGameOver(ts){
+  ctx.fillStyle='rgba(0,0,0,0.70)'; ctx.fillRect(0,0,W,H);
+
+  const pulse = 1 + 0.04*Math.sin(ts*0.004);
+
+  ctx.save();
+  ctx.translate(W/2, H/2-40);
+  ctx.scale(pulse, pulse);
+
+  const sbg = SCORE_BG;
+  if(sbg.complete && sbg.naturalWidth){
+    ctx.drawImage(sbg, -130, -80, 260, 160);
+  } else {
+    drawRoundedRect(-120,-70,240,140,20,'rgba(30,10,0,0.9)','#f5c542');
+  }
+
+  const isNew = score >= highScore && score > 0;
+  if(isNew){
+    const nbImg = NEWBEST_IMG;
+    if(nbImg.complete && nbImg.naturalWidth){ ctx.drawImage(nbImg,-70,-78,140,36); }
+    else { ctx.font='bold 16px BAUHS93,sans-serif'; ctx.fillStyle='#f5c542'; ctx.textAlign='center'; ctx.fillText('NEW BEST!',0,-60); }
+  }
+
+  ctx.font = 'bold 52px BAUHS93, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f5c542';
+  ctx.shadowColor='#000'; ctx.shadowBlur=10;
+  ctx.fillText(String(score), 0, 16);
+  ctx.shadowBlur=0;
+  ctx.font='16px BAUHS93,sans-serif';
+  ctx.fillStyle='rgba(255,255,255,0.7)';
+  ctx.fillText('SCORE', 0, 42);
+  ctx.restore();
+
+  /* Restart button */
+  const rImg = RESTART_IMG;
+  if(rImg.complete && rImg.naturalWidth){
+    ctx.drawImage(rImg, W/2-45, H/2+78, 90, 90);
+  } else {
+    drawRoundedRect(W/2-70, H/2+76, 140, 52, 14, '#f5c542');
+    ctx.font='bold 20px BAUHS93,sans-serif'; ctx.fillStyle='#1a0a05'; ctx.textAlign='center';
+    ctx.fillText('RESTART', W/2, H/2+108);
+  }
+  ctx.font='13px BAUHS93,sans-serif'; ctx.fillStyle='rgba(255,255,255,0.55)'; ctx.textAlign='center';
+  ctx.fillText('tap to restart', W/2, H/2+178);
+}
+
+/* ── Input ───────────────────────────────────────────── */
+function handleTap(){
+  if(state === 'menu'){
+    playSound(SND.button, 0.6);
+    gameSentToApp = false;
+    level = 1; score = 0;
+    selectedKnife = Math.floor(Math.random()*20);
+    startLevel();
+    return;
+  }
+  if(state === 'gameover'){
+    playSound(SND.button, 0.6);
+    gameSentToApp = false;
+    level = 1; score = 0;
+    selectedKnife = Math.floor(Math.random()*20);
+    startLevel();
+    return;
+  }
+  if(state === 'playing'){
+    throwKnife();
+  }
+}
+
+canvas.addEventListener('pointerdown', e => { e.preventDefault(); handleTap(); });
+document.addEventListener('keydown', e => { if(e.code==='Space'||e.code==='ArrowUp') handleTap(); });
+
+/* ── App bridge: receive messages from React Native ──── */
+window.addEventListener('message', e => {
+  try{
+    const d = JSON.parse(e.data);
+    if(d.type === 'DOUBLE_REWARD'){
+      sendToApp('DOUBLE_REWARD_ACK', {});
+    }
+  }catch(err){}
+});
+document.addEventListener('message', e => {
+  try{
+    const d = JSON.parse(e.data);
+    if(d.type === 'DOUBLE_REWARD'){
+      sendToApp('DOUBLE_REWARD_ACK', {});
+    }
+  }catch(err){}
+});
+
+/* ── Boot ────────────────────────────────────────────── */
+lastTime = performance.now();
+requestAnimationFrame(update);
+</script>
+</body>
+</html>
