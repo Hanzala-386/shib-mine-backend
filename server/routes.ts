@@ -159,7 +159,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         `/api/collections/users/records?filter=firebase_uid="${encodeURIComponent(firebaseUid)}"&perPage=1`,
       );
       if (existing.items?.[0]) {
-        const u = existing.items[0];
+        let u = existing.items[0];
+        // Auto-generate referral code if the user was created before this was added
+        if (!u.referral_code) {
+          const code = generateReferralCode();
+          const updated = await pbPatch(`/api/collections/users/records/${u.id}`, {
+            referral_code: code,
+          });
+          if (!updated.code) u = { ...u, referral_code: code };
+        }
         return res.json(formatUser(u));
       }
 
@@ -170,6 +178,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
           `/api/collections/users/records?filter=referral_code="${encodeURIComponent(referredBy)}"&perPage=1`,
         );
         referrerPbId = referrerRes.items?.[0]?.id;
+      }
+
+      // Try to find user by email (handles manually created accounts with empty firebase_uid)
+      const byEmail = await pbGet(
+        `/api/collections/users/records?filter=email="${email}"&perPage=1`,
+      );
+      if (byEmail.items?.[0]) {
+        let u = byEmail.items[0];
+        const patches: any = {};
+        if (!u.firebase_uid) patches.firebase_uid = firebaseUid;
+        if (!u.referral_code) patches.referral_code = referralCode || generateReferralCode();
+        if (!u.display_name && displayName) patches.display_name = displayName;
+        if (!u.referred_by && referredBy) patches.referred_by = referredBy;
+        if (Object.keys(patches).length > 0) {
+          const updated = await pbPatch(`/api/collections/users/records/${u.id}`, patches);
+          if (!updated.code) u = { ...u, ...patches };
+        }
+        return res.json(formatUser(u));
       }
 
       // Create PB user (using PB built-in auth)
@@ -221,8 +247,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const r = await pbGet(
         `/api/collections/users/records?filter=firebase_uid="${encodeURIComponent(firebaseUid)}"&perPage=1`,
       );
-      const u = r.items?.[0];
+      let u = r.items?.[0];
       if (!u) return res.status(404).json({ error: "User not found" });
+
+      // Auto-generate referral code if missing
+      if (!u.referral_code) {
+        const code = generateReferralCode();
+        const updated = await pbPatch(`/api/collections/users/records/${u.id}`, {
+          referral_code: code,
+        });
+        if (!updated.code) u = { ...u, referral_code: code };
+      }
+
       res.json(formatUser(u));
     } catch (e: any) {
       console.error("[/api/app/user/:id]", e.message);
@@ -256,9 +292,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ── Mining: Start ─────────────────────────────────────────────────────────
   app.post("/api/app/mine/start", async (req: Request, res: Response) => {
     try {
-      const { pbId, multiplier, miningRatePerSec, durationMinutes } = req.body;
+      const { pbId, multiplier } = req.body;
       if (!pbId)
         return res.status(400).json({ error: "pbId required" });
+
+      // Fetch user and settings in parallel
+      const [userRecord, settings] = await Promise.all([
+        pbGet(`/api/collections/users/records/${pbId}`),
+        fetchSettings(),
+      ]);
+
+      if (userRecord.code)
+        return res.status(404).json({ error: "User not found" });
+
+      // Deduct power_token_per_click as mining entry fee
+      const ptCost = settings?.power_token_per_click || 24;
+      const currentPT = userRecord.power_tokens || 0;
+      if (currentPT < ptCost) {
+        return res.status(400).json({
+          error: `Not enough Power Tokens. You need ${ptCost} PT to start mining but only have ${currentPT} PT.`,
+          code: "INSUFFICIENT_PT",
+          required: ptCost,
+          current: currentPT,
+        });
+      }
+
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens: currentPT - ptCost,
+      });
 
       // Expire any existing active sessions
       const existing = await pbGet(
@@ -273,8 +334,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      const rate = miningRatePerSec || 0.01736;
-      const dur = durationMinutes || 60;
+      const rate = settings?.mining_rate_per_sec || 0.01736;
+      const dur = settings?.mining_duration_minutes || 60;
       const expectedReward = rate * dur * 60 * (multiplier || 1);
 
       const session = await pbPost("/api/collections/mining_sessions/records", {
@@ -295,6 +356,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         durationMs: dur * 60 * 1000,
         multiplier: multiplier || 1,
         expectedReward,
+        miningRatePerSec: rate,
+        ptDeducted: ptCost,
+        newPowerTokens: currentPT - ptCost,
         status: "mining",
       });
     } catch (e: any) {

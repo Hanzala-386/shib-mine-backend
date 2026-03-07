@@ -21,13 +21,14 @@ interface MiningContextValue {
   elapsedMs: number;
   progress: number;
   displayedShibBalance: number;
-  startMining: (multiplier?: number) => Promise<boolean>;
+  startMining: (multiplier?: number) => Promise<{ success: boolean; error?: string }>;
   claimReward: () => Promise<number>;
   shibReward: number;
   miningRatePerSec: number;
   setMiningRatePerSec: (rate: number) => void;
   durationMinutes: number;
   setDurationMinutes: (m: number) => void;
+  miningEntryCost: number;
 }
 
 const MiningContext = createContext<MiningContextValue | null>(null);
@@ -40,6 +41,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   const [miningRatePerSec, setMiningRatePerSec] = useState(0.01736);
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [displayedShibBalance, setDisplayedShibBalance] = useState(0);
+  const [miningEntryCost, setMiningEntryCost] = useState(24);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shibIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -52,6 +54,15 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  // Sync mining rate and entry cost from server settings
+  useEffect(() => {
+    api.getSettings().then((s) => {
+      if (s.miningRatePerSec) setMiningRatePerSec(s.miningRatePerSec);
+      if (s.miningDurationMinutes) setDurationMinutes(s.miningDurationMinutes);
+      if (s.powerTokenPerClick) setMiningEntryCost(s.powerTokenPerClick);
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (uid) loadSession();
@@ -150,16 +161,15 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     }, 100);
   }
 
-  async function startMining(multiplier = 1): Promise<boolean> {
-    if (!pbId) return false;
+  async function startMining(multiplier = 1): Promise<{ success: boolean; error?: string }> {
+    if (!pbId) return { success: false, error: 'Account not ready. Please wait.' };
 
     try {
-      const res = await api.startMining({
-        pbId,
-        multiplier,
-        miningRatePerSec,
-        durationMinutes,
-      });
+      const res = await api.startMining({ pbId, multiplier });
+
+      // Sync server-provided rate and refresh balance (PT was deducted server-side)
+      if (res.miningRatePerSec) setMiningRatePerSec(res.miningRatePerSec);
+      await refreshBalance();
 
       const startTime = new Date(
         res.startTime.includes('T') ? res.startTime : res.startTime.replace(' ', 'T') + 'Z',
@@ -180,10 +190,10 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       setDisplayedShibBalance(0);
       if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(newSession));
       startTimers(newSession);
-      return true;
-    } catch (e) {
+      return { success: true };
+    } catch (e: any) {
       console.warn('[Mining] startMining failed', e);
-      return false;
+      return { success: false, error: e.message || 'Failed to start mining.' };
     }
   }
 
@@ -244,7 +254,8 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     startMining, claimReward, shibReward,
     miningRatePerSec, setMiningRatePerSec,
     durationMinutes, setDurationMinutes,
-  }), [session, status, timeRemaining, elapsedMs, progress, displayedShibBalance, shibReward, miningRatePerSec, durationMinutes]);
+    miningEntryCost,
+  }), [session, status, timeRemaining, elapsedMs, progress, displayedShibBalance, shibReward, miningRatePerSec, durationMinutes, miningEntryCost]);
 
   return <MiningContext.Provider value={value}>{children}</MiningContext.Provider>;
 }

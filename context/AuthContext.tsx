@@ -79,13 +79,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function syncWithServer(fbUser: FirebaseUser): Promise<void> {
     try {
+      console.log('[Auth] syncWithServer uid=', fbUser.uid?.slice(0,8), 'email=', fbUser.email);
       // First try to fetch existing user
-      let pb = await api.getUser(fbUser.uid).catch(() => null);
+      let pb = await api.getUser(fbUser.uid).catch((e) => { console.log('[Auth] getUser failed:', e.message); return null; });
+      console.log('[Auth] getUser result:', pb ? 'found' : 'null', pb?.referralCode);
 
       if (!pb) {
         // Check for pending signup data
         const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
         const pending = cached ? JSON.parse(cached) : {};
+        console.log('[Auth] calling syncUser for', fbUser.email);
         pb = await api.syncUser({
           firebaseUid: fbUser.uid,
           email: fbUser.email ?? '',
@@ -93,18 +96,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           referralCode: pending.referralCode || generateReferralCode(),
           referredBy: pending.referredBy || '',
         });
+        console.log('[Auth] syncUser result:', pb ? 'ok' : 'null', 'code=', pb?.referralCode);
         if (cached) await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
       }
 
       if (pb) {
+        // If server returned empty referral code, assign one now and save it
+        if (!pb.referralCode) {
+          const code = generateReferralCode();
+          pb = { ...pb, referralCode: code };
+          // Save to server in background (don't await)
+          api.syncUser({
+            firebaseUid: fbUser.uid,
+            email: fbUser.email ?? '',
+            referralCode: code,
+          }).then((updated) => {
+            if (updated.referralCode) pb = updated;
+          }).catch(() => {});
+          // Persist locally
+          await AsyncStorage.setItem(`shib_referral_${fbUser.uid}`, code);
+        }
         setPbUser(pb);
         setUser(pbToProfile(pb, fbUser));
         await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
+        console.log('[Auth] user set, referralCode=', pb.referralCode);
       }
     } catch (e) {
       console.warn('[Auth] Server sync failed, using cache', e);
       const cached = await AsyncStorage.getItem(`shib_profile_${fbUser.uid}`);
-      if (cached) setUser(JSON.parse(cached));
+      if (cached) {
+        const cachedProfile = JSON.parse(cached);
+        // If cached profile has no referral code, generate one
+        if (!cachedProfile.referralCode) {
+          const storedCode = await AsyncStorage.getItem(`shib_referral_${fbUser.uid}`);
+          cachedProfile.referralCode = storedCode || generateReferralCode();
+          if (!storedCode) {
+            await AsyncStorage.setItem(`shib_referral_${fbUser.uid}`, cachedProfile.referralCode);
+          }
+        }
+        setUser(cachedProfile);
+      }
     }
   }
 
@@ -162,10 +193,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function refreshBalance() {
     if (firebaseUser) {
       try {
-        const pb = await api.getUser(firebaseUser.uid);
+        let pb = await api.getUser(firebaseUser.uid).catch(() => null);
+        if (!pb) {
+          pb = await api.syncUser({
+            firebaseUid: firebaseUser.uid,
+            email: firebaseUser.email ?? '',
+            displayName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || '',
+          });
+        }
         if (pb) {
+          // Client-side fallback: ensure referral code is always set
+          if (!pb.referralCode) {
+            const storedCode = await AsyncStorage.getItem(`shib_referral_${firebaseUser.uid}`);
+            pb = { ...pb, referralCode: storedCode || generateReferralCode() };
+            if (!storedCode) {
+              await AsyncStorage.setItem(`shib_referral_${firebaseUser.uid}`, pb.referralCode);
+            }
+          }
           setPbUser(pb);
           setUser(pbToProfile(pb, firebaseUser));
+          await AsyncStorage.setItem(`shib_profile_${firebaseUser.uid}`, JSON.stringify(pbToProfile(pb, firebaseUser)));
         }
       } catch (e) {
         console.warn('[Auth] refreshBalance failed', e);

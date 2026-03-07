@@ -53,10 +53,13 @@ export default function WalletScreen() {
   const { shibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal, isLoading } = useWallet();
   const { pbUser } = useAuth();
   const [showWithdraw, setShowWithdraw] = useState(false);
-  const [method, setMethod] = useState('Binance');
+  const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>('Binance Email');
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const addressLabel = method === 'BEP-20' ? 'BEP-20 Wallet Address' : 'Binance Email';
+  const addressPlaceholder = method === 'BEP-20' ? 'Enter your BEP-20 address (0x...)' : 'Enter your Binance email';
 
   async function handleWithdraw() {
     const amt = parseFloat(amount);
@@ -178,27 +181,33 @@ export default function WalletScreen() {
             <Text style={styles.modalTitle}>Withdraw SHIB</Text>
             <Text style={styles.modalSub}>Minimum: {formatShib(minWithdrawalAmount)} SHIB (Tier {withdrawalTier})</Text>
 
-            <Text style={styles.fieldLabel}>Method</Text>
+            <Text style={styles.fieldLabel}>Withdrawal Method</Text>
             <View style={styles.methodRow}>
-              {['Binance', 'BEP-20', 'Easypaisa'].map(m => (
+              {(['Binance Email', 'BEP-20'] as const).map(m => (
                 <Pressable
                   key={m}
                   style={[styles.methodBtn, method === m && styles.methodBtnActive]}
-                  onPress={() => setMethod(m)}
+                  onPress={() => { setMethod(m); setAddress(''); }}
                 >
+                  <MaterialCommunityIcons
+                    name={m === 'BEP-20' ? 'ethereum' : 'email-outline'}
+                    size={14}
+                    color={method === m ? Colors.gold : Colors.textMuted}
+                  />
                   <Text style={[styles.methodBtnText, method === m && styles.methodBtnTextActive]}>{m}</Text>
                 </Pressable>
               ))}
             </View>
 
-            <Text style={styles.fieldLabel}>Address / Email</Text>
+            <Text style={styles.fieldLabel}>{addressLabel}</Text>
             <TextInput
               style={styles.input}
               value={address}
               onChangeText={setAddress}
-              placeholder="Enter wallet address or email"
+              placeholder={addressPlaceholder}
               placeholderTextColor={Colors.textMuted}
               autoCapitalize="none"
+              keyboardType={method === 'Binance Email' ? 'email-address' : 'default'}
             />
 
             <Text style={styles.fieldLabel}>Amount (SHIB)</Text>
@@ -277,7 +286,7 @@ const styles = StyleSheet.create({
   modalSub: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted, textAlign: 'center', marginBottom: 4 },
   fieldLabel: { fontFamily: 'Inter_500Medium', fontSize: 12, color: Colors.textSecondary },
   methodRow: { flexDirection: 'row', gap: 8 },
-  methodBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: Colors.darkBorder, alignItems: 'center' },
+  methodBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: Colors.darkBorder, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 },
   methodBtnActive: { borderColor: Colors.gold, backgroundColor: 'rgba(244,196,48,0.1)' },
   methodBtnText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textMuted },
   methodBtnTextActive: { color: Colors.gold },

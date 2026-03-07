@@ -58,7 +58,7 @@ export default function HomeScreen() {
   const { powerTokens, shibBalance, spendPowerTokens } = useWallet();
   const {
     status, timeRemaining, progress, startMining, claimReward,
-    shibReward, session, miningRatePerSec, displayedShibBalance,
+    shibReward, session, miningRatePerSec, displayedShibBalance, miningEntryCost,
   } = useMining();
   const { settings } = useAdmin();
   const [showAdLoader, setShowAdLoader] = useState(false);
@@ -125,8 +125,13 @@ export default function HomeScreen() {
       Alert.alert('Not Ready', 'Account sync in progress. Please wait a moment.');
       return;
     }
-    if (boosterCost > 0 && powerTokens < boosterCost) {
-      Alert.alert('Insufficient Tokens', `You need ${boosterCost} Power Tokens for this booster.`);
+    // Check user has enough PT for entry cost + booster cost
+    const totalCost = miningEntryCost + boosterCost;
+    if (powerTokens < totalCost) {
+      Alert.alert(
+        'Insufficient Power Tokens',
+        `You need ${totalCost} PT to start mining${boosterCost > 0 ? ` (${miningEntryCost} entry + ${boosterCost} booster)` : ''}.`,
+      );
       return;
     }
     if (boosterCost > 0) {
@@ -138,9 +143,11 @@ export default function HomeScreen() {
     await adService.showUnityInterstitial(
       async () => {
         setShowAdLoader(false);
-        const started = await startMining(multiplier);
-        if (started) {
+        const result = await startMining(multiplier);
+        if (result.success) {
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } else {
+          Alert.alert('Cannot Start Mining', result.error || 'Failed to start mining.');
         }
       },
       () => setShowAdLoader(false),
@@ -272,9 +279,10 @@ export default function HomeScreen() {
             >
               <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.actionGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                 <MaterialCommunityIcons name="pickaxe" size={20} color="#000" />
-                <Text style={styles.actionText}>{showAdLoader ? 'Loading Ad...' : 'Start Mining'}</Text>
+                <Text style={styles.actionText}>{showAdLoader ? 'Loading...' : 'Start Mining'}</Text>
                 <View style={styles.feeTag}>
-                  <Text style={styles.feeText}>FREE</Text>
+                  <MaterialCommunityIcons name="lightning-bolt" size={12} color="#000" />
+                  <Text style={styles.feeText}>{miningEntryCost} PT</Text>
                 </View>
               </LinearGradient>
             </Pressable>
@@ -375,7 +383,7 @@ const styles = StyleSheet.create({
   actionBtn: { width: '100%' },
   actionGradient: { height: 56, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
   actionText: { fontFamily: 'Inter_700Bold', fontSize: 17, color: '#000' },
-  feeTag: { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
+  feeTag: { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3, flexDirection: 'row', alignItems: 'center', gap: 2 },
   feeText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#000' },
   rewardPreview: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, marginTop: 8 },
   boostersSection: { marginBottom: 22 },

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, Alert, Switch, Platform,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -24,12 +25,37 @@ function formatDate(ts: number): string {
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
-  const { user, pbUser, signOut, isAdmin } = useAuth();
+  const { user, pbUser, signOut, isAdmin, refreshBalance } = useAuth();
   const { shibBalance, powerTokens } = useWallet();
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const miningCount = pbUser?.totalClaims ?? 0;
   const gameWins = pbUser?.totalWins ?? 0;
+  const referralCode = user?.referralCode || pbUser?.referralCode || '';
+  console.log('[Profile] render referralCode=', JSON.stringify(referralCode), 'user=', user?.email, 'pbUser=', pbUser?.email);
+
+  // Refresh on mount to ensure referral code and stats are up-to-date from server
+  useEffect(() => {
+    refreshBalance();
+  }, []);
+
+  async function handleCopyReferral() {
+    if (!referralCode) return;
+    await Clipboard.setStringAsync(referralCode);
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert('Copied!', `Referral code "${referralCode}" copied to clipboard.`);
+  }
+
+  async function handleRefreshStats() {
+    setRefreshing(true);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      await refreshBalance();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   async function handleSignOut() {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
@@ -93,11 +119,44 @@ export default function ProfileScreen() {
           </View>
         </Animated.View>
 
+        <Animated.View entering={FadeInDown.delay(250).springify()} style={styles.referralCard}>
+          <LinearGradient
+            colors={['rgba(244,196,48,0.12)', 'rgba(255,107,0,0.08)']}
+            style={styles.referralInner}
+          >
+            <View style={styles.referralRow}>
+              <View style={styles.referralIconWrap}>
+                <MaterialCommunityIcons name="account-multiple-plus" size={22} color={Colors.gold} />
+              </View>
+              <View style={styles.referralInfo}>
+                <Text style={styles.referralTitle}>Your Referral Code</Text>
+                <Text style={styles.referralDesc}>Share to earn 10% commission on friends' mining</Text>
+              </View>
+            </View>
+            <Pressable
+              style={({ pressed }) => [styles.referralCodeBox, { opacity: pressed ? 0.8 : 1 }]}
+              onPress={handleCopyReferral}
+            >
+              <Text style={styles.referralCodeText}>
+                {referralCode || '—'}
+              </Text>
+              <View style={styles.copyBtn}>
+                <Ionicons name="copy-outline" size={15} color={Colors.gold} />
+                <Text style={styles.copyBtnText}>Copy</Text>
+              </View>
+            </Pressable>
+          </LinearGradient>
+        </Animated.View>
+
         <Animated.View entering={FadeInDown.delay(300).springify()}>
-          <Text style={styles.sectionTitle}>Account</Text>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionTitle}>Account</Text>
+            <Pressable onPress={handleRefreshStats} style={styles.refreshBtn} disabled={refreshing}>
+              <Ionicons name="refresh" size={14} color={Colors.textMuted} style={{ opacity: refreshing ? 0.4 : 1 }} />
+            </Pressable>
+          </View>
           <View style={styles.menuGroup}>
             <MenuItem icon="mail-outline" label="Email" value={user?.email ?? ''} />
-            <MenuItem icon="gift-outline" label="Referral Code" value={user?.referralCode ?? ''} />
             <MenuItem icon="lightning-bolt" iconLib="material-community" label="Power Tokens" value={`${powerTokens} PT`} />
           </View>
         </Animated.View>
@@ -207,6 +266,19 @@ const styles = StyleSheet.create({
   statNum: { fontFamily: 'Inter_700Bold', fontSize: 17, color: Colors.textPrimary },
   statLbl: { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted, textAlign: 'center' },
   sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8, marginTop: 4 },
+  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, marginTop: 4 },
+  refreshBtn: { padding: 4 },
+  referralCard: { borderRadius: 18, overflow: 'hidden', marginBottom: 20, borderWidth: 1, borderColor: 'rgba(244,196,48,0.25)' },
+  referralInner: { padding: 18, gap: 14 },
+  referralRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  referralIconWrap: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(244,196,48,0.12)', alignItems: 'center', justifyContent: 'center' },
+  referralInfo: { flex: 1 },
+  referralTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: Colors.textPrimary },
+  referralDesc: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, marginTop: 2 },
+  referralCodeBox: { backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)' },
+  referralCodeText: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.gold, letterSpacing: 4 },
+  copyBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(244,196,48,0.1)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  copyBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.gold },
   menuGroup: { backgroundColor: Colors.darkCard, borderRadius: 18, overflow: 'hidden', marginBottom: 18, borderWidth: 1, borderColor: Colors.darkBorder },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: Colors.darkBorder },
   menuIconWrap: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },

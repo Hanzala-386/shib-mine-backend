@@ -1,3 +1,4 @@
+import { fetch } from 'expo/fetch';
 import { getApiUrl } from '@/lib/query-client';
 
 async function request<T = any>(
@@ -6,14 +7,20 @@ async function request<T = any>(
   body?: object,
 ): Promise<T> {
   const url = new URL(path, getApiUrl()).toString();
-  const res = await fetch(url, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-  return data as T;
+  console.log('[API]', method, url);
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    return data as T;
+  } catch (err: any) {
+    console.error('[API] request failed:', method, url, err.message);
+    throw err;
+  }
 }
 
 export const api = {
@@ -146,6 +153,9 @@ export interface MiningSessionResponse {
   durationMs: number;
   multiplier: number;
   expectedReward: number;
+  miningRatePerSec: number;
+  ptDeducted: number;
+  newPowerTokens: number;
   status: string;
 }
 
