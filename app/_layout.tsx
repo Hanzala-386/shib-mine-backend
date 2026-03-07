@@ -6,7 +6,7 @@ import {
   useFonts,
 } from "@expo-google-fonts/inter";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { Stack } from "expo-router";
+import { Stack, router } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -22,25 +22,32 @@ import Colors from "@/constants/colors";
 SplashScreen.preventAutoHideAsync();
 
 function RootLayoutNav() {
-  const { user, firebaseUser, isLoading, pbUser } = useAuth();
+  const { isLoading, user, firebaseUser } = useAuth();
 
+  // On app startup: once isLoading resolves, navigate to the right screen
+  useEffect(() => {
+    if (isLoading) return;
+    if (!firebaseUser) {
+      // No Firebase user → auth screen
+      router.replace("/auth" as any);
+    } else if (user?.is_verified) {
+      // Logged in and verified → tabs
+      router.replace("/(tabs)" as any);
+    } else {
+      // Logged in but not verified → OTP screen
+      router.replace("/verify-email" as any);
+    }
+  }, [isLoading]);
+
+  // Blank while loading
   if (isLoading) return null;
-
-  const isVerified = !!(user && pbUser?.is_verified);
-  const hasPendingVerification = !!(firebaseUser && !pbUser?.is_verified);
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      {isVerified ? (
-        <>
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="admin" options={{ presentation: 'modal' }} />
-        </>
-      ) : hasPendingVerification ? (
-        <Stack.Screen name="verify-email" />
-      ) : (
-        <Stack.Screen name="auth" />
-      )}
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="auth" />
+      <Stack.Screen name="verify-email" />
+      <Stack.Screen name="admin" options={{ presentation: "modal" }} />
     </Stack>
   );
 }

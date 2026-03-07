@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, Alert, ActivityIndicator,
-  TextInput, Animated,
+  View, Text, StyleSheet, Pressable, ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Platform } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useAuth } from '@/context/AuthContext';
 import Colors from '@/constants/colors';
@@ -17,19 +18,10 @@ export default function VerifyEmailScreen() {
   const [isResending, setIsResending] = useState(false);
   const [countdown, setCountdown] = useState(60);
   const [error, setError] = useState<string | null>(null);
+  const [resendMsg, setResendMsg] = useState('');
 
   const inputRefs = useRef<Array<TextInput | null>>([]);
-  const shakeAnim = useRef(new Animated.Value(0)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
   const verifyAttemptedRef = useRef(false);
-
-  useEffect(() => {
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 350,
-      useNativeDriver: true,
-    }).start();
-  }, []);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -39,19 +31,9 @@ export default function VerifyEmailScreen() {
     return () => clearTimeout(timer);
   }, [countdown]);
 
-  function triggerShake() {
-    shakeAnim.setValue(0);
-    Animated.sequence([
-      Animated.timing(shakeAnim, { toValue: -10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -8, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 8, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
-    ]).start();
-  }
-
   const handleOtpChange = (value: string, index: number) => {
     setError(null);
+    setResendMsg('');
     const newOtp = [...otp];
 
     if (value.length > 1) {
@@ -92,13 +74,13 @@ export default function VerifyEmailScreen() {
     setIsVerifying(true);
     setError(null);
     try {
-      const result = await verifyOtp(firebaseUser?.email || '', code);
+      const email = firebaseUser?.email || '';
+      const result = await verifyOtp(email, code);
       if (!result.success) {
         verifyAttemptedRef.current = false;
         setError(result.error || 'Invalid code. Please try again.');
         setOtp(['', '', '', '', '', '']);
         setTimeout(() => inputRefs.current[0]?.focus(), 50);
-        triggerShake();
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -106,7 +88,6 @@ export default function VerifyEmailScreen() {
     } catch (e: any) {
       verifyAttemptedRef.current = false;
       setError(e?.message || 'Verification failed. Please try again.');
-      triggerShake();
     } finally {
       setIsVerifying(false);
     }
@@ -117,12 +98,13 @@ export default function VerifyEmailScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setIsResending(true);
     setError(null);
+    setResendMsg('');
     try {
       await resendOtp(firebaseUser?.email || '');
       setCountdown(60);
-      Alert.alert('Sent!', 'A new code has been sent to your email.');
+      setResendMsg('New code sent to your email.');
     } catch {
-      Alert.alert('Error', 'Could not resend code. Please try again.');
+      setError('Could not resend code. Please try again.');
     } finally {
       setIsResending(false);
     }
@@ -132,15 +114,18 @@ export default function VerifyEmailScreen() {
     <View style={[styles.container, { backgroundColor: Colors.darkBg }]}>
       <LinearGradient
         colors={['rgba(244,196,48,0.12)', 'rgba(255,107,0,0.08)', 'transparent']}
-        style={[StyleSheet.absoluteFill, { pointerEvents: 'none' }]}
+        style={[StyleSheet.absoluteFill, { pointerEvents: 'none' } as any]}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 0.6 }}
       />
 
-      <Animated.View
+      <View
         style={[
           styles.content,
-          { paddingTop: insets.top + 60, paddingBottom: insets.bottom + 40, opacity: fadeAnim },
+          {
+            paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 60),
+            paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 40),
+          },
         ]}
       >
         <View style={styles.header}>
@@ -154,9 +139,7 @@ export default function VerifyEmailScreen() {
           </Text>
         </View>
 
-        <Animated.View
-          style={[styles.otpContainer, { transform: [{ translateX: shakeAnim }] }]}
-        >
+        <View style={styles.otpContainer}>
           {otp.map((digit, idx) => (
             <TextInput
               key={idx}
@@ -176,10 +159,12 @@ export default function VerifyEmailScreen() {
               testID={`otp-input-${idx}`}
             />
           ))}
-        </Animated.View>
+        </View>
 
         {error ? (
           <Text style={styles.errorText}>{error}</Text>
+        ) : resendMsg ? (
+          <Text style={styles.successText}>{resendMsg}</Text>
         ) : (
           <Text style={styles.hintText}>
             {isVerifying ? 'Verifying…' : 'Code expires in 10 minutes'}
@@ -222,7 +207,7 @@ export default function VerifyEmailScreen() {
             </>
           )}
         </View>
-      </Animated.View>
+      </View>
     </View>
   );
 }
@@ -258,9 +243,13 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_700Bold', textAlign: 'center',
   },
   otpInputFilled: { borderColor: Colors.gold, backgroundColor: Colors.darkSurface },
-  otpInputError: { borderColor: Colors.error ?? '#FF4444' },
+  otpInputError: { borderColor: Colors.error },
   errorText: {
-    color: Colors.error ?? '#FF4444', fontFamily: 'Inter_500Medium',
+    color: Colors.error, fontFamily: 'Inter_500Medium',
+    fontSize: 13, marginBottom: 20, textAlign: 'center',
+  },
+  successText: {
+    color: Colors.neonOrange, fontFamily: 'Inter_500Medium',
     fontSize: 13, marginBottom: 20, textAlign: 'center',
   },
   hintText: {

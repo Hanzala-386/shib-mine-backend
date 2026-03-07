@@ -1,8 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import {
   View, Text, TextInput, StyleSheet, Pressable,
   ScrollView, KeyboardAvoidingView, Platform,
-  ActivityIndicator, Animated, Alert,
+  ActivityIndicator, Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,12 +25,6 @@ export default function AuthScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-
-  React.useEffect(() => {
-    Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
-  }, []);
 
   function switchMode(m: Mode) {
     setMode(m);
@@ -63,35 +57,22 @@ export default function AuthScreen() {
     setIsLoading(true);
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-
       if (mode === 'signin') {
         await signIn(email.trim(), password);
       } else {
-        await signUp(
-          email.trim(),
-          password,
-          displayName.trim(),
-          referralCode.trim() || undefined,
-        );
+        await signUp(email.trim(), password, displayName.trim(), referralCode.trim() || undefined);
       }
     } catch (e: any) {
       const code = e?.code || '';
-      let msg =
-        code === 'auth/email-already-in-use'
-          ? 'An account with this email already exists.'
-          : code === 'auth/invalid-email'
-          ? 'Please enter a valid email address.'
-          : code === 'auth/wrong-password' || code === 'auth/invalid-credential'
-          ? 'Incorrect email or password.'
-          : code === 'auth/user-not-found'
-          ? 'No account found with this email.'
-          : code === 'auth/too-many-requests'
-          ? 'Too many attempts. Please try again later.'
-          : code === 'auth/network-request-failed'
-          ? 'Network error. Check your connection and try again.'
-          : code === 'auth/weak-password'
-          ? 'Password must be at least 6 characters.'
-          : e?.message || 'Something went wrong. Please try again.';
+      const msg =
+        code === 'auth/email-already-in-use' ? 'An account with this email already exists. Try signing in.'
+        : code === 'auth/invalid-email' ? 'Please enter a valid email address.'
+        : code === 'auth/wrong-password' || code === 'auth/invalid-credential' ? 'Incorrect email or password.'
+        : code === 'auth/user-not-found' ? 'No account found with this email.'
+        : code === 'auth/too-many-requests' ? 'Too many attempts. Please try again later.'
+        : code === 'auth/network-request-failed' ? 'Network error. Check your connection.'
+        : code === 'auth/weak-password' ? 'Password must be at least 6 characters.'
+        : e?.message || 'Something went wrong. Please try again.';
       setErrorMsg(msg);
     } finally {
       setIsLoading(false);
@@ -100,7 +81,7 @@ export default function AuthScreen() {
 
   async function handleForgotPassword() {
     if (!email.trim()) {
-      setErrorMsg('Please enter your email address first.');
+      setErrorMsg('Enter your email address first.');
       return;
     }
     try {
@@ -113,12 +94,6 @@ export default function AuthScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: Colors.darkBg }]}>
-      <LinearGradient
-        colors={['rgba(244,196,48,0.12)', 'rgba(255,107,0,0.08)', 'transparent']}
-        style={[StyleSheet.absoluteFill, { pointerEvents: 'none' }]}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 0.6 }}
-      />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
@@ -134,15 +109,15 @@ export default function AuthScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <Animated.View style={[styles.logoArea, { opacity: fadeAnim }]}>
+          <View style={styles.logoArea}>
             <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.logoCircle}>
               <MaterialCommunityIcons name="pickaxe" size={36} color="#000" />
             </LinearGradient>
             <Text style={styles.appName}>SHIB Mine</Text>
             <Text style={styles.tagline}>Mine. Earn. Grow.</Text>
-          </Animated.View>
+          </View>
 
-          <Animated.View style={[styles.card, { opacity: fadeAnim }]}>
+          <View style={styles.card}>
             <View style={styles.modeToggle}>
               {(['signin', 'signup'] as Mode[]).map((m) => (
                 <Pressable
@@ -195,7 +170,11 @@ export default function AuthScreen() {
                   testID="input-password"
                 />
                 <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
-                  <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={18} color={Colors.textMuted} />
+                  <Ionicons
+                    name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                    size={18}
+                    color={Colors.textMuted}
+                  />
                 </Pressable>
               </View>
             </View>
@@ -226,7 +205,7 @@ export default function AuthScreen() {
 
             {errorMsg !== '' && (
               <View style={styles.errorBox} testID="auth-error">
-                <Ionicons name="alert-circle-outline" size={16} color={Colors.error ?? '#FF4444'} />
+                <Ionicons name="alert-circle-outline" size={16} color={Colors.error} />
                 <Text style={styles.errorText}>{errorMsg}</Text>
               </View>
             )}
@@ -271,17 +250,14 @@ export default function AuthScreen() {
                 A 6-digit verification code will be sent to your email.
               </Text>
             )}
-          </Animated.View>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
   );
 }
 
-function InputField({
-  icon, label, value, onChangeText, placeholder,
-  autoCapitalize, keyboardType, secureTextEntry, maxLength, testID,
-}: any) {
+function InputField({ icon, label, value, onChangeText, placeholder, autoCapitalize, keyboardType, secureTextEntry, maxLength, testID }: any) {
   return (
     <View style={styles.inputGroup}>
       <Text style={styles.label}>{label}</Text>
@@ -346,7 +322,7 @@ const styles = StyleSheet.create({
   },
   errorText: {
     flex: 1, fontFamily: 'Inter_500Medium', fontSize: 13,
-    color: Colors.error ?? '#FF4444', lineHeight: 18,
+    color: Colors.error, lineHeight: 18,
   },
   submitBtn: { marginTop: 4 },
   submitGradient: { height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },

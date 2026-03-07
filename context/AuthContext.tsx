@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import {
@@ -20,7 +20,7 @@ export interface UserProfile {
   referralCode: string;
   referredBy?: string;
   createdAt: number;
-  emailVerified: boolean;
+  is_verified: boolean;
 }
 
 const ADMIN_EMAIL = 'hanzala386@gmail.com';
@@ -56,15 +56,8 @@ function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
     referralCode: u.referralCode,
     referredBy: u.referredBy || undefined,
     createdAt: new Date(u.created).getTime(),
-    emailVerified: u.is_verified,
+    is_verified: u.is_verified,
   };
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ]);
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -73,85 +66,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Prevents onAuthStateChanged from interfering while signIn/signUp is in progress
+  const isAuthActionRef = useRef(false);
+
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
+    const unsub = onAuthStateChanged(auth, (fbUser) => {
+      if (isAuthActionRef.current) return;
       handleAuthStateChange(fbUser);
     });
-    return unsubscribe;
+    return unsub;
   }, []);
 
+  // Only called on app startup / session restore — not during signIn/signUp
   async function handleAuthStateChange(fbUser: FirebaseUser | null) {
-    setFirebaseUser(fbUser);
     if (!fbUser) {
       setUser(null);
       setPbUser(null);
+      setFirebaseUser(null);
       setIsLoading(false);
       return;
     }
 
+    setFirebaseUser(fbUser);
+
     try {
-      const pb = await withTimeout(api.getUser(fbUser.uid), 8000, null);
+      const pb = await Promise.race([
+        api.getUser(fbUser.uid),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+      ]).catch(() => null);
+
       if (pb?.is_verified) {
-        await syncWithServer(fbUser, pb);
-      } else {
-        setUser(null);
-        setPbUser(pb);
-      }
-    } catch {
-      setUser(null);
-      setPbUser(null);
-    }
-    setIsLoading(false);
-  }
-
-  async function syncWithServer(fbUser: FirebaseUser, existingPb?: PBUser | null): Promise<void> {
-    try {
-      let pb = existingPb ?? await api.getUser(fbUser.uid).catch(() => null);
-
-      if (!pb) {
-        const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
-        const pending = cached ? JSON.parse(cached) : {};
-        pb = await api.syncUser({
-          firebaseUid: fbUser.uid,
-          email: fbUser.email ?? '',
-          displayName: pending.displayName || fbUser.displayName || fbUser.email?.split('@')[0] || '',
-          referralCode: pending.referralCode || generateReferralCode(),
-          referredBy: pending.referredBy || '',
-        });
-        if (cached) await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
-      }
-
-      if (pb) {
-        if (!pb.referralCode) {
-          const code = generateReferralCode();
-          pb = { ...pb, referralCode: code };
-          api.syncUser({ firebaseUid: fbUser.uid, email: fbUser.email ?? '', referralCode: code })
-            .catch(() => {});
-          await AsyncStorage.setItem(`shib_referral_${fbUser.uid}`, code);
-        }
         setPbUser(pb);
         setUser(pbToProfile(pb, fbUser));
-        await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
-        if (pb.is_verified) {
-          setTimeout(() => {
-            try { router.replace('/(tabs)' as any); } catch {}
-          }, 100);
-        }
+      } else {
+        // Logged in Firebase but not verified — show OTP screen
+        setPbUser(pb ?? null);
+        setUser(null);
       }
-    } catch (e) {
-      console.warn('[Auth] syncWithServer failed, checking cache', e);
-      const cached = await AsyncStorage.getItem(`shib_profile_${fbUser.uid}`);
-      if (cached) {
-        try {
-          const p = JSON.parse(cached);
-          if (!p.referralCode) {
-            const stored = await AsyncStorage.getItem(`shib_referral_${fbUser.uid}`);
-            p.referralCode = stored || generateReferralCode();
-          }
-          setUser(p);
-        } catch {}
-      }
+    } catch {
+      setPbUser(null);
+      setUser(null);
     }
+
+    setIsLoading(false);
   }
 
   async function signUp(
@@ -160,33 +117,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     displayName: string,
     referredBy?: string,
   ): Promise<void> {
-    const cred = await createUserWithEmailAndPassword(auth, email, password);
-    const pending = {
-      displayName,
-      referralCode: generateReferralCode(),
-      referredBy: referredBy?.toUpperCase() || '',
-    };
-    await AsyncStorage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify(pending));
-    await api.sendOtp(email);
-    setFirebaseUser(cred.user);
+    isAuthActionRef.current = true;
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+
+      // Store pending display name & referral for when OTP is verified
+      await AsyncStorage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify({
+        displayName,
+        referralCode: generateReferralCode(),
+        referredBy: referredBy?.toUpperCase() || '',
+      }));
+
+      setFirebaseUser(cred.user);
+      setPbUser(null);
+      setUser(null);
+      setIsLoading(false);
+
+      // Send OTP and navigate to verify screen immediately
+      api.sendOtp(email).catch(() => {});
+      router.replace('/verify-email' as any);
+    } finally {
+      isAuthActionRef.current = false;
+    }
   }
 
   async function signIn(email: string, password: string): Promise<void> {
-    const cred = await signInWithEmailAndPassword(auth, email, password);
-    setFirebaseUser(cred.user);
-
-    let pb: PBUser | null = null;
+    isAuthActionRef.current = true;
     try {
-      pb = await withTimeout(api.getUser(cred.user.uid), 8000, null);
-    } catch {
-      pb = null;
-    }
+      const cred = await signInWithEmailAndPassword(auth, email, password);
+      setFirebaseUser(cred.user);
 
-    if (pb?.is_verified) {
-      await syncWithServer(cred.user, pb);
-    } else {
-      setPbUser(pb);
-      await api.sendOtp(email).catch(() => {});
+      // Fetch PB user to check verification status
+      const pb = await Promise.race([
+        api.getUser(cred.user.uid),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+      ]).catch(() => null);
+
+      if (pb?.is_verified) {
+        // Verified — load profile and go to tabs
+        setPbUser(pb);
+        setUser(pbToProfile(pb, cred.user));
+        setIsLoading(false);
+        router.replace('/(tabs)' as any);
+      } else {
+        // Not verified — go to OTP screen
+        setPbUser(pb ?? null);
+        setUser(null);
+        setIsLoading(false);
+        api.sendOtp(email).catch(() => {});
+        router.replace('/verify-email' as any);
+      }
+    } finally {
+      isAuthActionRef.current = false;
     }
   }
 
@@ -201,13 +183,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function verifyOtp(email: string, code: string): Promise<{ success: boolean; error?: string }> {
     try {
       await api.verifyOtp(email, code);
-      const fbUser = firebaseUser ?? auth.currentUser;
-      if (fbUser) {
-        await syncWithServer(fbUser, null);
+      const fbUser = auth.currentUser ?? firebaseUser;
+      if (!fbUser) return { success: false, error: 'Session expired. Please sign in again.' };
+
+      // Sync user to PocketBase now that OTP is verified
+      const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
+      const pending = cached ? JSON.parse(cached) : {};
+      const pb = await api.syncUser({
+        firebaseUid: fbUser.uid,
+        email: fbUser.email ?? email,
+        displayName: pending.displayName || fbUser.email?.split('@')[0] || '',
+        referralCode: pending.referralCode || generateReferralCode(),
+        referredBy: pending.referredBy || '',
+      });
+      if (cached) await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
+
+      if (pb?.is_verified) {
+        setPbUser(pb);
+        setUser(pbToProfile(pb, fbUser));
+        router.replace('/(tabs)' as any);
       }
+
       return { success: true };
     } catch (e: any) {
-      const msg = e?.message?.includes('400')
+      const msg = e?.message?.includes('400') || e?.message?.includes('Invalid')
         ? 'Invalid or expired code. Please try again.'
         : e?.message || 'Verification failed.';
       return { success: false, error: msg };
@@ -224,49 +223,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function refreshUser() {
     const fbUser = auth.currentUser;
-    if (fbUser) {
-      try {
-        await fbUser.reload();
-        const refreshed = auth.currentUser;
-        if (refreshed) {
-          const pb = await api.getUser(refreshed.uid).catch(() => null);
-          if (pb?.is_verified) {
-            await syncWithServer(refreshed, pb);
-          } else {
-            setFirebaseUser(refreshed);
-            setPbUser(pb);
-          }
-        }
-      } catch (e) {
-        console.warn('[Auth] refreshUser failed', e);
+    if (!fbUser) return;
+    try {
+      const pb = await api.getUser(fbUser.uid).catch(() => null);
+      if (pb?.is_verified) {
+        setPbUser(pb);
+        setUser(pbToProfile(pb, fbUser));
       }
-    }
+    } catch {}
   }
 
   async function refreshBalance() {
     const fbUser = auth.currentUser;
     if (!fbUser) return;
     try {
-      let pb = await api.getUser(fbUser.uid).catch(() => null);
-      if (!pb) {
-        pb = await api.syncUser({
-          firebaseUid: fbUser.uid,
-          email: fbUser.email ?? '',
-          displayName: fbUser.displayName || fbUser.email?.split('@')[0] || '',
-        });
-      }
+      const pb = await api.getUser(fbUser.uid).catch(() => null);
       if (pb) {
-        if (!pb.referralCode) {
-          const stored = await AsyncStorage.getItem(`shib_referral_${fbUser.uid}`);
-          pb = { ...pb, referralCode: stored || generateReferralCode() };
-        }
         setPbUser(pb);
-        setUser(pbToProfile(pb, fbUser));
-        await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
+        if (pb.is_verified) setUser(pbToProfile(pb, fbUser));
       }
-    } catch (e) {
-      console.warn('[Auth] refreshBalance failed', e);
-    }
+    } catch {}
   }
 
   const isAdmin = !!(firebaseUser?.email?.toLowerCase() === ADMIN_EMAIL);

@@ -120,6 +120,10 @@ async function pbPatch(path: string, body: object) {
   const token = await getAdminToken();
   return pbHttp("PATCH", path, body, token);
 }
+async function pbDelete(path: string) {
+  const token = await getAdminToken();
+  return pbHttp("DELETE", path, null, token);
+}
 
 // Settings cache
 let settingsCache: any = null;
@@ -222,16 +226,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
       if (byEmail.items?.[0]) {
         let u = byEmail.items[0];
-        const patches: any = {};
-        if (!u.firebase_uid) patches.firebase_uid = firebaseUid;
-        if (!u.referral_code) patches.referral_code = referralCode || generateReferralCode();
-        if (!u.display_name && displayName) patches.display_name = displayName;
-        if (!u.referred_by && referredBy) patches.referred_by = referredBy;
-        if (Object.keys(patches).length > 0) {
-          const updated = await pbPatch(`/api/collections/users/records/${u.id}`, patches);
-          if (!updated.code) u = { ...u, ...patches };
+        // If the existing PB record is NOT verified, delete it so we can create a fresh one.
+        // This handles the case where a user signs up, never verifies, then tries to sign up again.
+        if (!u.is_verified) {
+          await pbDelete(`/api/collections/users/records/${u.id}`).catch(() => {});
+          // Fall through to create a new record below
+        } else {
+          const patches: any = {};
+          if (!u.firebase_uid) patches.firebase_uid = firebaseUid;
+          if (!u.referral_code) patches.referral_code = referralCode || generateReferralCode();
+          if (!u.display_name && displayName) patches.display_name = displayName;
+          if (!u.referred_by && referredBy) patches.referred_by = referredBy;
+          if (Object.keys(patches).length > 0) {
+            const updated = await pbPatch(`/api/collections/users/records/${u.id}`, patches);
+            if (!updated.code) u = { ...u, ...patches };
+          }
+          return res.json(formatUser(u));
         }
-        return res.json(formatUser(u));
       }
 
       // Create PB user (using PB built-in auth)
