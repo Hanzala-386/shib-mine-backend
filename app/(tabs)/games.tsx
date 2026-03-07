@@ -1,872 +1,626 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, Image, Alert, Platform,
-  Dimensions, Animated, ActivityIndicator,
+  View, Text, StyleSheet, Dimensions, Animated, Pressable,
+  Image, ImageBackground, Platform, Modal, ActivityIndicator,
 } from 'react-native';
-import { Audio } from 'expo-av';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { Audio } from 'expo-av';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useWallet } from '@/context/WalletContext';
-import { adService } from '@/lib/AdService';
+import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
+import KnifeShop, { SKINS, SkinDef } from '@/components/KnifeShop';
 import Colors from '@/constants/colors';
 
-/* ─── Screen-responsive constants ──────────────────────────────── */
-const { width: SW, height: SH } = Dimensions.get('window');
-const BOSS_SIZE = Math.min(SW * 0.48, 180);
-const BOSS_R    = BOSS_SIZE / 2;
-const KNIFE_W   = 8;
-const KNIFE_H   = Math.round(BOSS_SIZE * 0.68);
+// ─── Dimensions & game constants ─────────────────────────────────────────────
+const { width: SW } = Dimensions.get('window');
+const BASE       = `${getApiUrl()}/game/Knife hit Template/`;
+const BOSS_SIZE  = Math.min(Math.floor(SW * 0.40), 145);
+const BOSS_R     = BOSS_SIZE / 2;
+const KNIFE_W    = 16;
+const KNIFE_H    = Math.round(BOSS_SIZE * 0.72);
+// Expanded container: boss + knife_H padding on every side → knives always fit, no overflow clipping
+const CONT_S     = BOSS_SIZE + KNIFE_H * 2;
+const CENTER     = CONT_S / 2;          // boss center inside container
+const HUD_H      = 56;
+const CLASH_DEG  = 16;                  // ±degrees that counts as a clash
 
-/* ─── Level definitions ─────────────────────────────────────────── */
-const LEVELS = [
-  { knives: 8,  speedDeg: 0.9,  dir: 1  },
-  { knives: 9,  speedDeg: 1.2,  dir: -1 },
-  { knives: 10, speedDeg: 1.5,  dir: 1  },
-  { knives: 9,  speedDeg: 1.8,  dir: -1 },
-  { knives: 11, speedDeg: 2.1,  dir: 1  },
-  { knives: 10, speedDeg: 2.4,  dir: -1 },
-];
-function getLevel(n: number) { return LEVELS[Math.min(n - 1, LEVELS.length - 1)]; }
+const NORMAL_SPEED  = 0.10;             // deg/ms
+const BOSS_SPEED    = 0.17;
+const NORMAL_KNIVES = 5;
+const BOSS_KNIVES   = 8;
+const PT_PER_KNIFE  = 2;
+const PT_BOSS_BONUS = 10;
 
-/* ─── Asset URLs ────────────────────────────────────────────────── */
-const BASE = getApiUrl() + '/game/';
 const BOSS_IMGS = [
   `${BASE}Bosses/boss-Ground.png`,
   `${BASE}Bosses/boss-Orange.png`,
   `${BASE}Bosses/boss-WaterMelon.png`,
   `${BASE}Bosses/boss-Meat.png`,
-  `${BASE}Bosses/boss-Tire.png`,
   `${BASE}Bosses/boss-lid.png`,
-];
-const TARGET_NORMAL = `${BASE}Target_Normal.png`;
-
-const KNIFE_SKINS = [
-  `${BASE}Knives/Knife.png`,
-  `${BASE}Knives/item knife-01.png`,
-  `${BASE}Knives/item knife-02.png`,
-  `${BASE}Knives/item knife-03.png`,
+  `${BASE}Bosses/boss-Tire.png`,
 ];
 
-/* ─── Level helpers ─────────────────────────────────────────────── */
-function isBossLevel(n: number) { return n % 5 === 0; }
-function randomBossImg() {
-  return BOSS_IMGS[Math.floor(Math.random() * BOSS_IMGS.length)];
-}
-// Sound keys we'll preload from the server
-const SOUND_FILES: Record<string, string> = {
-  throw: `${BASE}sound/UsedInGame/ev_throw_1.mp3`,
-  hit:   `${BASE}sound/UsedInGame/ev_knife_hit_1.mp3`,
-  clash: `${BASE}sound/UsedInGame/ev_hit_last.mp3`,
-  boss:  `${BASE}sound/UsedInGame/ev_boss_fight_legendary.mp3`,
-};
+const STORAGE_BEST = 'knife_hit_best_level';
+const STORAGE_SKIN = 'knife_hit_skin';
 
-/* ─── Types ─────────────────────────────────────────────────────── */
-type Phase = 'menu' | 'playing' | 'game_over' | 'awarding' | 'reward';
-
-interface StuckKnife {
-  id: string;
-  localAngle: number; // degrees relative to boss — 0 = right, 90 = down
-}
-
-/* ─── Helpers ───────────────────────────────────────────────────── */
-function normAngleDiff(a: number, b: number) {
-  const d = Math.abs(((a - b + 540) % 360) - 180);
-  return d;
-}
+type Phase = 'home' | 'playing' | 'game_over' | 'awarding' | 'reward';
+interface StuckKnife { id: number; localAngle: number }
 
 export default function GamesScreen() {
   const insets = useSafeAreaInsets();
-  const { addPowerTokens, powerTokens } = useWallet();
+  const { powerTokens, addPowerTokens } = useWallet();
+  const { pbUser } = useAuth();
 
-  /* Layout — computed once so no recalcs on re-render */
-  const topPad   = Platform.OS === 'web' ? 67 : insets.top;
-  const botPad   = Platform.OS === 'web' ? 34 : insets.bottom;
-  const HUD_H    = 56;
-  const BOSS_CY  = topPad + HUD_H + BOSS_R + 16;
-  const KNIFE_START_Y = BOSS_CY + BOSS_R + KNIFE_H / 2 + 50;
+  // Layout derived values
+  const TOP_PAD      = Platform.OS === 'web' ? 67 : insets.top;
+  const CONT_TOP     = TOP_PAD + HUD_H + 12;    // container absolute top
+  const BOSS_CY      = CONT_TOP + CENTER;        // boss center Y in screen coords
+  const KNIFE_START  = BOSS_CY + BOSS_R + KNIFE_H * 0.6 + 40;
+  const HIT_Y        = BOSS_CY + BOSS_R - KNIFE_H * 0.08;
 
-  /* ── Animated values — no re-renders when updated ── */
-  const bossRotAnim  = useRef(new Animated.Value(0)).current;
-  const knifeYAnim   = useRef(new Animated.Value(KNIFE_START_Y)).current;
-
-  /* ── Game-loop refs — pure JS, no React reconciler ── */
-  const rafRef        = useRef<number | null>(null);
-  const lastTsRef     = useRef<number>(0);
-  const bossAngleRef  = useRef(0);           // current boss rotation (deg)
-  const bossSpeedRef  = useRef(0.9);         // deg/frame normalised to 60fps
-  const bossDirRef    = useRef<1|-1>(1);
-  const knifeTopRef   = useRef(KNIFE_START_Y); // knife top edge y
-  const isFlyingRef   = useRef(false);
-  const phaseRef      = useRef<Phase>('menu');
-  const stuckRef      = useRef<StuckKnife[]>([]);
-  const knivesLeftRef = useRef(LEVELS[0].knives);
-  const levelRef      = useRef(1);
-  const scoreRef      = useRef(0);
-
-  /* ── Sound refs ─────────────────────────────────────────── */
-  const soundsRef        = useRef<Record<string, Audio.Sound>>({});
-  const soundsLoadedRef  = useRef(false);
-
-  /* ── Boss / level refs ──────────────────────────────────── */
-  const isBossRef        = useRef(false);
-  const currentTargetRef = useRef(TARGET_NORMAL); // URL of current boss/target image
-
-  /* ── React state — drives UI re-renders only when needed ── */
-  const [phase, setPhase]           = useState<Phase>('menu');
+  // ── State ─────────────────────────────────────────────────────────────────
+  const [phase, setPhase]           = useState<Phase>('home');
   const [level, setLevel]           = useState(1);
+  const [knivesLeft, setKnivesLeft] = useState(NORMAL_KNIVES);
+  const [totalKnives, setTotalKnives] = useState(NORMAL_KNIVES);
   const [stuckKnives, setStuckKnives] = useState<StuckKnife[]>([]);
-  const [knivesLeft, setKnivesLeft] = useState(LEVELS[0].knives);
-  const [totalKnives, setTotalKnives] = useState(LEVELS[0].knives);
-  const [isBoss, setIsBoss]         = useState(false);
-  const [targetImg, setTargetImg]   = useState(TARGET_NORMAL);
-  const [skinIdx]                   = useState(() => Math.floor(Math.random() * KNIFE_SKINS.length));
-  const [score, setScore]           = useState(0);
-  const [ptEarned, setPtEarned]     = useState(0);
-  const [isLoadingAd, setIsLoadingAd] = useState(false);
+  const [inFlight, setInFlight]     = useState(false);
+  const [clashFlash, setClashFlash] = useState(false);
+  const [earnedPT, setEarnedPT]     = useState(0);
+  const [bestLevel, setBestLevel]   = useState(1);
+  const [equippedSkin, setEquippedSkin] = useState<SkinDef>(SKINS[0]);
+  const [shopVisible, setShopVisible]   = useState(false);
+  const [bossImg, setBossImg]       = useState(BOSS_IMGS[0]);
 
-  /* ── Game loop ──────────────────────────────────────── */
-  function gameLoop(ts: number) {
-    if (phaseRef.current !== 'playing') return;
+  // ── Refs ──────────────────────────────────────────────────────────────────
+  const bossRotAnim  = useRef(new Animated.Value(0)).current;
+  const knifeAnim    = useRef(new Animated.Value(0)).current;  // translateY from KNIFE_START
+  const bossAngleRef = useRef(0);
+  const rafRef       = useRef<number>(0);
+  const lastTimeRef  = useRef<number>(0);
+  const stuckRef      = useRef<StuckKnife[]>([]);
+  const earnedRef     = useRef(0);
+  const levelRef      = useRef(1);
+  const knivesLeftRef = useRef(NORMAL_KNIVES);
 
-    const dt = lastTsRef.current ? Math.min((ts - lastTsRef.current) / 16.67, 3) : 1;
-    lastTsRef.current = ts;
+  const isBoss = (lv: number) => lv % 5 === 0;
 
-    // Rotate boss — sin-wave variation grows with level (gives unpredictable feel)
-    const sinVariation = Math.sin(ts / 600) * 0.5 * Math.min(levelRef.current / 3, 2);
-    bossAngleRef.current += (bossSpeedRef.current + sinVariation) * bossDirRef.current * dt;
-    bossRotAnim.setValue(bossAngleRef.current);
+  // Sounds
+  const sndHit   = useRef<Audio.Sound | null>(null);
+  const sndClash = useRef<Audio.Sound | null>(null);
+  const sndCoin  = useRef<Audio.Sound | null>(null);
 
-    // Move flying knife upward
-    if (isFlyingRef.current) {
-      knifeTopRef.current -= 14 * dt;           // 14 px/frame at 60fps
-      knifeYAnim.setValue(knifeTopRef.current);
-
-      // Knife tip = knifeTopRef.current (top edge)
-      // Hit when tip enters boss circle from below
-      const tipY = knifeTopRef.current;
-      if (tipY <= BOSS_CY + BOSS_R) {
-        onKnifeHit();
-        return;
-      }
-      // Safety: knife overshot boss without hitting (shouldn't happen)
-      if (tipY < BOSS_CY - BOSS_R - 10) {
-        isFlyingRef.current = false;
-        resetKnifePosition();
-      }
-    }
-
-    rafRef.current = requestAnimationFrame(gameLoop);
-  }
-
-  /* ── Knife hit ──────────────────────────────────────── */
-  function onKnifeHit() {
-    isFlyingRef.current = false;
-
-    // Impact is always at the bottom of the boss (angle = 90° from boss center)
-    // Local angle = impact_global - current_boss_rotation
-    const impactGlobal = 90;
-    let local = ((impactGlobal - bossAngleRef.current) % 360 + 360) % 360;
-    if (local > 180) local -= 360;  // normalize to -180..180
-
-    // Collision check against every stuck knife
-    const collision = stuckRef.current.some(k => normAngleDiff(local, k.localAngle) < 20);
-
-    if (collision) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      playSound('clash');
-      endGame();
-      return;
-    }
-
-    // Stick the knife
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    playSound('hit');
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
-    const newKnife: StuckKnife = { id, localAngle: local };
-    stuckRef.current = [...stuckRef.current, newKnife];
-    knivesLeftRef.current--;
-    scoreRef.current += 10;
-
-    setStuckKnives([...stuckRef.current]);
-    setScore(scoreRef.current);
-    setKnivesLeft(knivesLeftRef.current);
-
-    if (knivesLeftRef.current <= 0) {
-      // Level cleared
-      setTimeout(() => advanceLevel(), 400);
-    } else {
-      resetKnifePosition();
-      rafRef.current = requestAnimationFrame(gameLoop);
-    }
-  }
-
-  /* ── Level advance ──────────────────────────────────── */
-  function advanceLevel() {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const nextLevel = levelRef.current + 1;
-    levelRef.current = nextLevel;
-    scoreRef.current += nextLevel * 5;
-
-    const cfg     = getLevel(nextLevel);
-    const isBoss  = isBossLevel(nextLevel);
-    const imgUrl  = isBoss ? randomBossImg() : TARGET_NORMAL;
-
-    bossSpeedRef.current   = cfg.speedDeg;
-    bossDirRef.current     = cfg.dir as 1 | -1;
-    knivesLeftRef.current  = isBoss ? cfg.knives + 2 : cfg.knives; // boss levels need 2 extra knives
-    stuckRef.current       = [];
-    isBossRef.current      = isBoss;
-    currentTargetRef.current = imgUrl;
-
-    setLevel(nextLevel);
-    setScore(scoreRef.current);
-    setIsBoss(isBoss);
-    setTargetImg(imgUrl);
-    setKnivesLeft(knivesLeftRef.current);
-    setTotalKnives(knivesLeftRef.current);
-    setStuckKnives([]);
-
-    if (isBoss) playSound('boss');
-
-    resetKnifePosition();
-    rafRef.current = requestAnimationFrame(gameLoop);
-  }
-
-  /* ── Game over ──────────────────────────────────────── */
-  function endGame() {
-    cancelAnimationFrame(rafRef.current!);
-    phaseRef.current = 'game_over';
-    const pt = Math.max(1, Math.floor((scoreRef.current + stuckRef.current.length * 10) / 20));
-    setPtEarned(pt);
-    setPhase('game_over');
-  }
-
-  /* ── Start / restart ────────────────────────────────── */
-  function startGame() {
-    cancelAnimationFrame(rafRef.current!);
-    levelRef.current   = 1;
-    scoreRef.current   = 0;
-    const cfg          = getLevel(1);
-    bossSpeedRef.current   = cfg.speedDeg;
-    bossDirRef.current     = 1;
-    bossAngleRef.current   = 0;
-    knivesLeftRef.current  = cfg.knives;
-    stuckRef.current       = [];
-    lastTsRef.current      = 0;
-    isBossRef.current      = false;
-    currentTargetRef.current = TARGET_NORMAL;
-
-    bossRotAnim.setValue(0);
-    setLevel(1);
-    setScore(0);
-    setIsBoss(false);
-    setTargetImg(TARGET_NORMAL);
-    setKnivesLeft(cfg.knives);
-    setTotalKnives(cfg.knives);
-    setStuckKnives([]);
-    setPtEarned(0);
-    resetKnifePosition();
-
-    phaseRef.current = 'playing';
-    setPhase('playing');
-    rafRef.current = requestAnimationFrame(gameLoop);
-  }
-
-  function resetKnifePosition() {
-    knifeTopRef.current = KNIFE_START_Y;
-    knifeYAnim.setValue(KNIFE_START_Y);
-    isFlyingRef.current = false;
-  }
-
-  /* ── Tap to throw ───────────────────────────────────── */
-  function handleTap() {
-    if (phaseRef.current !== 'playing' || isFlyingRef.current) return;
-    isFlyingRef.current = true;
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    playSound('throw');
-  }
-
-  /* ── Token awarding ─────────────────────────────────── */
-  async function awardPT(amount: number) {
-    phaseRef.current = 'awarding';
-    setPhase('awarding');
-    try {
-      await addPowerTokens(amount, 'knife_hit');
-      phaseRef.current = 'reward';
-      setPhase('reward');
-      setPtEarned(amount);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {
-      Alert.alert('Error', 'Could not save tokens. Check your connection and try again.');
-      phaseRef.current = 'game_over';
-      setPhase('game_over');
-    }
-  }
-
-  async function handleCollect() {
-    await awardPT(ptEarned);
-  }
-
-  async function handleDoubleAd() {
-    if (isLoadingAd) return;
-    setIsLoadingAd(true);
-    try {
-      await adService.showAdMobRewarded((rewarded: boolean) => {
-        setIsLoadingAd(false);
-        if (rewarded) {
-          awardPT(ptEarned * 2);
-        } else {
-          Alert.alert('Ad incomplete', 'Finish the ad to double your tokens.');
-        }
-      });
-    } catch {
-      setIsLoadingAd(false);
-      awardPT(ptEarned);
-    }
-  }
-
-  /* ── Sound loading ──────────────────────────────────── */
+  // ── Load persistent prefs ─────────────────────────────────────────────────
   useEffect(() => {
-    let mounted = true;
     (async () => {
       try {
-        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-        for (const [key, uri] of Object.entries(SOUND_FILES)) {
-          const { sound } = await Audio.Sound.createAsync({ uri });
-          if (mounted) soundsRef.current[key] = sound;
-        }
-        soundsLoadedRef.current = true;
-      } catch (e) {
-        console.warn('[Sound] preload failed', e);
-      }
+        const bl = await AsyncStorage.getItem(STORAGE_BEST);
+        if (bl) setBestLevel(parseInt(bl, 10));
+        const sk = await AsyncStorage.getItem(STORAGE_SKIN);
+        if (sk) { const f = SKINS.find(s => s.id === sk); if (f) setEquippedSkin(f); }
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  // ── Load sounds ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    Audio.setAudioModeAsync({ playsInSilentModeIOS: true }).catch(() => {});
+    const load = async (uri: string) => {
+      try { const { sound } = await Audio.Sound.createAsync({ uri }, { volume: 0.6 }); return sound; }
+      catch { return null; }
+    };
+    (async () => {
+      sndHit.current   = await load(`${BASE}sound/UsedInGame/ev_apple_hit_1.mp3`);
+      sndClash.current = await load(`${BASE}sound/UsedInGame/ev_boss_fight_hit.mp3`);
+      sndCoin.current  = await load(`${BASE}sound/UsedInGame/ev_apples_coins.mp3`);
     })();
     return () => {
-      mounted = false;
-      Object.values(soundsRef.current).forEach(s => s.unloadAsync().catch(() => {}));
+      sndHit.current?.unloadAsync(); sndClash.current?.unloadAsync(); sndCoin.current?.unloadAsync();
     };
   }, []);
 
-  async function playSound(key: string) {
-    try {
-      const s = soundsRef.current[key];
-      if (!s) return;
-      await s.setPositionAsync(0);
-      await s.playAsync();
-    } catch { /* silent – sound is a bonus, not critical */ }
-  }
+  // ── Boss rotation loop ─────────────────────────────────────────────────────
+  const startRotation = useCallback((speed: number) => {
+    cancelAnimationFrame(rafRef.current);
+    lastTimeRef.current = 0;
+    function frame(now: number) {
+      if (lastTimeRef.current === 0) lastTimeRef.current = now;
+      const dt = Math.min(now - lastTimeRef.current, 50);
+      lastTimeRef.current = now;
+      const variation = 1 + 0.28 * Math.sin(now * 0.0013);
+      bossAngleRef.current += speed * dt * variation;
+      bossRotAnim.setValue(bossAngleRef.current);
+      rafRef.current = requestAnimationFrame(frame);
+    }
+    rafRef.current = requestAnimationFrame(frame);
+  }, [bossRotAnim]);
 
-  /* ── Cleanup on unmount ─────────────────────────────── */
-  useEffect(() => {
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  const stopRotation = useCallback(() => cancelAnimationFrame(rafRef.current), []);
+  useEffect(() => () => { stopRotation(); }, [stopRotation]);
+
+  // ── Start a level ──────────────────────────────────────────────────────────
+  const startLevel = useCallback((lv: number) => {
+    const boss   = isBoss(lv);
+    const knives = boss ? BOSS_KNIVES : NORMAL_KNIVES;
+    if (boss) setBossImg(BOSS_IMGS[Math.floor(Math.random() * BOSS_IMGS.length)]);
+    stuckRef.current = [];
+    setStuckKnives([]);
+    knivesLeftRef.current = knives;
+    setKnivesLeft(knives);
+    setTotalKnives(knives);
+    setInFlight(false);
+    knifeAnim.setValue(0);
+    startRotation(boss ? BOSS_SPEED : NORMAL_SPEED);
+  }, [knifeAnim, startRotation]);
+
+  // ── Start game ─────────────────────────────────────────────────────────────
+  const startGame = useCallback(() => {
+    bossAngleRef.current = 0;
+    bossRotAnim.setValue(0);
+    levelRef.current = 1;
+    earnedRef.current = 0;
+    setLevel(1);
+    setEarnedPT(0);
+    setClashFlash(false);
+    setPhase('playing');
+    startLevel(1);
+  }, [bossRotAnim, startLevel]);
+
+  // ── Handle knife landing ───────────────────────────────────────────────────
+  const handleKnifeHit = useCallback(() => {
+    const localAngle = ((90 - bossAngleRef.current) % 360 + 360) % 360;
+
+    // Clash detection
+    const clashed = stuckRef.current.some(k => {
+      let diff = Math.abs(k.localAngle - localAngle) % 360;
+      if (diff > 180) diff = 360 - diff;
+      return diff < CLASH_DEG;
+    });
+
+    if (clashed) {
+      setClashFlash(true);
+      sndClash.current?.replayAsync().catch(() => {});
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      stopRotation();
+      setTimeout(() => { setClashFlash(false); setPhase('game_over'); }, 450);
+      return;
+    }
+
+    // Stick
+    const knife: StuckKnife = { id: Date.now() + Math.random(), localAngle };
+    stuckRef.current = [...stuckRef.current, knife];
+    setStuckKnives([...stuckRef.current]);
+    sndHit.current?.replayAsync().catch(() => {});
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setInFlight(false);
+    knifeAnim.setValue(0);
+
+    knivesLeftRef.current = Math.max(0, knivesLeftRef.current - 1);
+    setKnivesLeft(prev => {
+      const next = prev - 1;
+      if (next <= 0) {
+        // Level cleared
+        stopRotation();
+        const boss   = isBoss(levelRef.current);
+        const earned = stuckRef.current.length * PT_PER_KNIFE + (boss ? PT_BOSS_BONUS : 0);
+        earnedRef.current += earned;
+        setEarnedPT(earnedRef.current);
+        sndCoin.current?.replayAsync().catch(() => {});
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setTimeout(() => {
+          const nextLv = levelRef.current + 1;
+          levelRef.current = nextLv;
+          setLevel(nextLv);
+          startLevel(nextLv);
+        }, 650);
+      }
+      return next;
+    });
+  }, [knifeAnim, stopRotation, startLevel]);
+
+  // ── Throw knife ────────────────────────────────────────────────────────────
+  const throwKnife = useCallback(() => {
+    if (inFlight || phase !== 'playing' || knivesLeftRef.current <= 0) return;
+    setInFlight(true);
+    Animated.timing(knifeAnim, {
+      toValue: -(KNIFE_START - HIT_Y),
+      duration: 220,
+      useNativeDriver: true,
+    }).start(({ finished }) => { if (finished) handleKnifeHit(); });
+  }, [inFlight, phase, knifeAnim, KNIFE_START, HIT_Y, handleKnifeHit]);
+
+  // ── Collect PT ─────────────────────────────────────────────────────────────
+  const collectPT = useCallback(async () => {
+    if (!earnedRef.current) { setPhase('home'); return; }
+    setPhase('awarding');
+    try {
+      await addPowerTokens(earnedRef.current, 'knife_hit');
+      sndCoin.current?.replayAsync().catch(() => {});
+    } catch { /* ignore */ }
+    setPhase('reward');
+  }, [addPowerTokens]);
+
+  const goHome = useCallback(() => {
+    stopRotation();
+    stuckRef.current = [];
+    setStuckKnives([]);
+    setPhase('home');
+  }, [stopRotation]);
+
+  // ── Equip skin ─────────────────────────────────────────────────────────────
+  const handleEquip = useCallback((skinId: string) => {
+    const found = SKINS.find(s => s.id === skinId);
+    if (found) { setEquippedSkin(found); AsyncStorage.setItem(STORAGE_SKIN, skinId).catch(() => {}); }
+    setShopVisible(false);
   }, []);
 
-  /* ── Derived rendering values ───────────────────────── */
-  const bossInterpolate = bossRotAnim.interpolate({
-    inputRange: [0, 360],
-    outputRange: ['0deg', '360deg'],
-    extrapolate: 'extend',  // allows values beyond 360
-  });
-  const bossAnimStyle = { transform: [{ rotate: bossInterpolate }] };
-
-  /* ── Render stuck knife (inside boss-local space) ───── */
-  function renderStuckKnife(k: StuckKnife) {
-    const aRad  = (k.localAngle * Math.PI) / 180;
-    // Center of knife View = boss_center_local + outward unit * (BOSS_R + half_knife)
-    const cx    = BOSS_R + Math.cos(aRad) * (BOSS_R + KNIFE_H / 2);
-    const cy    = BOSS_R + Math.sin(aRad) * (BOSS_R + KNIFE_H / 2);
-    // Rotation: knife image points up by default → rotate so tip points outward
-    const rot   = `${k.localAngle + 90}deg`;
+  // ── Render stuck knife (inside expanded container) ─────────────────────────
+  function renderStuckKnife(knife: StuckKnife) {
+    const rad = (knife.localAngle * Math.PI) / 180;
+    const cx  = CENTER + Math.cos(rad) * (BOSS_R + KNIFE_H / 2);
+    const cy  = CENTER + Math.sin(rad) * (BOSS_R + KNIFE_H / 2);
     return (
       <View
-        key={k.id}
+        key={knife.id}
         style={{
           position: 'absolute',
-          left: cx - KNIFE_W / 2,
-          top:  cy - KNIFE_H / 2,
-          width: KNIFE_W,
+          left:   cx - KNIFE_W / 2,
+          top:    cy - KNIFE_H / 2,
+          width:  KNIFE_W,
           height: KNIFE_H,
-          transform: [{ rotate: rot }],
+          transform: [{ rotate: `${knife.localAngle + 90}deg` }],
+          zIndex: 12,
         }}
       >
-        <Image
-          source={{ uri: KNIFE_SKINS[skinIdx] }}
-          style={{ width: KNIFE_W, height: KNIFE_H }}
-          resizeMode="stretch"
-        />
+        <Image source={{ uri: equippedSkin.uri }} style={{ width: KNIFE_W, height: KNIFE_H }} resizeMode="contain" />
       </View>
     );
   }
 
-  /* ══════════════ RENDER ══════════════════════════════ */
-  const isTappable = phase === 'playing';
+  // ── Left knife indicators ──────────────────────────────────────────────────
+  function renderIndicators() {
+    const thrown = totalKnives - knivesLeft;
+    const SLOT_H = 29; // height (26) + gap (3)
+    const indicatorTop = CONT_TOP + CENTER - (totalKnives * SLOT_H) / 2;
+    return (
+      <View style={[styles.indicators, { top: indicatorTop }]}>
+        {Array.from({ length: totalKnives }).map((_, i) => (
+          <View key={i} style={[styles.indicatorSlot, i < thrown ? styles.indicatorFired : styles.indicatorIdle]}>
+            <Image source={{ uri: equippedSkin.uri }} style={{ width: 9, height: 20 }} resizeMode="contain" />
+          </View>
+        ))}
+      </View>
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  HOME SCREEN
+  // ════════════════════════════════════════════════════════════════════════════
+  if (phase === 'home') {
+    return (
+      <View style={styles.root}>
+        <ImageBackground source={{ uri: `${BASE}bg_wood.png` }} style={styles.root} resizeMode="cover">
+          <View style={styles.overlay} />
+
+          <View style={[styles.topBar, { paddingTop: TOP_PAD + 10 }]}>
+            <View style={styles.ptBadge}>
+              <Ionicons name="flash" size={14} color={Colors.gold} />
+              <Text style={styles.ptBadgeText}>{powerTokens} PT</Text>
+            </View>
+            <Pressable style={styles.shopIconBtn} onPress={() => setShopVisible(true)} hitSlop={10}>
+              <Ionicons name="storefront" size={20} color={Colors.gold} />
+            </Pressable>
+          </View>
+
+          <View style={styles.homeContent}>
+            <Text style={styles.gameTitle}>KNIFE HIT</Text>
+            <Text style={styles.gameSub}>Tap to throw · Don't clash!</Text>
+
+            {/* Decorative spinning target */}
+            <Animated.View style={[styles.homeTarget, {
+              transform: [{ rotate: bossRotAnim.interpolate({ inputRange: [0, 360], outputRange: ['0deg', '360deg'] }) }],
+            }]}>
+              <Image source={{ uri: `${BASE}Target_Normal.png` }} style={{ width: BOSS_SIZE, height: BOSS_SIZE }} resizeMode="cover" />
+            </Animated.View>
+
+            {bestLevel > 1 && (
+              <View style={styles.bestBadge}>
+                <Ionicons name="trophy" size={13} color={Colors.gold} />
+                <Text style={styles.bestText}>Best Level {bestLevel}</Text>
+              </View>
+            )}
+
+            <Pressable style={styles.playButton} onPress={startGame}>
+              <Text style={styles.playButtonText}>▶  PLAY</Text>
+            </Pressable>
+
+            <Pressable style={styles.skinRow} onPress={() => setShopVisible(true)}>
+              <Image source={{ uri: equippedSkin.uri }} style={styles.skinRowImg} resizeMode="contain" />
+              <Text style={styles.skinRowName}>{equippedSkin.name}</Text>
+              <Text style={styles.skinRowChange}>Change →</Text>
+            </Pressable>
+          </View>
+        </ImageBackground>
+
+        <KnifeShop visible={shopVisible} equippedId={equippedSkin.id} onClose={() => setShopVisible(false)} onEquip={handleEquip} />
+      </View>
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  GAME SCREEN
+  // ════════════════════════════════════════════════════════════════════════════
+  const isBossLevel = isBoss(level);
+  const BOTTOM_PAD  = Platform.OS === 'web' ? 34 : insets.bottom;
 
   return (
-    <Pressable
-      style={styles.root}
-      onPress={isTappable ? handleTap : undefined}
-    >
-      {/* ── Background — darker red tint on boss levels ─── */}
-      <Image
-        source={{ uri: `${BASE}bg_wood.png` }}
-        style={StyleSheet.absoluteFill}
-        resizeMode="cover"
-      />
-      <View
-        style={[
-          StyleSheet.absoluteFill,
-          isBoss ? styles.bgOverlayBoss : styles.bgOverlay,
-        ]}
-      />
+    <Pressable style={styles.root} onPress={throwKnife}>
+      <ImageBackground source={{ uri: `${BASE}bg_wood.png` }} style={styles.root} resizeMode="cover">
+        <View style={styles.overlay} />
 
-      {/* ── HUD ─────────────────────────────────────────── */}
-      <View style={[styles.hud, { paddingTop: topPad + 8 }]}>
-        <View style={styles.hudLeft}>
-          <Text style={styles.hudLabel}>LEVEL</Text>
-          <Text style={styles.hudValue}>{level}</Text>
+        {/* HUD */}
+        <View style={[styles.hud, { paddingTop: TOP_PAD }]}>
+          <View>
+            <Text style={styles.hudLabel}>LEVEL</Text>
+            <Text style={styles.hudLevel}>{level}</Text>
+          </View>
+          {isBossLevel && <View style={styles.bossBadge}><Text style={styles.bossBadgeText}>⚔ BOSS</Text></View>}
+          <View style={styles.hudRight}>
+            <Ionicons name="flash" size={13} color={Colors.gold} />
+            <Text style={styles.hudPT}>{powerTokens}</Text>
+          </View>
         </View>
-        <View style={styles.hudCenter}>
-          {phase === 'playing' && (
-            <View style={styles.knifeDotsRow}>
-              {Array.from({ length: totalKnives }).map((_, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.knifeDot,
-                    { backgroundColor: i < (totalKnives - knivesLeft) ? Colors.gold : 'rgba(255,255,255,0.25)' },
-                    i < (totalKnives - knivesLeft) && styles.knifeDotActive,
-                  ]}
-                />
-              ))}
-            </View>
-          )}
-        </View>
-        <View style={styles.hudRight}>
-          <Text style={styles.hudLabel}>PT</Text>
-          <Text style={styles.hudValue}>{powerTokens}</Text>
-        </View>
-      </View>
 
-      {/* ── Game objects ────────────────────────────────── */}
-      <View style={[StyleSheet.absoluteFill, { pointerEvents: 'none' }]}>
-        {/* Rotating boss container — stuck knives live inside here */}
+        {/* Left indicators */}
+        {phase === 'playing' && renderIndicators()}
+
+        {/* ── Expanded rotating container ── */}
         <Animated.View
-          style={[
-            styles.bossContainer,
-            {
-              left:  SW / 2 - BOSS_R,
-              top:   BOSS_CY - BOSS_R,
-              width: BOSS_SIZE,
-              height: BOSS_SIZE,
-            },
-            bossAnimStyle,
-          ]}
+          style={{
+            position: 'absolute',
+            left: SW / 2 - CENTER,
+            top: CONT_TOP,
+            width: CONT_S,
+            height: CONT_S,
+            transform: [{ rotate: bossRotAnim.interpolate({ inputRange: [0, 360], outputRange: ['0deg', '360deg'] }) }],
+          }}
         >
-          {/* Target / boss image */}
-          {(phase === 'playing' || phase === 'game_over' || phase === 'awarding') && (
-            <Image
-              source={{ uri: targetImg }}
-              style={{ width: BOSS_SIZE, height: BOSS_SIZE, borderRadius: BOSS_R }}
-              resizeMode="cover"
-            />
+          {/* Target/Boss image — centered inside expanded container with KNIFE_H padding */}
+          <Image
+            source={{ uri: isBossLevel ? bossImg : `${BASE}Target_Normal.png` }}
+            style={{ position: 'absolute', left: KNIFE_H, top: KNIFE_H, width: BOSS_SIZE, height: BOSS_SIZE, borderRadius: BOSS_R }}
+            resizeMode="cover"
+          />
+          {isBossLevel && (
+            <View style={{ position: 'absolute', left: KNIFE_H, top: KNIFE_H, width: BOSS_SIZE, height: BOSS_SIZE, borderRadius: BOSS_R, backgroundColor: 'rgba(180,0,0,0.18)' }} />
           )}
-          {/* Stuck knives — rotate with boss */}
+          {/* Stuck knives — rendered after boss image so they appear on top */}
           {stuckKnives.map(renderStuckKnife)}
         </Animated.View>
 
-        {/* Flying / waiting knife — always at screen center X */}
-        {(phase === 'playing') && (
-          <Animated.View
-            style={[
-              styles.knifeContainer,
-              {
-                left:   SW / 2 - KNIFE_W / 2,
-                width:  KNIFE_W,
-                height: KNIFE_H,
-                top:    knifeYAnim,
-              },
-            ]}
-          >
-            <Image
-              source={{ uri: KNIFE_SKINS[skinIdx] }}
-              style={{ width: KNIFE_W, height: KNIFE_H }}
-              resizeMode="stretch"
-            />
-          </Animated.View>
+        {/* Flying knife */}
+        <Animated.View
+          style={{
+            position: 'absolute',
+            left: SW / 2 - KNIFE_W / 2,
+            top: KNIFE_START,
+            width: KNIFE_W,
+            height: KNIFE_H,
+            zIndex: 25,
+            transform: [{ translateY: knifeAnim }],
+            pointerEvents: 'none',
+          }}
+        >
+          <Image source={{ uri: equippedSkin.uri }} style={{ width: KNIFE_W, height: KNIFE_H }} resizeMode="contain" />
+        </Animated.View>
+
+        {/* Clash flash */}
+        {clashFlash && (
+          <View style={StyleSheet.absoluteFill} pointerEvents="none">
+            <View style={styles.clashFlash} />
+            <Text style={[styles.clashLabel, { top: BOSS_CY - 30, left: SW / 2 - 45 }]}>CLASH!</Text>
+          </View>
         )}
-      </View>
 
-      {/* ── MENU ─────────────────────────────────────────── */}
-      {phase === 'menu' && (
-        <View style={[styles.centeredOverlay, { paddingTop: topPad + HUD_H + BOSS_SIZE + 40 }]}>
-          <View style={styles.menuCard}>
-            <MaterialCommunityIcons name="knife" size={44} color={Colors.gold} />
-            <Text style={styles.menuTitle}>Knife Hit</Text>
-            <Text style={styles.menuDesc}>
-              Throw all knives into the spinning target — without hitting the ones already stuck!
-            </Text>
-            <View style={styles.ptBadge}>
-              <Ionicons name="flash" size={14} color={Colors.gold} />
-              <Text style={styles.ptBadgeText}>Win Power Tokens · Double with Ad</Text>
+        {/* Tap hint */}
+        {!inFlight && knivesLeft > 0 && phase === 'playing' && (
+          <Text style={[styles.tapHint, { bottom: BOTTOM_PAD + 20 }]}>TAP TO THROW</Text>
+        )}
+
+        {/* ── Game Over modal ── */}
+        <Modal visible={phase === 'game_over'} transparent animationType="fade">
+          <View style={styles.modalBg}>
+            <View style={styles.goCard}>
+              <Text style={styles.goTitle}>GAME OVER</Text>
+              <Text style={styles.goSub}>Reached Level {level}</Text>
+              <View style={styles.goPTRow}>
+                <Ionicons name="flash" size={20} color={Colors.gold} />
+                <Text style={styles.goPT}>{earnedPT} PT earned</Text>
+              </View>
+              <Pressable style={styles.collectBtn} onPress={collectPT}>
+                <Text style={styles.collectBtnText}>Collect Tokens</Text>
+              </Pressable>
+              <Pressable style={styles.ghostBtn} onPress={goHome}>
+                <Ionicons name="home-outline" size={16} color={Colors.textMuted} />
+                <Text style={styles.ghostBtnText}>Home</Text>
+              </Pressable>
             </View>
-            <Pressable style={styles.bigBtn} onPress={startGame}>
-              <LinearGradient
-                colors={[Colors.gold, Colors.neonOrange]}
-                style={styles.bigBtnInner}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-              >
-                <Ionicons name="play" size={20} color="#000" />
-                <Text style={styles.bigBtnText}>Play Now</Text>
-              </LinearGradient>
-            </Pressable>
           </View>
-        </View>
-      )}
+        </Modal>
 
-      {/* ── BOSS BADGE ──────────────────────────────────────── */}
-      {phase === 'playing' && isBoss && (
-        <View
-          style={{
-            position: 'absolute',
-            alignSelf: 'center',
-            top: BOSS_CY - BOSS_R - 36,
-            backgroundColor: 'rgba(200,0,0,0.85)',
-            paddingHorizontal: 14,
-            paddingVertical: 4,
-            borderRadius: 12,
-            pointerEvents: 'none',
-          }}
-        >
-          <Text style={{ fontFamily: 'Inter_700Bold', fontSize: 11, color: '#fff', letterSpacing: 2 }}>
-            ⚔ BOSS LEVEL
-          </Text>
-        </View>
-      )}
-
-      {/* ── TAP HINT ─────────────────────────────────────── */}
-      {phase === 'playing' && (
-        <View
-          style={{
-            position: 'absolute',
-            left: 0, right: 0,
-            bottom: botPad + 40,
-            alignItems: 'center',
-            pointerEvents: 'none',
-          }}
-        >
-          <Text style={styles.tapHint}>tap anywhere to throw</Text>
-        </View>
-      )}
-
-      {/* ── GAME OVER OVERLAY — centered above nav bar ─── */}
-      {(phase === 'game_over' || phase === 'awarding' || phase === 'reward') && (
-        <View style={[styles.overlayFull, { paddingBottom: botPad }]}>
-          <View style={styles.overlayCard}>
-
-            {/* Awarding state */}
-            {phase === 'awarding' && (
-              <>
-                <ActivityIndicator size="large" color={Colors.gold} />
-                <Text style={styles.awardText}>Saving tokens...</Text>
-              </>
-            )}
-
-            {/* Game over — pick reward */}
-            {phase === 'game_over' && (
-              <>
-                <Text style={styles.gameOverTag}>GAME OVER</Text>
-                <Text style={styles.scoreBig}>{score}</Text>
-                <Text style={styles.scoreTag}>score · level {level}</Text>
-
-                <View style={styles.ptRow}>
-                  <Ionicons name="flash" size={16} color={Colors.gold} />
-                  <Text style={styles.ptRowText}>{ptEarned} Power Token{ptEarned !== 1 ? 's' : ''} earned</Text>
-                </View>
-
-                {/* Double with ad */}
-                <Pressable
-                  style={({ pressed }) => [styles.bigBtn, { opacity: pressed || isLoadingAd ? 0.7 : 1 }]}
-                  onPress={handleDoubleAd}
-                  disabled={isLoadingAd}
-                >
-                  <LinearGradient
-                    colors={[Colors.neonOrange, Colors.gold]}
-                    style={styles.bigBtnInner}
-                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  >
-                    {isLoadingAd
-                      ? <ActivityIndicator size="small" color="#000" />
-                      : <Ionicons name="play-circle" size={20} color="#000" />}
-                    <Text style={styles.bigBtnText}>
-                      {isLoadingAd ? 'Loading...' : `Watch Ad → Get ${ptEarned * 2} PT`}
-                    </Text>
-                  </LinearGradient>
-                </Pressable>
-
-                {/* Collect without ad */}
-                <Pressable style={styles.ghostBtn} onPress={handleCollect}>
-                  <Text style={styles.ghostBtnText}>Collect {ptEarned} PT (no ad)</Text>
-                </Pressable>
-              </>
-            )}
-
-            {/* Reward success */}
-            {phase === 'reward' && (
-              <>
-                <Ionicons name="checkmark-circle" size={52} color={Colors.success} />
-                <Text style={styles.rewardTitle}>+{ptEarned} PT Added!</Text>
-                <Text style={styles.rewardSub}>Tokens saved to your wallet</Text>
-                <Pressable style={styles.bigBtn} onPress={startGame}>
-                  <LinearGradient
-                    colors={[Colors.gold, Colors.neonOrange]}
-                    style={styles.bigBtnInner}
-                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  >
-                    <Ionicons name="refresh" size={18} color="#000" />
-                    <Text style={styles.bigBtnText}>Play Again</Text>
-                  </LinearGradient>
-                </Pressable>
-              </>
-            )}
-
+        {/* ── Awarding modal ── */}
+        <Modal visible={phase === 'awarding'} transparent animationType="fade">
+          <View style={styles.modalBg}>
+            <View style={styles.awardCard}>
+              <ActivityIndicator size="large" color={Colors.gold} />
+              <Text style={styles.awardText}>Saving tokens…</Text>
+            </View>
           </View>
-        </View>
-      )}
+        </Modal>
+
+        {/* ── Reward modal ── */}
+        <Modal visible={phase === 'reward'} transparent animationType="fade">
+          <View style={styles.modalBg}>
+            <View style={styles.rewardCard}>
+              <Text style={styles.rewardEmoji}>🎉</Text>
+              <Text style={styles.rewardTitle}>Tokens Collected!</Text>
+              <View style={styles.goPTRow}>
+                <Ionicons name="flash" size={22} color={Colors.gold} />
+                <Text style={styles.rewardPT}>+{earnedPT} PT</Text>
+              </View>
+              <Text style={styles.rewardBalance}>{powerTokens} PT total</Text>
+              <Pressable style={styles.collectBtn} onPress={startGame}>
+                <Text style={styles.collectBtnText}>Play Again</Text>
+              </Pressable>
+              <Pressable style={styles.ghostBtn} onPress={goHome}>
+                <Ionicons name="home-outline" size={16} color={Colors.textMuted} />
+                <Text style={styles.ghostBtnText}>Home</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+
+        <KnifeShop visible={shopVisible} equippedId={equippedSkin.id} onClose={() => setShopVisible(false)} onEquip={handleEquip} />
+      </ImageBackground>
     </Pressable>
   );
 }
 
-/* ─── Styles ────────────────────────────────────────────────────── */
+// ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#1a0800',
-  },
-  bgOverlay: {
-    backgroundColor: 'rgba(0,0,0,0.30)',
-  },
-  bgOverlayBoss: {
-    backgroundColor: 'rgba(80,0,0,0.55)',
-  },
+  root: { flex: 1, backgroundColor: '#0d0500' },
+  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.52)' },
 
-  /* HUD */
-  hud: {
+  // ── Home ──────────────────────────────────────────────────────────────────
+  topBar: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0,
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingBottom: 10,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
-  hudLeft:  { flex: 1, alignItems: 'flex-start' },
-  hudCenter:{ flex: 2, alignItems: 'center', paddingTop: 6 },
-  hudRight: { flex: 1, alignItems: 'flex-end' },
-  hudLabel: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 10,
-    color: Colors.textMuted,
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-  },
-  hudValue: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 22,
-    color: Colors.gold,
-    lineHeight: 26,
-  },
-
-  /* Knife dots */
-  knifeDotsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: 5,
-    maxWidth: SW * 0.45,
-  },
-  knifeDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  knifeDotActive: {
-    shadowColor: Colors.gold,
-    shadowRadius: 4,
-    shadowOpacity: 0.8,
-    shadowOffset: { width: 0, height: 0 },
-  },
-
-  /* Game objects */
-  bossContainer: {
-    position: 'absolute',
-    overflow: 'visible',
-  },
-  knifeContainer: {
-    position: 'absolute',
-    overflow: 'visible',
-  },
-
-  /* Tap hint */
-  tapHint: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 13,
-    color: 'rgba(255,255,255,0.45)',
-    letterSpacing: 0.5,
-  },
-
-  /* Menu */
-  centeredOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingHorizontal: 24,
-  },
-  menuCard: {
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    borderRadius: 24,
-    padding: 28,
-    alignItems: 'center',
-    gap: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,200,0,0.2)',
-    width: '100%',
-  },
-  menuTitle: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 26,
-    color: Colors.gold,
-  },
-  menuDesc: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 13,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
+    zIndex: 20,
   },
   ptBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(244,196,48,0.12)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(244,196,48,0.25)',
-  },
-  ptBadgeText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 12,
-    color: Colors.gold,
-  },
-
-  /* Buttons */
-  bigBtn: {
-    width: '100%',
-    borderRadius: 14,
-    overflow: 'hidden',
-  },
-  bigBtnInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 15,
-  },
-  bigBtnText: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 16,
-    color: '#000',
-  },
-  ghostBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
-  },
-  ghostBtnText: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.5)',
-    textAlign: 'center',
-  },
-
-  /* Game-over overlay — centered */
-  overlayFull: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.82)',
-    paddingHorizontal: 20,
-  },
-  overlayCard: {
-    width: '100%',
-    alignItems: 'center',
-    gap: 14,
-    backgroundColor: 'rgba(20,8,0,0.92)',
-    borderRadius: 24,
-    paddingVertical: 28,
-    paddingHorizontal: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(244,196,48,0.18)',
-  },
-
-  /* Awarding */
-  awardText: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 15,
-    color: Colors.textMuted,
-    marginTop: 8,
-  },
-
-  /* Score */
-  gameOverTag: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 11,
-    color: Colors.textMuted,
-    letterSpacing: 3,
-  },
-  scoreBig: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 64,
-    color: Colors.gold,
-    lineHeight: 68,
-  },
-  scoreTag: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 13,
-    color: Colors.textMuted,
-    marginTop: -8,
-  },
-  ptRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(244,196,48,0.1)',
-    paddingHorizontal: 14,
-    paddingVertical: 7,
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 12, paddingVertical: 7,
     borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(244,196,48,0.2)',
+    borderWidth: 1, borderColor: 'rgba(244,196,48,0.3)',
   },
-  ptRowText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 14,
-    color: Colors.gold,
+  ptBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: Colors.gold },
+  shopIconBtn: {
+    backgroundColor: 'rgba(0,0,0,0.55)', padding: 10, borderRadius: 20,
+    borderWidth: 1, borderColor: 'rgba(244,196,48,0.3)',
+  },
+  homeContent: {
+    flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24,
+  },
+  gameTitle: {
+    fontFamily: 'Inter_700Bold', fontSize: 44, color: Colors.gold,
+    letterSpacing: 6,
+  },
+  gameSub: {
+    fontFamily: 'Inter_400Regular', fontSize: 13, color: 'rgba(255,255,255,0.5)',
+    letterSpacing: 1.5, marginTop: 4,
+  },
+  homeTarget: {
+    width: BOSS_SIZE, height: BOSS_SIZE, borderRadius: BOSS_R,
+    overflow: 'hidden', marginVertical: 26,
+  },
+  bestBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8,
+  },
+  bestText: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.gold },
+  playButton: {
+    backgroundColor: Colors.gold, paddingHorizontal: 56, paddingVertical: 16, borderRadius: 36,
+    elevation: 8,
+    ...(Platform.OS !== 'web'
+      ? { shadowColor: Colors.gold, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 12 }
+      : { boxShadow: `0px 4px 12px ${Colors.gold}80` } as any),
+  },
+  playButtonText: { fontFamily: 'Inter_700Bold', fontSize: 18, color: '#000', letterSpacing: 3 },
+  skinRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 24,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 16,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+  },
+  skinRowImg: { width: 16, height: 38 },
+  skinRowName: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.text, flex: 1 },
+  skinRowChange: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.gold },
+
+  // ── HUD ───────────────────────────────────────────────────────────────────
+  hud: {
+    flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 20, paddingBottom: 8,
+    height: HUD_H + (Platform.OS === 'web' ? 67 : 0), zIndex: 30,
+  },
+  hudLabel: { fontFamily: 'Inter_500Medium', fontSize: 10, color: 'rgba(255,255,255,0.45)', letterSpacing: 2 },
+  hudLevel: { fontFamily: 'Inter_700Bold', fontSize: 28, color: '#fff' },
+  hudRight: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4 },
+  hudPT:    { fontFamily: 'Inter_700Bold', fontSize: 14, color: Colors.gold },
+  bossBadge: {
+    flex: 1, alignItems: 'center',
+    backgroundColor: 'rgba(180,0,0,0.75)', paddingHorizontal: 12, paddingVertical: 4,
+    borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,60,60,0.5)', alignSelf: 'flex-end', marginBottom: 4,
+  },
+  bossBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: '#fff', letterSpacing: 1 },
+
+  // ── Indicators ────────────────────────────────────────────────────────────
+  indicators: {
+    position: 'absolute', left: 14, zIndex: 30, alignItems: 'center', gap: 3,
+  },
+  indicatorSlot: { width: 18, height: 26, alignItems: 'center', justifyContent: 'center' },
+  indicatorIdle: { opacity: 0.25 },
+  indicatorFired: { opacity: 1 },
+
+  // ── Clash ─────────────────────────────────────────────────────────────────
+  clashFlash: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(255,0,0,0.28)' },
+  clashLabel: {
+    position: 'absolute', fontFamily: 'Inter_700Bold', fontSize: 24,
+    color: '#ff4444', letterSpacing: 3,
   },
 
-  /* Reward */
-  rewardTitle: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 26,
-    color: Colors.success,
-    marginTop: 4,
+  // ── Tap hint ──────────────────────────────────────────────────────────────
+  tapHint: {
+    position: 'absolute', alignSelf: 'center',
+    fontFamily: 'Inter_500Medium', fontSize: 11, color: 'rgba(255,255,255,0.3)', letterSpacing: 3,
   },
-  rewardSub: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.6)',
-    textAlign: 'center',
+
+  // ── Modals ────────────────────────────────────────────────────────────────
+  modalBg: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.78)', alignItems: 'center', justifyContent: 'center',
   },
+  goCard: {
+    backgroundColor: '#120800', borderRadius: 24, paddingHorizontal: 36, paddingVertical: 36,
+    alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+    width: SW * 0.82, gap: 12,
+  },
+  goTitle: { fontFamily: 'Inter_700Bold', fontSize: 30, color: '#ff5555', letterSpacing: 4 },
+  goSub:   { fontFamily: 'Inter_500Medium', fontSize: 14, color: 'rgba(255,255,255,0.55)' },
+  goPTRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  goPT:    { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.gold },
+  collectBtn: {
+    backgroundColor: Colors.gold, paddingHorizontal: 44, paddingVertical: 14,
+    borderRadius: 28, marginTop: 8, width: '100%', alignItems: 'center',
+  },
+  collectBtnText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000', letterSpacing: 1 },
+  ghostBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8 },
+  ghostBtnText: { fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.textMuted },
+
+  awardCard: { backgroundColor: '#120800', borderRadius: 20, padding: 36, alignItems: 'center', gap: 16 },
+  awardText: { fontFamily: 'Inter_500Medium', fontSize: 16, color: Colors.text },
+
+  rewardCard: {
+    backgroundColor: '#120800', borderRadius: 24, paddingHorizontal: 36, paddingVertical: 36,
+    alignItems: 'center', borderWidth: 1, borderColor: 'rgba(244,196,48,0.25)',
+    width: SW * 0.82, gap: 10,
+  },
+  rewardEmoji:   { fontSize: 46 },
+  rewardTitle:   { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.text, letterSpacing: 1 },
+  rewardPT:      { fontFamily: 'Inter_700Bold', fontSize: 32, color: Colors.gold },
+  rewardBalance: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted },
 });

@@ -1045,6 +1045,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Shop: ensure purchased_items field, get items, buy knife ─────────────
+  (async () => {
+    try {
+      const token = await getAdminToken();
+      const col = await pbHttp("GET", "/api/collections/users", null, token);
+      const hasField = (col.schema || []).some((f: any) => f.name === "purchased_items");
+      if (!hasField) {
+        await pbHttp("PATCH", "/api/collections/users", {
+          schema: [...(col.schema || []), { name: "purchased_items", type: "json", required: false, options: {} }],
+        }, token);
+        console.log("[Schema] Added purchased_items field to users collection");
+      }
+    } catch (e: any) {
+      console.warn("[Schema] purchased_items migration skipped:", e.message);
+    }
+  })();
+
+  app.get("/api/app/shop/items/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      return res.json({ purchasedItems: user.purchased_items || [] });
+    } catch (e: any) {
+      console.error("[shop/items]", e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/app/shop/buy", async (req: Request, res: Response) => {
+    try {
+      const { pbId, itemId } = req.body;
+      if (!pbId || !itemId) return res.status(400).json({ error: "pbId and itemId required" });
+      const KNIFE_PRICE = 200;
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      const purchased: string[] = user.purchased_items || [];
+      if (purchased.includes(itemId)) return res.status(400).json({ error: "Already owned" });
+      const match = itemId.match(/^knife_(\d+)$/);
+      if (match) {
+        const n = parseInt(match[1], 10);
+        if (n > 1 && !purchased.includes(`knife_${n - 1}`)) {
+          return res.status(400).json({ error: "Unlock previous knife first" });
+        }
+      }
+      if ((user.power_tokens || 0) < KNIFE_PRICE) {
+        return res.status(400).json({ error: "Insufficient tokens" });
+      }
+      const newPT = user.power_tokens - KNIFE_PRICE;
+      const newPurchased = [...purchased, itemId];
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens: newPT,
+        purchased_items: newPurchased,
+      });
+      return res.json({ success: true, newPowerTokens: newPT, purchasedItems: newPurchased });
+    } catch (e: any) {
+      console.error("[shop/buy]", e.message);
+      return res.status(500).json({ error: "Purchase failed" });
+    }
+  });
+
   // ── Game: Add power tokens ────────────────────────────────────────────────
   app.post("/api/app/game/reward", async (req: Request, res: Response) => {
     try {

@@ -112,6 +112,15 @@ export const api = {
       { pbId, amount },
     ),
 
+  // ── Shop ──────────────────────────────────────────────────────────────
+  shopGetItems: (pbId: string) =>
+    request<{ purchasedItems: string[] }>('GET', `/api/app/shop/items/${pbId}`),
+
+  shopBuyKnife: (pbId: string, itemId: string) =>
+    request<{ success: boolean; newPowerTokens: number; purchasedItems: string[] }>(
+      'POST', '/api/app/shop/buy', { pbId, itemId },
+    ),
+
   // ── Referral ──────────────────────────────────────────────────────────
   validateReferralCode: (code: string) =>
     request<{ valid: boolean; referrerName?: string }>(
