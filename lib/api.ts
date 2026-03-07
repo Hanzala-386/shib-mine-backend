@@ -22,10 +22,15 @@ export const api = {
   getSettings: () => request<AppSettings>('GET', '/api/app/settings'),
 
   // ── Auth ──────────────────────────────────────────────────────────────
-  sendOtp: (email: string) => request<{ success: boolean }>('POST', '/api/app/auth/send-otp', { email }),
-
-  verifyOtp: (email: string, otp: string) =>
-    request<{ success: boolean }>('POST', '/api/app/auth/verify-otp', { email, otp }),
+  // Called after Firebase emailVerified = true.
+  // Creates / updates PB user with is_verified: true.
+  confirmVerified: (payload: {
+    firebaseUid: string;
+    email: string;
+    displayName?: string;
+    referralCode?: string;
+    referredBy?: string;
+  }) => request<PBUser>('POST', '/api/app/auth/confirm-verified', payload),
 
   syncUser: (payload: {
     firebaseUid: string;

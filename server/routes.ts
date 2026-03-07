@@ -2,95 +2,8 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "node:http";
 import https from "node:https";
 import http from "node:http";
-import nodemailer from "nodemailer";
 
 const PB_URL = "https://api.webcod.in";
-
-// ─── Temp OTP storage (for new users) ─────────────────────────────────────────
-const tempOtpMap = new Map<string, { code: string; expires: number }>();
-// Tracks emails that passed OTP but haven't been synced to PB yet
-const verifiedEmails = new Set<string>();
-
-// ─── Mailer setup ────────────────────────────────────────────────────────────
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT || "587"),
-  secure: process.env.SMTP_SECURE === "true",
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
-async function sendEmail(to: string, code: string): Promise<void> {
-  const subject = "Your SHIB Mine Verification Code";
-  const html = `
-    <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#1a1a2e;color:#fff;padding:32px;border-radius:12px;">
-      <h2 style="color:#f4c430;margin-bottom:8px;">SHIB Mine</h2>
-      <p style="color:#ccc;margin-bottom:24px;">Your verification code:</p>
-      <div style="background:#0d0d1a;border:2px solid #f4c430;border-radius:8px;padding:24px;text-align:center;margin-bottom:24px;">
-        <span style="font-size:36px;font-weight:bold;letter-spacing:12px;color:#f4c430;">${code}</span>
-      </div>
-      <p style="color:#999;font-size:13px;">This code expires in 10 minutes. If you didn't request this, ignore this email.</p>
-    </div>
-  `;
-
-  // 1. Try Resend (recommended)
-  if (process.env.RESEND_API_KEY) {
-    try {
-      const fromAddr = process.env.RESEND_FROM || "noreply@resend.dev";
-      const res = await new Promise<any>((resolve, reject) => {
-        const body = JSON.stringify({ from: `SHIB Mine <${fromAddr}>`, to: [to], subject, html });
-        const req = https.request({
-          hostname: "api.resend.com",
-          path: "/emails",
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body),
-          },
-        }, (r) => {
-          let data = "";
-          r.on("data", (c) => data += c);
-          r.on("end", () => resolve({ status: r.statusCode, body: data }));
-        });
-        req.on("error", reject);
-        req.write(body);
-        req.end();
-      });
-      if (res.status >= 200 && res.status < 300) {
-        console.log(`[OTP] Sent via Resend to ${to}`);
-        return;
-      }
-      console.error("[OTP] Resend failed:", res.status, res.body);
-    } catch (e) {
-      console.error("[OTP] Resend error:", e);
-    }
-  }
-
-  // 2. Try SMTP fallback
-  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-    try {
-      await transporter.sendMail({
-        from: `"SHIB Mine" <${process.env.SMTP_USER}>`,
-        to,
-        subject,
-        html,
-        text: `Your verification code is: ${code}. Expires in 10 minutes.`,
-      });
-      console.log(`[OTP] Sent via SMTP to ${to}`);
-      return;
-    } catch (e) {
-      console.error("[OTP] SMTP failed:", e);
-    }
-  }
-
-  // 3. Dev fallback — log to console
-  console.log(`\n[OTP] ===========================`);
-  console.log(`[OTP] Code for ${to}: ${code}`);
-  console.log(`[OTP] ===========================\n`);
-}
 
 // ─── PocketBase HTTP helper ────────────────────────────────────────────────
 function pbHttp(
@@ -296,12 +209,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Create PB user (using PB built-in auth)
+      // Create PB user — is_verified starts false; set to true via /confirm-verified
       const code = referralCode || generateReferralCode();
       const pbPassword = `SHIB_${firebaseUid}_SECURE`;
-      // Check if email was already OTP-verified (temp map flow for brand new users)
-      const alreadyVerified = verifiedEmails.has(email);
-      if (alreadyVerified) verifiedEmails.delete(email);
       const created = await pbPost("/api/collections/users/records", {
         email,
         password: pbPassword,
@@ -315,7 +225,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         power_tokens: 10,
         total_claims: 0,
         total_wins: 0,
-        is_verified: alreadyVerified,
+        is_verified: false,
       });
 
       if (created.code) {
@@ -342,107 +252,91 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ── OTP: Send ─────────────────────────────────────────────────────────────
-  app.post("/api/app/auth/send-otp", async (req: Request, res: Response) => {
+  // ── Firebase Email Verification: Confirm Verified ────────────────────────
+  // Called after Firebase emailVerified = true.
+  // Finds or creates the PB user and marks is_verified: true.
+  app.post("/api/app/auth/confirm-verified", async (req: Request, res: Response) => {
     try {
-      const { email } = req.body;
-      if (!email) return res.status(400).json({ error: "Email required" });
+      const { firebaseUid, email, displayName, referralCode, referredBy } = req.body;
+      if (!firebaseUid || !email)
+        return res.status(400).json({ error: "firebaseUid and email required" });
 
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const expires = Date.now() + 10 * 60 * 1000;
-
-      // Find user in PB
-      const r = await pbGet(
-        `/api/collections/users/records?filter=email="${email}"&perPage=1`,
+      // Try to find by firebase_uid
+      const byUid = await pbGet(
+        `/api/collections/users/records?filter=firebase_uid="${encodeURIComponent(firebaseUid)}"&perPage=1`,
       );
-      const u = r.items?.[0];
-
-      if (u) {
+      if (byUid.items?.[0]) {
+        const u = byUid.items[0];
         const updated = await pbPatch(`/api/collections/users/records/${u.id}`, {
-          otp_code: code,
-          otp_expires: expires.toString(),
+          is_verified: true,
         });
-        if (updated.code) return res.status(400).json({ error: updated.message });
-      } else {
-        // Temp storage for new users not yet synced
-        tempOtpMap.set(email, { code, expires });
+        return res.json(formatUser(updated.code ? { ...u, is_verified: true } : updated));
       }
 
-      await sendEmail(email, code);
-      res.json({ success: true, email });
-    } catch (e: any) {
-      console.error("[/api/app/auth/send-otp]", e.message);
-      res.status(500).json({ error: "Failed to send OTP" });
-    }
-  });
-
-  // ── OTP: Verify ──────────────────────────────────────────────────────────
-  app.post("/api/app/auth/verify-otp", async (req: Request, res: Response) => {
-    try {
-      const { email, otp } = req.body;
-      if (!email || !otp)
-        return res.status(400).json({ error: "Email and OTP required" });
-
-      let storedCode: string | undefined;
-      let storedExpires: number | undefined;
-      let pbUserId: string | undefined;
-
-      // Check PB
-      const r = await pbGet(
+      // Try to find by email
+      const byEmail = await pbGet(
         `/api/collections/users/records?filter=email="${email}"&perPage=1`,
       );
-      const u = r.items?.[0];
-
-      if (u) {
-        storedCode = u.otp_code;
-        storedExpires = parseInt(u.otp_expires || "0");
-        pbUserId = u.id;
-      } else {
-        // Check temp map
-        const temp = tempOtpMap.get(email);
-        if (temp) {
-          storedCode = temp.code;
-          storedExpires = temp.expires;
-        }
+      if (byEmail.items?.[0]) {
+        const u = byEmail.items[0];
+        const patches: any = { is_verified: true };
+        if (!u.firebase_uid) patches.firebase_uid = firebaseUid;
+        if (!u.referral_code && referralCode) patches.referral_code = referralCode;
+        if (!u.display_name && displayName) patches.display_name = displayName;
+        const updated = await pbPatch(`/api/collections/users/records/${u.id}`, patches);
+        return res.json(formatUser(updated.code ? { ...u, ...patches } : updated));
       }
 
-      if (!storedCode || !storedExpires || Date.now() > storedExpires) {
-        return res.status(400).json({ error: "Invalid or expired code" });
+      // Create fresh PB user — already verified via Firebase
+      const code = referralCode || generateReferralCode();
+      const pbPassword = `SHIB_${firebaseUid}_SECURE`;
+
+      let referrerPbId: string | undefined;
+      if (referredBy) {
+        const referrerRes = await pbGet(
+          `/api/collections/users/records?filter=referral_code="${encodeURIComponent(referredBy)}"&perPage=1`,
+        );
+        referrerPbId = referrerRes.items?.[0]?.id;
       }
 
-      if (storedCode !== otp) {
-        return res.status(400).json({ error: "Invalid or expired code" });
+      const created = await pbPost("/api/collections/users/records", {
+        email,
+        password: pbPassword,
+        passwordConfirm: pbPassword,
+        emailVisibility: false,
+        firebase_uid: firebaseUid,
+        display_name: displayName || email.split("@")[0],
+        referral_code: code,
+        referred_by: referredBy || "",
+        shib_balance: 0,
+        power_tokens: 10,
+        total_claims: 0,
+        total_wins: 0,
+        is_verified: true,
+      });
+
+      if (created.code) return res.status(400).json({ error: created.message });
+
+      if (referrerPbId) {
+        pbGet(`/api/collections/users/records/${referrerPbId}`)
+          .then(async (r) => {
+            if (r?.id) await pbPatch(`/api/collections/users/records/${referrerPbId}`, {
+              shib_balance: (r.shib_balance || 0) + 5,
+            });
+          }).catch(() => {});
       }
 
-      // Valid OTP
-      if (pbUserId) {
-        await pbPatch(`/api/collections/users/records/${pbUserId}`, {
-          is_verified: true,
-          otp_code: "",
-        });
-      }
-      // Track verified status for new users not yet in PB
-      // syncUser will pick this up and create the user with is_verified: true
-      if (!pbUserId) {
-        verifiedEmails.add(email);
-      }
-      tempOtpMap.delete(email);
-
-      res.json({ success: true });
+      return res.json(formatUser(created));
     } catch (e: any) {
-      console.error("[/api/app/auth/verify-otp]", e.message);
-      res.status(500).json({ error: "Verification failed" });
+      console.error("[/api/app/auth/confirm-verified]", e.message);
+      res.status(500).json({ error: "Failed to confirm verification" });
     }
   });
 
-  // ── Dev-only: Peek last OTP (development testing only) ───────────────────
+  // ── Dev-only status check ─────────────────────────────────────────────────
   if (process.env.NODE_ENV !== "production") {
-    app.get("/api/dev/peek-otp/:email", (req: Request, res: Response) => {
-      const email = decodeURIComponent(req.params.email);
-      const entry = tempOtpMap.get(email);
-      if (!entry) return res.status(404).json({ error: "No pending OTP" });
-      if (Date.now() > entry.expires) return res.status(410).json({ error: "OTP expired" });
-      res.json({ otp: entry.code, email });
+    app.get("/api/dev/status", (_req: Request, res: Response) => {
+      res.json({ env: "development", authMode: "firebase-email-link" });
     });
   }
 

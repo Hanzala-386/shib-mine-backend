@@ -6,12 +6,12 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
 ## Architecture
 - **Frontend**: Expo Router (file-based routing), React Native
 - **Backend**: Express.js on port 5000 (server/routes.ts) + PocketBase at https://api.webcod.in
-- **Auth**: Firebase Authentication (Email/Password) + Custom OTP email verification
+- **Auth**: Firebase Authentication (Email/Password) + Firebase native email verification link (free, zero cost)
 - **State**: React Context (Auth, Wallet, Mining, Admin)
 
 ## Key Features
-1. **Firebase Auth + OTP Verification** — Email/password signup/signin with 6-digit OTP gate; `POST /api/app/auth/send-otp` and `POST /api/app/auth/verify-otp`; verified via PB `is_verified` field
-2. **OTP Screen** — 6 individual digit inputs, auto-advance, auto-submit, shake animation on error, 60s countdown for resend, Forgot Password link
+1. **Firebase Email Verification** — Signup → `sendEmailVerification()` → verify-email screen (no OTP inputs, just "check inbox" UI); Sign-in checks `firebaseUser.emailVerified`; `POST /api/app/auth/confirm-verified` syncs verified status to PB
+2. **Verify Email Screen** — "Check inbox" screen: tap to check status (polls Firebase), resend button with 60s cooldown, sign out link
 3. **Mining** — 60-minute timer, server-persisted start/claim with booster_multiplier stored in session; 24 PT entry fee
 4. **Speed Boosters** — 2x/4x/6x/10x, time-limited 1 hour, single active at a time, countdown timer on active card; decoupled from mining start
 5. **Server-Side Claim Verification** — Server computes expected reward from rate × 3600 × booster_multiplier; client reward validated within 5% tolerance
@@ -26,8 +26,7 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
 ### users collection
 - `firebase_uid`, `email`, `display_name`, `referral_code`, `referred_by`
 - `shib_balance`, `power_tokens`, `total_claims`, `total_wins`
-- `is_verified` (bool) — OTP-based email verification gate
-- `otp_code`, `otp_expires` — temp OTP storage
+- `is_verified` (bool) — set to true via `POST /api/app/auth/confirm-verified` after Firebase email link verified
 - `active_booster_multiplier` (number), `booster_expires` (text) — booster state
 
 ### mining_sessions collection

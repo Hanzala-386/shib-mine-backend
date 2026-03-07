@@ -8,6 +8,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { router } from 'expo-router';
 import { useAuth } from '@/context/AuthContext';
 import Colors from '@/constants/colors';
 
@@ -15,7 +16,7 @@ type Mode = 'signin' | 'signup';
 
 export default function AuthScreen() {
   const insets = useSafeAreaInsets();
-  const { signIn, signUp, forgotPassword } = useAuth();
+  const { signIn, signUp, forgotPassword, resendVerificationEmail } = useAuth();
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -25,15 +26,19 @@ export default function AuthScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [showEmailUnverified, setShowEmailUnverified] = useState(false);
+  const [isResending, setIsResending] = useState(false);
 
   function switchMode(m: Mode) {
     setMode(m);
     setErrorMsg('');
+    setShowEmailUnverified(false);
   }
 
   async function handleSubmit() {
     if (isLoading) return;
     setErrorMsg('');
+    setShowEmailUnverified(false);
 
     if (!email.trim() || !password.trim()) {
       setErrorMsg('Please fill in all required fields.');
@@ -64,6 +69,11 @@ export default function AuthScreen() {
       }
     } catch (e: any) {
       const code = e?.code || '';
+      if (code === 'EMAIL_NOT_VERIFIED') {
+        setShowEmailUnverified(true);
+        setErrorMsg('Your email is not verified. Check your inbox for the verification link.');
+        return;
+      }
       const msg =
         code === 'auth/email-already-in-use' ? 'An account with this email already exists. Try signing in.'
         : code === 'auth/invalid-email' ? 'Please enter a valid email address.'
@@ -76,6 +86,20 @@ export default function AuthScreen() {
       setErrorMsg(msg);
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function handleResendFromSignIn() {
+    if (isResending) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setIsResending(true);
+    try {
+      await resendVerificationEmail();
+      Alert.alert('Email Sent', 'A new verification link has been sent to your email.');
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Could not resend verification email.');
+    } finally {
+      setIsResending(false);
     }
   }
 
@@ -206,7 +230,21 @@ export default function AuthScreen() {
             {errorMsg !== '' && (
               <View style={styles.errorBox} testID="auth-error">
                 <Ionicons name="alert-circle-outline" size={16} color={Colors.error} />
-                <Text style={styles.errorText}>{errorMsg}</Text>
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={styles.errorText}>{errorMsg}</Text>
+                  {showEmailUnverified && mode === 'signin' && (
+                    <Pressable
+                      onPress={handleResendFromSignIn}
+                      disabled={isResending}
+                      testID="btn-resend-from-signin"
+                    >
+                      {isResending
+                        ? <ActivityIndicator color={Colors.gold} size="small" />
+                        : <Text style={styles.resendLinkText}>Resend verification email →</Text>
+                      }
+                    </Pressable>
+                  )}
+                </View>
               </View>
             )}
 
@@ -247,7 +285,7 @@ export default function AuthScreen() {
 
             {mode === 'signup' && (
               <Text style={styles.termsText}>
-                A 6-digit verification code will be sent to your email.
+                A verification link will be sent to your email — free, no SMS required.
               </Text>
             )}
           </View>
@@ -332,5 +370,8 @@ const styles = StyleSheet.create({
   termsText: {
     fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted,
     textAlign: 'center', marginTop: 14, lineHeight: 18,
+  },
+  resendLinkText: {
+    fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.gold,
   },
 });

@@ -6,8 +6,9 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   firebaseSignOut,
-  onAuthStateChanged,
+  sendEmailVerification,
   sendPasswordResetEmail,
+  onAuthStateChanged,
   type FirebaseUser,
 } from '@/lib/firebase';
 import { api, type PBUser } from '@/lib/api';
@@ -34,8 +35,8 @@ interface AuthContextValue {
   signUp: (email: string, password: string, displayName: string, referredBy?: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
-  verifyOtp: (email: string, code: string) => Promise<{ success: boolean; error?: string }>;
-  resendOtp: (email: string) => Promise<void>;
+  resendVerificationEmail: () => Promise<void>;
+  checkVerificationStatus: () => Promise<{ verified: boolean }>;
   forgotPassword: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
   refreshBalance: () => Promise<void>;
@@ -60,7 +61,7 @@ function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
   };
 }
 
-// Prevents onAuthStateChanged from interfering while signIn/signUp is in progress
+// Module-level flag to block onAuthStateChanged during active sign-in/sign-up
 let isAuthAction = false;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -77,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsub;
   }, []);
 
-  // App startup session restore — not called during active signIn/signUp
+  // ── App startup session restore ──────────────────────────────────────────
   async function handleAuthStateChange(fbUser: FirebaseUser | null) {
     if (!fbUser) {
       setUser(null);
@@ -87,28 +88,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    setFirebaseUser(fbUser);
+    // Reload to get the freshest emailVerified status from Firebase
+    try { await fbUser.reload(); } catch {}
+    const freshUser = auth.currentUser ?? fbUser;
+    setFirebaseUser(freshUser);
 
+    if (freshUser.emailVerified) {
+      // Firebase says verified → make sure PB is synced
+      await confirmAndLoadUser(freshUser);
+    } else {
+      // Not verified yet → show the check-email screen
+      setPbUser(null);
+      setUser(null);
+      setIsLoading(false);
+    }
+  }
+
+  // Confirms verification in PB and loads user profile
+  async function confirmAndLoadUser(fbUser: FirebaseUser): Promise<void> {
     try {
-      const pb = await api.getUser(fbUser.uid).catch(() => null);
-      if (pb?.is_verified) {
-        setPbUser(pb);
-        setUser(pbToProfile(pb, fbUser));
-        await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
-      } else {
-        setPbUser(pb ?? null);
-        setUser(null);
-      }
-    } catch {
+      const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
+      const pending = cached ? JSON.parse(cached) : {};
+
+      const pb = await api.confirmVerified({
+        firebaseUid: fbUser.uid,
+        email: fbUser.email ?? '',
+        displayName: pending.displayName || fbUser.email?.split('@')[0] || '',
+        referralCode: pending.referralCode || generateReferralCode(),
+        referredBy: pending.referredBy || '',
+      });
+
+      if (cached) await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
+
+      setPbUser(pb);
+      setUser(pbToProfile(pb, fbUser));
+      await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
+    } catch (e) {
+      console.warn('[Auth] confirmAndLoadUser failed:', e);
       setPbUser(null);
       setUser(null);
     }
-
     setIsLoading(false);
   }
 
-  // ── Sign Up ────────────────────────────────────────────────────────────────
-  // FLOW: Firebase create → navigate to OTP screen immediately → OTP sent in background
+  // ── Sign Up ───────────────────────────────────────────────────────────────
+  // Creates Firebase account, sends verification email, navigates to check-email screen.
   async function signUp(
     email: string,
     password: string,
@@ -119,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
 
+      // Store pending profile data for when they verify
       await AsyncStorage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify({
         displayName,
         referralCode: generateReferralCode(),
@@ -130,67 +155,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setIsLoading(false);
 
-      // Navigate to OTP screen FIRST — then send OTP in background
+      // Send Firebase verification email — free, no external service needed
+      await sendEmailVerification(cred.user);
+
+      // Navigate to check-email screen immediately
       router.replace('/verify-email' as any);
-      api.sendOtp(email).catch((e) => console.warn('[Auth] OTP send failed:', e?.message));
     } finally {
       isAuthAction = false;
     }
   }
 
-  // ── Sign In ────────────────────────────────────────────────────────────────
-  // FLOW:
-  //   verified (is_verified=true)  → go directly to /(tabs)
-  //   unverified (is_verified=false or no PB record) → OTP screen + send OTP
-  //   server error/timeout → throw so auth.tsx shows inline error
+  // ── Sign In ───────────────────────────────────────────────────────────────
+  // Checks Firebase emailVerified:
+  //   true  → confirm in PB + navigate to tabs
+  //   false → throw EMAIL_NOT_VERIFIED so auth.tsx shows resend button
   async function signIn(email: string, password: string): Promise<void> {
     isAuthAction = true;
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
-      setFirebaseUser(cred.user);
+
+      // Always reload to get the freshest emailVerified status
+      await cred.user.reload();
+      const freshUser = auth.currentUser ?? cred.user;
+      setFirebaseUser(freshUser);
       setIsLoading(false);
 
-      // Fetch PB record with 6s timeout
-      let pb: PBUser | null = null;
-      let isServerError = false;
-
-      try {
-        pb = await Promise.race<PBUser | null>([
-          api.getUser(cred.user.uid),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Server timeout')), 6000)
-          ),
-        ]);
-      } catch (e: any) {
-        const msg = (e?.message || '').toLowerCase();
-        // "user not found" / "404" means no PB record — treat like unverified
-        if (msg.includes('not found') || msg.includes('404')) {
-          pb = null;
-          isServerError = false;
-        } else {
-          // Network / timeout / 5xx — undo Firebase login and surface error to UI
-          isServerError = true;
-        }
-      }
-
-      if (isServerError) {
-        await firebaseSignOut(auth);
-        setFirebaseUser(null);
-        throw new Error('Server unavailable. Please check your connection and try again.');
-      }
-
-      if (pb?.is_verified) {
-        // ✅ Verified user — go straight to the app
-        setPbUser(pb);
-        setUser(pbToProfile(pb, cred.user));
-        await AsyncStorage.setItem(`shib_profile_${cred.user.uid}`, JSON.stringify(pbToProfile(pb, cred.user)));
+      if (freshUser.emailVerified) {
+        // ✅ Verified — sync with PB and open the app
+        await confirmAndLoadUser(freshUser);
         router.replace('/(tabs)' as any);
       } else {
-        // 🔒 Not verified — send OTP and go to verify screen
-        setPbUser(pb ?? null);
-        setUser(null);
-        router.replace('/verify-email' as any);
-        api.sendOtp(email).catch((e) => console.warn('[Auth] OTP send failed:', e?.message));
+        // 🔒 Not verified — stay on auth with error; user can resend
+        throw Object.assign(new Error('Email not verified. Please check your inbox and click the verification link.'), {
+          code: 'EMAIL_NOT_VERIFIED',
+        });
       }
     } finally {
       isAuthAction = false;
@@ -198,7 +196,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  // ── Sign Out ────────────────────────────────────────────────────────────────
+  // ── Sign Out ──────────────────────────────────────────────────────────────
   async function signOut() {
     await firebaseSignOut(auth);
     setUser(null);
@@ -207,52 +205,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.replace('/auth' as any);
   }
 
-  // ── Verify OTP ─────────────────────────────────────────────────────────────
-  // Called from verify-email.tsx after user enters code
-  // On success: creates/syncs PB user with is_verified=true → navigates to tabs
-  async function verifyOtp(email: string, code: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      await api.verifyOtp(email, code);
-
-      const fbUser = auth.currentUser ?? firebaseUser;
-      if (!fbUser) return { success: false, error: 'Session expired. Please sign in again.' };
-
-      // Sync / create PB user (server will set is_verified=true from the verifiedEmails set)
-      const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
-      const pending = cached ? JSON.parse(cached) : {};
-
-      const pb = await api.syncUser({
-        firebaseUid: fbUser.uid,
-        email: fbUser.email ?? email,
-        displayName: pending.displayName || fbUser.email?.split('@')[0] || '',
-        referralCode: pending.referralCode || generateReferralCode(),
-        referredBy: pending.referredBy || '',
-      });
-
-      if (cached) await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
-
-      if (pb?.is_verified) {
-        setPbUser(pb);
-        setUser(pbToProfile(pb, fbUser));
-        await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
-        router.replace('/(tabs)' as any);
-      } else {
-        // Edge case: PB sync returned is_verified=false (shouldn't happen normally)
-        return { success: false, error: 'Verification failed on server. Please try again.' };
-      }
-
-      return { success: true };
-    } catch (e: any) {
-      const msg =
-        e?.message?.includes('400') || e?.message?.toLowerCase().includes('invalid')
-          ? 'Invalid or expired code. Please try again.'
-          : e?.message || 'Verification failed.';
-      return { success: false, error: msg };
-    }
+  // ── Resend Firebase verification email ───────────────────────────────────
+  async function resendVerificationEmail(): Promise<void> {
+    const fbUser = auth.currentUser ?? firebaseUser;
+    if (!fbUser) throw new Error('No user session. Please sign in again.');
+    await sendEmailVerification(fbUser);
   }
 
-  async function resendOtp(email: string) {
-    await api.sendOtp(email);
+  // ── Check if Firebase has verified the email (poll on button tap) ─────────
+  async function checkVerificationStatus(): Promise<{ verified: boolean }> {
+    const fbUser = auth.currentUser ?? firebaseUser;
+    if (!fbUser) return { verified: false };
+
+    try {
+      await fbUser.reload();
+      const fresh = auth.currentUser ?? fbUser;
+      setFirebaseUser(fresh);
+
+      if (fresh.emailVerified) {
+        await confirmAndLoadUser(fresh);
+        router.replace('/(tabs)' as any);
+        return { verified: true };
+      }
+    } catch {}
+    return { verified: false };
   }
 
   async function forgotPassword(email: string) {
@@ -294,11 +270,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signUp,
     signIn,
     signOut,
+    resendVerificationEmail,
+    checkVerificationStatus,
+    forgotPassword,
     refreshUser,
     refreshBalance,
-    verifyOtp,
-    resendOtp,
-    forgotPassword,
   }), [user, firebaseUser, isLoading, isAdmin, pbUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
