@@ -345,7 +345,11 @@ export default function GamesScreen() {
         console.log(`[Games][onMessage] GAME_OVER score=${score} collected_tomatoes=${tomatoes}`);
         handleGameOver(score, tomatoes);
       }
-      if (msg.type === 'RETRY_GAME')  handleRetry();
+      // RETRY_REQUEST = sprite14 clicked in C3 death screen → interstitial → reload
+      if (msg.type === 'RETRY_REQUEST' || msg.type === 'RETRY_GAME') {
+        console.log('[Games][onMessage] RETRY_REQUEST — showing interstitial then reload');
+        handleRetry();
+      }
       if (msg.type === 'INJECT_DONE') console.log('[Games] C3 inject confirmed:', JSON.stringify(msg));
     } catch { /* ignore non-JSON */ }
   }, [handleBridgeReady, handleGameOver, handleRetry]);
@@ -365,7 +369,11 @@ export default function GamesScreen() {
           console.log(`[Games][web][onMessage] GAME_OVER score=${score} collected_tomatoes=${tomatoes}`);
           handleGameOver(score, tomatoes);
         }
-        if (msg.type === 'RETRY_GAME')   handleRetry();
+        // RETRY_REQUEST = sprite14 clicked → interstitial → reload (no token modal)
+        if (msg.type === 'RETRY_REQUEST' || msg.type === 'RETRY_GAME') {
+          console.log('[Games][web][onMessage] RETRY_REQUEST — showing interstitial then reload');
+          handleRetry();
+        }
         if (msg.type === 'INJECT_DONE')  console.log('[Games][web] C3 inject confirmed:', JSON.stringify(msg));
       } catch { /* ignore non-JSON */ }
     };
