@@ -1,171 +1,179 @@
-(function () {
+;(function () {
   'use strict';
 
-  // ── State ─────────────────────────────────────────────────────────────────
-  var currentLayout  = '';
-  var bridgeReady    = false;
-  var navHooked      = false;
-  var pendingNav     = null; // { lm, method, arg } — blocked C3 navigation
+  /* =========================================================
+   *  SHIB Mine — Construct 3 Bridge
+   *  Strategy: poll the C3 runtime every 300 ms.
+   *  When the active layout name becomes "death" →
+   *    1. read score global variable
+   *    2. postMessage GAME_OVER to React Native (or parent iframe)
+   *    3. block C3's layout navigation so RN controls what happens next
+   * ========================================================= */
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  var lastLayout   = '';
+  var bridgeReady  = false;
+  var navBlocked   = false;   // true while death screen is "owned" by RN
+  var pendingNav   = null;    // { fn, args } — blocked GoToLayout call
+
+  // ── 1. Get the C3 runtime ────────────────────────────────────────────────
   function getRuntime() {
-    return window.c3_runtimeInterface && window.c3_runtimeInterface._iRuntime;
+    try {
+      return window.c3_runtimeInterface && window.c3_runtimeInterface._iRuntime
+        ? window.c3_runtimeInterface._iRuntime
+        : null;
+    } catch (e) { return null; }
   }
 
+  // ── 2. Read the current layout name ─────────────────────────────────────
   function getLayoutName(rt) {
     try {
       var lm = rt._layoutManager;
-      var layout = lm && (lm.GetMainRunningLayout ? lm.GetMainRunningLayout() : null)
-                || (rt.GetMainRunningLayout ? rt.GetMainRunningLayout() : null);
-      return layout ? (layout.GetName ? layout.GetName() : layout._name || '') : '';
+      if (!lm) return '';
+      var layout = typeof lm.GetMainRunningLayout === 'function'
+        ? lm.GetMainRunningLayout()
+        : null;
+      if (!layout) return '';
+      return typeof layout.GetName === 'function'
+        ? layout.GetName()
+        : (layout._name || layout.name || '');
     } catch (e) { return ''; }
   }
 
-  function getGlobalVar(rt, name) {
+  // ── 3. Read a C3 global variable ─────────────────────────────────────────
+  function readGlobal(rt, varName) {
     try {
       var esm = rt._eventSheetManager;
       if (!esm) return 0;
-      // Path 1: Map
-      if (esm._globalVarsByName && esm._globalVarsByName.get) {
-        var g = esm._globalVarsByName.get(name);
-        if (g != null) return +(g.GetValue ? g.GetValue() : g._value) || 0;
-      }
-      // Path 2: plain object
-      if (esm._globalVarsByName && esm._globalVarsByName[name] != null) {
-        var g2 = esm._globalVarsByName[name];
-        return +(g2.GetValue ? g2.GetValue() : g2._value) || 0;
-      }
-      // Path 3: array
-      if (esm._globalVars) {
-        var arr = Array.isArray(esm._globalVars)
-          ? esm._globalVars
-          : (esm._globalVars.values ? Array.from(esm._globalVars.values()) : []);
-        for (var i = 0; i < arr.length; i++) {
-          var v = arr[i];
-          if (v && (v._name === name || v.name === name))
-            return +(v.GetValue ? v.GetValue() : v._value) || 0;
+
+      // Try Map (modern C3)
+      if (esm._globalVarsByName && typeof esm._globalVarsByName.get === 'function') {
+        var entry = esm._globalVarsByName.get(varName);
+        if (entry != null) {
+          return +(typeof entry.GetValue === 'function' ? entry.GetValue() : entry._value) || 0;
         }
       }
-    } catch (e) { console.warn('[Bridge] getGlobalVar:', e); }
+
+      // Try plain object key
+      if (esm._globalVarsByName && esm._globalVarsByName[varName] != null) {
+        var e2 = esm._globalVarsByName[varName];
+        return +(typeof e2.GetValue === 'function' ? e2.GetValue() : e2._value) || 0;
+      }
+
+      // Try array scan
+      var vars = esm._globalVars || [];
+      if (vars.values) vars = Array.from(vars.values());
+      for (var i = 0; i < vars.length; i++) {
+        var v = vars[i];
+        if (v && (v._name === varName || v.name === varName)) {
+          return +(typeof v.GetValue === 'function' ? v.GetValue() : v._value) || 0;
+        }
+      }
+    } catch (e) { console.warn('[Bridge] readGlobal error:', e); }
     return 0;
   }
 
-  function postToRN(type, payload) {
-    var msg = JSON.stringify(Object.assign({ type: type }, payload || {}));
-    if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-      window.ReactNativeWebView.postMessage(msg);
-    } else if (window.parent !== window) {
-      window.parent.postMessage(JSON.parse(msg), '*');
+  // ── 4. postMessage to React Native / parent window ───────────────────────
+  function post(type, extra) {
+    var payload = Object.assign({ type: type }, extra || {});
+    var json = JSON.stringify(payload);
+    if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {
+      window.ReactNativeWebView.postMessage(json);
+    } else {
+      window.parent.postMessage(json, '*');
     }
-    console.log('[Bridge] >', msg);
+    console.log('[Bridge] >>>OUT', json);
   }
 
-  // ── Hook C3 layout navigation ─────────────────────────────────────────────
-  // Intercepts GoToLayout / GoToLayoutByName calls that originate from the
-  // "death" layout so React Native can show ads / collect modal first.
-  function hookNavigation(rt) {
-    if (navHooked) return;
-    navHooked = true;
-
+  // ── 5. Block C3 navigation from death screen ─────────────────────────────
+  //   We hook both GoToLayout and GoToLayoutByName on the layout manager.
+  //   If the hook fails (API mismatch) we fall back to the simpler approach
+  //   where RN just reloads the WebView instead of resuming.
+  function hookNav(rt) {
     var lm = rt._layoutManager;
-    if (!lm) { console.warn('[Bridge] No _layoutManager'); return; }
+    if (!lm) { console.warn('[Bridge] No _layoutManager — nav blocking unavailable'); return; }
 
-    // ── GoToLayout (used by rstrt → "main menu" = the BACK/EXIT button) ────
-    if (typeof lm.GoToLayout === 'function') {
-      var origGoTo = lm.GoToLayout.bind(lm);
-      lm.GoToLayout = function (layoutRef) {
-        var cur = getLayoutName(rt).toLowerCase();
-        if (cur === 'death') {
-          var score = getGlobalVar(rt, 'score');
-          // rstrt navigates to "main menu" → EXIT action
-          pendingNav = { lm: lm, method: 'GoToLayout', arg: layoutRef, orig: origGoTo };
-          postToRN('EXIT_GAME', { score: score });
-          return; // block C3 navigation until RESUME received
+    function wrapMethod(obj, name) {
+      if (typeof obj[name] !== 'function') return;
+      var original = obj[name].bind(obj);
+      obj[name] = function () {
+        var args = arguments;
+        if (navBlocked) {
+          console.log('[Bridge] Nav BLOCKED (' + name + '):', Array.prototype.slice.call(args));
+          pendingNav = { fn: original, args: Array.prototype.slice.call(args) };
+          return;
         }
-        return origGoTo.call(lm, layoutRef);
+        return original.apply(obj, args);
       };
-      console.log('[Bridge] Hooked GoToLayout');
+      console.log('[Bridge] Hooked', name);
     }
 
-    // ── GoToLayoutByName (used by Sprite14 → "level"+N = RETRY button) ─────
-    if (typeof lm.GoToLayoutByName === 'function') {
-      var origGoToN = lm.GoToLayoutByName.bind(lm);
-      lm.GoToLayoutByName = function (name) {
-        var cur = getLayoutName(rt).toLowerCase();
-        if (cur === 'death') {
-          var score = getGlobalVar(rt, 'score');
-          // Sprite14 navigates to level → RETRY action (no tokens)
-          pendingNav = { lm: lm, method: 'GoToLayoutByName', arg: name, orig: origGoToN };
-          postToRN('RETRY_GAME', { score: score });
-          return; // block until RESUME
-        }
-        return origGoToN.call(lm, name);
-      };
-      console.log('[Bridge] Hooked GoToLayoutByName');
-    }
+    wrapMethod(lm, 'GoToLayout');
+    wrapMethod(lm, 'GoToLayoutByName');
   }
 
-  // ── Handle messages FROM React Native ─────────────────────────────────────
+  // ── 6. Handle messages FROM React Native ─────────────────────────────────
   window.addEventListener('message', function (e) {
-    try {
-      var data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
-      if (!data || !data.type) return;
+    var raw = e.data;
+    if (!raw) return;
+    var msg;
+    try { msg = typeof raw === 'string' ? JSON.parse(raw) : raw; }
+    catch (err) { return; }
+    console.log('[Bridge] <<<IN', JSON.stringify(msg));
 
-      var rt = getRuntime();
+    if (msg.type === 'RESUME_NAVIGATION' && pendingNav) {
+      console.log('[Bridge] Resuming nav');
+      navBlocked = false;
+      var nav = pendingNav;
+      pendingNav = null;
+      nav.fn.apply(null, nav.args);
+    }
 
-      // ── Resume blocked C3 navigation (after ad shown) ──────────────────
-      if (data.type === 'RESUME_NAVIGATION') {
-        if (pendingNav) {
-          var nav = pendingNav;
-          pendingNav = null;
-          try { nav.orig.call(nav.lm, nav.arg); }
-          catch (err) { console.warn('[Bridge] resume error:', err); }
-        }
-      }
-
-      // ── Mute / unmute game audio ────────────────────────────────────────
-      if (data.type === 'SET_MUTE' && rt) {
-        try {
-          var classes = rt._objectClasses
-            ? (Array.isArray(rt._objectClasses)
-               ? rt._objectClasses
-               : Array.from(rt._objectClasses.values ? rt._objectClasses.values() : []))
-            : [];
-          var audio = classes.find(function (c) { return c.GetName && c.GetName() === 'Audio'; });
-          if (audio && audio._plugin && audio._plugin.SetMasterVolume) {
-            audio._plugin.SetMasterVolume(data.muted ? -100 : 0);
-          }
-        } catch (err) { console.warn('[Bridge] mute error:', err); }
-      }
-    } catch (err) { /* ignore */ }
+    if (msg.type === 'RELOAD_GAME') {
+      navBlocked = false;
+      pendingNav = null;
+      window.location.reload();
+    }
   });
 
-  // ── Polling loop ──────────────────────────────────────────────────────────
-  function poll() {
+  // ── 7. Main polling loop ──────────────────────────────────────────────────
+  function tick() {
     var rt = getRuntime();
-    if (!rt) { setTimeout(poll, 400); return; }
+    if (!rt) { setTimeout(tick, 500); return; }
 
     if (!bridgeReady) {
       bridgeReady = true;
-      hookNavigation(rt);
-      postToRN('BRIDGE_READY', {});
-      console.log('[Bridge] Ready');
+      hookNav(rt);
+      post('BRIDGE_READY', {});
+      console.log('[Bridge] Ready — runtime found');
     }
 
     var layout = getLayoutName(rt);
-    if (layout !== currentLayout) {
-      console.log('[Bridge] Layout:', layout);
-      currentLayout = layout;
+
+    if (layout !== lastLayout) {
+      console.log('[Bridge] Layout change: "' + lastLayout + '" → "' + layout + '"');
+      lastLayout = layout;
+
+      if (layout.toLowerCase() === 'death') {
+        var score = readGlobal(rt, 'score');
+        console.log('[Bridge] GAME OVER — score=' + score);
+        navBlocked = true;   // block C3 buttons from navigating away
+        post('GAME_OVER', { score: score });
+      } else {
+        // Left death screen (after RN allowed it) — unblock
+        navBlocked = false;
+      }
     }
 
-    setTimeout(poll, 300);
+    setTimeout(tick, 300);
   }
 
+  // Start after DOM + C3 have had time to boot
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { setTimeout(poll, 800); });
+    document.addEventListener('DOMContentLoaded', function () { setTimeout(tick, 1000); });
   } else {
-    setTimeout(poll, 800);
+    setTimeout(tick, 1000);
   }
 
-  window.__c3Bridge = { postToRN: postToRN };
+  window.__shibBridge = { post: post };
+  console.log('[Bridge] Script loaded');
 })();
