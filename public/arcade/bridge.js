@@ -174,9 +174,10 @@
     // so we store them in JS window vars for reference by bridge/RN only.
     window.__shibGameState = {
       powerTokens:       vars.powerTokens       || 0,
-      collectedTomatoes: vars.collectedTomatoes || 0,
+      collectedTomatoes: vars.collectedTomatoes || 0,   // number — from PocketBase
       lastSessionScore:  vars.lastSessionScore  || 0,
       totalScore:        vars.totalScore        || 0,
+      pbId:              vars.pbId              || '',   // stored so GAME_OVER can include it
     };
     console.log('[Bridge] Injected state:', JSON.stringify(window.__shibGameState), '| C3 writes:', ok);
     post('INJECT_DONE', window.__shibGameState);
@@ -233,9 +234,22 @@
 
       if (name.toLowerCase() === 'death') {
         var score = readGlobal(runtime, 'score');
-        console.log('[Bridge] GAME OVER — score=' + score);
+        // collected_tomatoes = server-loaded baseline + this session's score
+        // window.__shibGameState is populated by INJECT_VARS (server data)
+        var prevTomatoes = (window.__shibGameState && typeof window.__shibGameState.collectedTomatoes === 'number')
+                         ? window.__shibGameState.collectedTomatoes : 0;
+        var newTomatoes  = prevTomatoes + score;
+        // Update local state so subsequent deaths accumulate correctly within same session
+        if (window.__shibGameState) window.__shibGameState.collectedTomatoes = newTomatoes;
+        console.log('[Bridge] GAME OVER — score=' + score + ' collected_tomatoes=' + newTomatoes + ' (prev=' + prevTomatoes + ')');
         navBlocked = true;   // block in-game Retry/Back from auto-navigating
-        post('GAME_OVER', { score: score });
+        // Send BOTH score and collected_tomatoes so React Native can sync immediately
+        // NOTE: numbers are sent as integers — no string coercion
+        post('GAME_OVER', {
+          score:              score,
+          collected_tomatoes: newTomatoes,
+          pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || ''
+        });
       } else if (navBlocked && name.toLowerCase() !== 'death') {
         navBlocked = false;   // left death screen normally
       }

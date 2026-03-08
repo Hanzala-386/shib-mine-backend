@@ -10,6 +10,7 @@ import { useWallet } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
+import { showInterstitialAd, showRewardedAd } from '@/lib/nativeAds';
 
 // ─── pbId request header helper ───────────────────────────────────────────────
 // Every server call includes X-PB-ID so the server always knows which user
@@ -49,23 +50,7 @@ function networkOrder(active: string): AdNetwork[] {
   const all: AdNetwork[] = ['admob', 'unity', 'applovin'];
   return prio ? [prio, ...all.filter(n => n !== prio)] : all;
 }
-function showAd(
-  type: 'interstitial' | 'rewarded', net: AdNetwork, cfg: AdSettings,
-  onDone: (watched: boolean) => void,
-) {
-  console.log(`[Games][Ad] network=${net} type=${type}`);
-  console.log(`[Games][Ad] admobUnitId="${cfg.admobUnitId}" unityGameId="${cfg.unityGameId}" applovinSdkKey="${cfg.applovinSdkKey}"`);
-  /* ── Real SDK stubs (uncomment in custom dev build) ──
-  // AdMob: react-native-google-mobile-ads
-  // if (net === 'admob' && cfg.admobUnitId) { ... }
-  // Unity Ads: unity-ads-react-native
-  // if (net === 'unity' && cfg.unityGameId) { ... }
-  // AppLovin MAX: react-native-applovin-max
-  // if (net === 'applovin' && cfg.applovinSdkKey) { ... }
-  */
-  setTimeout(() => { console.log('[Games][Ad] complete (simulated)'); onDone(true); },
-    type === 'rewarded' ? 5000 : 3000);
-}
+
 
 /* ─── Game data from server ───────────────────────────────────────────────── */
 interface GameData {
@@ -197,49 +182,59 @@ export default function GamesScreen() {
   /* ── Bridge ready → inject server data into C3 ── */
   const handleBridgeReady = useCallback(() => {
     console.log('[Games] Bridge ready — injecting game state');
+    const pbId = pbIdRef.current;
+    const buildInject = (data: GameData) => ({
+      type:              'INJECT_VARS',
+      pbId,                                              // stored in window.__shibGameState.pbId
+      powerTokens:       data.power_tokens,
+      collectedTomatoes: data.collected_tomatoes,        // number — from PocketBase number field
+      lastSessionScore:  data.last_session_score,
+      totalScore:        data.total_accumulated_score,
+    });
     const data = gameDataRef.current;
     if (data) {
-      sendToGame({
-        type: 'INJECT_VARS',
-        powerTokens:       data.power_tokens,
-        collectedTomatoes: data.collected_tomatoes,
-        lastSessionScore:  data.last_session_score,
-        totalScore:        data.total_accumulated_score,
-      });
+      sendToGame(buildInject(data));
     } else {
-      // Re-fetch if not yet loaded (timing issue)
-      const pbId = pbIdRef.current;
       if (pbId) {
-        fetchGameData(pbId).then(data => {
-          if (data) sendToGame({
-            type: 'INJECT_VARS',
-            powerTokens:       data.power_tokens,
-            collectedTomatoes: data.collected_tomatoes,
-            lastSessionScore:  data.last_session_score,
-            totalScore:        data.total_accumulated_score,
-          });
+        fetchGameData(pbId).then(d => {
+          if (d) sendToGame(buildInject(d));
         });
       }
     }
   }, [sendToGame, fetchGameData]);
 
-  /* ── Sync score to server on game-over ── */
-  const syncScore = useCallback(async (score: number) => {
+  /* ── Sync score to server on game-over ──────────────────────────────────────
+   *  score              : C3 score global (read by bridge)
+   *  clientTomatoes     : accumulated tomatoes value sent by the bridge's GAME_OVER
+   *                       postMessage — always a NUMBER, never a string.
+   *                       Server uses it directly; no string coercion on either end.
+   * ────────────────────────────────────────────────────────────────────────── */
+  const syncScore = useCallback(async (score: number, clientTomatoes?: number) => {
     const pbId = pbIdRef.current;
     if (!pbId) { console.warn('[Games] syncScore: no pbId'); return; }
     try {
-      console.log(`[Games] Syncing score=${score} to PocketBase (pbId=${pbId})`);
+      // Guarantee numbers — parseInt to strip any accidental floats/strings
+      const safeScore    = Math.max(0, Math.round(Number(score) || 0));
+      const safeTomatoes = typeof clientTomatoes === 'number'
+                         ? Math.max(0, Math.round(clientTomatoes))
+                         : undefined;
+      const body: Record<string, number | string> = { pbId, score: safeScore };
+      if (safeTomatoes !== undefined) body.collected_tomatoes = safeTomatoes;
+
+      console.log(`[Games] syncScore → pbId=${pbId} score=${safeScore} collected_tomatoes=${safeTomatoes ?? 'server-computed'}`);
       const res = await fetch(SYNC_SCORE, {
         method: 'POST',
         headers: pbHeaders(pbId),
-        body: JSON.stringify({ pbId, score }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       console.log('[Games] sync-score response:', JSON.stringify(data));
       if (data.success) {
-        setGameStats(prev => prev ? { ...prev,
-          last_session_score: data.last_session_score,
-          collected_tomatoes: data.collected_tomatoes,
+        // Both values come back as numbers from the server
+        setGameStats(prev => prev ? {
+          ...prev,
+          last_session_score: Number(data.last_session_score),
+          collected_tomatoes: Number(data.collected_tomatoes),
         } : prev);
       }
     } catch (err) {
@@ -247,15 +242,17 @@ export default function GamesScreen() {
     }
   }, []);
 
-  /* ── GAME OVER ── */
-  const handleGameOver = useCallback((rawScore: number) => {
-    const s = Math.max(0, Math.round(rawScore));
-    console.log('[Games] GAME_OVER — score =', s);
+  /* ── GAME OVER — called by both native WebView onMessage and web iframe ── */
+  const handleGameOver = useCallback((rawScore: number, rawTomatoes?: number) => {
+    const s = Math.max(0, Math.round(Number(rawScore) || 0));
+    const t = rawTomatoes !== undefined ? Math.max(0, Math.round(Number(rawTomatoes) || 0)) : undefined;
+    console.log(`[Games] GAME_OVER — score=${s} collected_tomatoes=${t ?? 'N/A (server will compute)'}`);
     scoreRef.current = s;
     setScore(s);
     setPhase('exit_modal');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    syncScore(s);   // update last_session_score + collected_tomatoes in PB
+    // Immediately POST to sync-score with BOTH values as numbers
+    syncScore(s, t);
   }, [syncScore]);
 
   /* ── RETRY (Circle) → interstitial → reload ── */
@@ -263,7 +260,7 @@ export default function GamesScreen() {
     const net = nextNet();
     setAdNet(net); setPhase('retry_ad'); startTimer(3);
     console.log('[Games] RETRY — interstitial via', net);
-    showAd('interstitial', net, adCfg.current, () => {
+    showInterstitialAd(net, adCfg.current, () => {
       stopTimer();
       console.log('[Games] Retry ad done — reloading');
       reloadGame();
@@ -275,7 +272,7 @@ export default function GamesScreen() {
     const net = nextNet();
     setAdNet(net); setPhase('claim_ad'); startTimer(3);
     console.log('[Games] CLAIM — interstitial via', net, 'score=', scoreRef.current);
-    showAd('interstitial', net, adCfg.current, async () => {
+    showInterstitialAd(net, adCfg.current, async () => {
       stopTimer();
       setPhase('saving');
       const pts = scoreRef.current;
@@ -304,7 +301,8 @@ export default function GamesScreen() {
     const net = nextNet();
     setAdNet(net); setPhase('double_ad'); startTimer(5);
     console.log('[Games] DOUBLE — rewarded via', net, 'score=', scoreRef.current);
-    showAd('rewarded', net, adCfg.current, async (watched) => {
+    // showRewardedAd: Expo Go → simulated; custom build → native AdMob/Unity/AppLovin SDK
+    showRewardedAd(net, adCfg.current, async (watched) => {
       stopTimer();
       if (!watched) { setPhase('exit_modal'); return; }
       setPhase('saving');
@@ -328,16 +326,28 @@ export default function GamesScreen() {
     });
   }, [addPowerTokens, fetchGameData, refreshBalance]);
 
-  /* ── Handle native WebView messages ── */
+  /* ── Handle native WebView messages ─────────────────────────────────────────
+   *  GAME_OVER payload from bridge.js:
+   *    { type: 'GAME_OVER', score: <number>, collected_tomatoes: <number>, pb_id: <string> }
+   *  Both score and collected_tomatoes are JavaScript numbers — not strings.
+   * ────────────────────────────────────────────────────────────────────────── */
   const onNativeMessage = useCallback((e: { nativeEvent: { data: string } }) => {
     try {
       const msg = JSON.parse(e.nativeEvent.data);
       console.log('[Games] native msg:', JSON.stringify(msg));
-      if (msg.type === 'BRIDGE_READY') handleBridgeReady();
-      if (msg.type === 'GAME_OVER')    handleGameOver(Number(msg.score) || 0);
-      if (msg.type === 'RETRY_GAME')   handleRetry();
-      if (msg.type === 'INJECT_DONE')  console.log('[Games] C3 inject confirmed:', JSON.stringify(msg));
-    } catch { /* ignore */ }
+      if (msg.type === 'BRIDGE_READY') {
+        handleBridgeReady();
+      }
+      if (msg.type === 'GAME_OVER') {
+        // Extract score and collected_tomatoes as numbers — bridge sends both
+        const score    = Number(msg.score)              || 0;
+        const tomatoes = Number(msg.collected_tomatoes) || 0;
+        console.log(`[Games][onMessage] GAME_OVER score=${score} collected_tomatoes=${tomatoes}`);
+        handleGameOver(score, tomatoes);
+      }
+      if (msg.type === 'RETRY_GAME')  handleRetry();
+      if (msg.type === 'INJECT_DONE') console.log('[Games] C3 inject confirmed:', JSON.stringify(msg));
+    } catch { /* ignore non-JSON */ }
   }, [handleBridgeReady, handleGameOver, handleRetry]);
 
   /* ── Handle web iframe messages ── */
@@ -349,7 +359,12 @@ export default function GamesScreen() {
         if (!msg?.type) return;
         console.log('[Games][web] iframe msg:', JSON.stringify(msg));
         if (msg.type === 'BRIDGE_READY') handleBridgeReady();
-        if (msg.type === 'GAME_OVER')    handleGameOver(Number(msg.score) || 0);
+        if (msg.type === 'GAME_OVER') {
+          const score    = Number(msg.score)              || 0;
+          const tomatoes = Number(msg.collected_tomatoes) || 0;
+          console.log(`[Games][web][onMessage] GAME_OVER score=${score} collected_tomatoes=${tomatoes}`);
+          handleGameOver(score, tomatoes);
+        }
         if (msg.type === 'RETRY_GAME')   handleRetry();
         if (msg.type === 'INJECT_DONE')  console.log('[Games][web] C3 inject confirmed:', JSON.stringify(msg));
       } catch { /* ignore non-JSON */ }

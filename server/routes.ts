@@ -1138,22 +1138,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ── Game: Sync score on game-over (save last_session_score + collected_tomatoes) ──
   app.post("/api/app/game/sync-score", async (req: Request, res: Response) => {
     try {
-      const { pbId, score } = req.body;
+      const { pbId, score, collected_tomatoes: clientTomatoes } = req.body;
       if (!pbId || score === undefined)
         return res.status(400).json({ error: "pbId and score required" });
+
+      // Validate pbId matches X-PB-ID header (double isolation check)
+      const headerPbId = req.headers['x-pb-id'] as string | undefined;
+      if (headerPbId && headerPbId !== pbId) {
+        console.warn(`[/api/app/game/sync-score] MISMATCH: body pbId=${pbId} header X-PB-ID=${headerPbId}`);
+        return res.status(403).json({ error: "pbId mismatch between body and header" });
+      }
 
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
-      const pts = Number(score) || 0;
-      // collected_tomatoes is now a NUMBER field — increment it with each session score
-      const currentTomatoes = Number(user.collected_tomatoes) || 0;
-      const newTomatoes     = currentTomatoes + pts;
+      const pts = Math.max(0, Math.round(Number(score) || 0));
+
+      // collected_tomatoes:
+      //  • If client sent it (bridge computed it) → use client value (already a NUMBER)
+      //  • Otherwise → server computes: current DB value + this session's score
+      let newTomatoes: number;
+      if (clientTomatoes !== undefined && clientTomatoes !== null) {
+        newTomatoes = Math.max(0, Math.round(Number(clientTomatoes)));
+        console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts} tomatoes=client:${newTomatoes}`);
+      } else {
+        const currentTomatoes = Number(user.collected_tomatoes) || 0;
+        newTomatoes = currentTomatoes + pts;
+        console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts} tomatoes:${currentTomatoes}→${newTomatoes}`);
+      }
+
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         last_session_score:  pts,
-        collected_tomatoes:  newTomatoes,
+        collected_tomatoes:  newTomatoes,   // always stored as NUMBER
       });
-      console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts} tomatoes:${currentTomatoes}→${newTomatoes}`);
       res.json({ success: true, last_session_score: pts, collected_tomatoes: newTomatoes });
     } catch (e: any) {
       console.error("[/api/app/game/sync-score]", e.message);
