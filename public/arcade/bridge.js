@@ -5,12 +5,39 @@
    *  SHIB Mine — Construct 3 Bridge  (server-sync version)
    *
    *  Capabilities:
+   *  • Kill LocalStorage game keys on first load (server is source of truth)
    *  • Poll layout name → send GAME_OVER {score} on "death"
    *  • Accept INJECT_VARS {powerTokens, collectedTomatoes}
    *    from React Native → write values into C3 global vars
    *  • Block C3 layout navigation while RN controls the flow
    *  • Accept RESUME_NAVIGATION / RELOAD_GAME from RN
    * ========================================================= */
+
+  // ── Step 1: Kill any LocalStorage game data immediately ─────────────────
+  // The server is the ONLY source of truth. C3 sometimes persists score/highScore
+  // in localStorage — wipe those keys so they don't override server data.
+  (function clearLocalGameStorage() {
+    var KEYS = ['score', 'highScore', 'hscore', 'tomatoes', 'level',
+                'c3save', 'c3_save', 'c3_autosave', 'save'];
+    var cleared = [];
+    try {
+      KEYS.forEach(function (k) {
+        if (localStorage.getItem(k) !== null) {
+          localStorage.removeItem(k);
+          cleared.push(k);
+        }
+      });
+      // Also clear any C3-prefixed keys (C3 uses "c3save_{projectName}" patterns)
+      Object.keys(localStorage).forEach(function (k) {
+        if (/^c3/i.test(k) || /^weapon/i.test(k) || /^shib/i.test(k)) {
+          localStorage.removeItem(k);
+          cleared.push(k);
+        }
+      });
+    } catch (e) { /* localStorage may be blocked in some environments */ }
+    if (cleared.length > 0) console.log('[Bridge] Cleared LocalStorage keys:', cleared.join(', '));
+    else console.log('[Bridge] LocalStorage: no stale game keys found');
+  })();
 
   var lastLayout   = '';
   var bridgeReady  = false;
@@ -138,10 +165,11 @@
   function applyInject(runtime, vars) {
     var ok = 0;
     // score  → we don't overwrite — C3 owns this
-    // hscore → we can set to the user's best (last_session_score or total)
-    if (vars.lastSessionScore !== undefined) {
-      if (writeGlobal(runtime, 'hscore', vars.lastSessionScore)) ok++;
-    }
+    // hscore → set to total_accumulated_score so the C3 "High Score" display
+    //          always shows the user's all-time server total, not a local value
+    var hsVal = vars.totalScore !== undefined ? vars.totalScore
+              : vars.lastSessionScore !== undefined ? vars.lastSessionScore : 0;
+    if (writeGlobal(runtime, 'hscore', hsVal)) ok++;
     // No "tomato" or "powerTokens" global exists in this C3 project,
     // so we store them in JS window vars for reference by bridge/RN only.
     window.__shibGameState = {

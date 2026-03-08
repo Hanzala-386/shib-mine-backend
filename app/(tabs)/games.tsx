@@ -11,6 +11,12 @@ import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
+// ─── pbId request header helper ───────────────────────────────────────────────
+// Every server call includes X-PB-ID so the server always knows which user
+function pbHeaders(pbId: string): HeadersInit {
+  return { 'Content-Type': 'application/json', 'X-PB-ID': pbId };
+}
+
 let WebView: any = null;
 if (Platform.OS !== 'web') {
   WebView = require('react-native-webview').WebView;
@@ -77,7 +83,7 @@ const NET_LABEL: Record<AdNetwork, string> = { admob: 'AdMob', unity: 'Unity Ads
 export default function GamesScreen() {
   const insets = useSafeAreaInsets();
   const { addPowerTokens, powerTokens } = useWallet();
-  const { pbUser } = useAuth();
+  const { pbUser, refreshBalance } = useAuth();
 
   const wvRef     = useRef<any>(null);
   const adCfg     = useRef<AdSettings>(AD_DEFAULT);
@@ -123,7 +129,7 @@ export default function GamesScreen() {
     if (!pbId) return;
     try {
       console.log('[Games] Fetching game data for pbId:', pbId);
-      const res = await fetch(GAME_DATA(pbId));
+      const res = await fetch(GAME_DATA(pbId), { headers: { 'X-PB-ID': pbId } });
       const data: GameData = await res.json();
       console.log('[Games] Game data received:', JSON.stringify(data));
       gameDataRef.current = data;
@@ -225,7 +231,7 @@ export default function GamesScreen() {
       console.log(`[Games] Syncing score=${score} to PocketBase (pbId=${pbId})`);
       const res = await fetch(SYNC_SCORE, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: pbHeaders(pbId),
         body: JSON.stringify({ pbId, score }),
       });
       const data = await res.json();
@@ -277,6 +283,9 @@ export default function GamesScreen() {
         console.log(`[Games] Adding ${pts} PT to PocketBase…`);
         await addPowerTokens(pts, 'knife_hit');
         console.log(`[Games] Claimed ${pts} PT — PocketBase updated`);
+        // Force PT badge to refresh immediately
+        await refreshBalance();
+        console.log('[Games] refreshBalance() done after claim');
         setEarned(pts);
         setPhase('reward');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -284,10 +293,11 @@ export default function GamesScreen() {
         if (pbIdRef.current) fetchGameData(pbIdRef.current);
       } catch (err) {
         console.error('[Games] addPowerTokens FAILED:', err);
+        await refreshBalance().catch(() => {});
         setEarned(pts); setPhase('reward');
       }
     });
-  }, [addPowerTokens, fetchGameData]);
+  }, [addPowerTokens, fetchGameData, refreshBalance]);
 
   /* ── DOUBLE (2×) → rewarded → add score×2 PT ── */
   const handleDouble = useCallback(async () => {
@@ -303,16 +313,20 @@ export default function GamesScreen() {
         console.log(`[Games] Adding ${pts} PT (2×) to PocketBase…`);
         await addPowerTokens(pts, 'knife_hit');
         console.log(`[Games] Double claimed ${pts} PT — PocketBase updated`);
+        // Force PT badge to refresh immediately
+        await refreshBalance();
+        console.log('[Games] refreshBalance() done after double');
         setEarned(pts);
         setPhase('reward');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         if (pbIdRef.current) fetchGameData(pbIdRef.current);
       } catch (err) {
         console.error('[Games] addPowerTokens FAILED:', err);
+        await refreshBalance().catch(() => {});
         setEarned(pts); setPhase('reward');
       }
     });
-  }, [addPowerTokens, fetchGameData]);
+  }, [addPowerTokens, fetchGameData, refreshBalance]);
 
   /* ── Handle native WebView messages ── */
   const onNativeMessage = useCallback((e: { nativeEvent: { data: string } }) => {
@@ -404,9 +418,9 @@ export default function GamesScreen() {
 
             {gameStats && (
               <View style={S.statsBox}>
+                <StatRow label="High Score (All-time)" value={gameStats.total_accumulated_score} gold />
                 <StatRow label="Total Tomatoes" value={gameStats.collected_tomatoes} />
-                <StatRow label="Total Score" value={gameStats.total_accumulated_score} />
-                <StatRow label="Current PT" value={powerTokens} gold />
+                <StatRow label="Wallet PT" value={powerTokens} />
               </View>
             )}
 

@@ -1120,11 +1120,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
-      // collected_tomatoes field in PB is wrong type (date) — use total_accumulated_score as proxy
+      // collected_tomatoes is now a NUMBER field (fixed by admin)
       const data = {
-        power_tokens:           Number(user.power_tokens)            || 0,
-        collected_tomatoes:     Number(user.total_accumulated_score) || 0,  // running total = tomatoes
-        last_session_score:     Number(user.last_session_score)      || 0,
+        power_tokens:            Number(user.power_tokens)            || 0,
+        collected_tomatoes:      Number(user.collected_tomatoes)      || 0,
+        last_session_score:      Number(user.last_session_score)      || 0,
         total_accumulated_score: Number(user.total_accumulated_score) || 0,
       };
       console.log(`[/api/app/game/data/${pbId}]`, JSON.stringify(data));
@@ -1146,14 +1146,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (user.code) return res.status(404).json({ error: "User not found" });
 
       const pts = Number(score) || 0;
-      // Note: collected_tomatoes field is wrong type (date) in PB — use total_accumulated_score
-      // sync-score only saves last_session_score; cumulative total is updated on reward/claim
+      // collected_tomatoes is now a NUMBER field — increment it with each session score
+      const currentTomatoes = Number(user.collected_tomatoes) || 0;
+      const newTomatoes     = currentTomatoes + pts;
       await pbPatch(`/api/collections/users/records/${pbId}`, {
-        last_session_score: pts,
+        last_session_score:  pts,
+        collected_tomatoes:  newTomatoes,
       });
-      const currentTotal = Number(user.total_accumulated_score) || 0;
-      console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts} runningTotal=${currentTotal}`);
-      res.json({ success: true, last_session_score: pts, collected_tomatoes: currentTotal });
+      console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts} tomatoes:${currentTomatoes}→${newTomatoes}`);
+      res.json({ success: true, last_session_score: pts, collected_tomatoes: newTomatoes });
     } catch (e: any) {
       console.error("[/api/app/game/sync-score]", e.message);
       res.status(500).json({ error: "Failed to sync score" });
