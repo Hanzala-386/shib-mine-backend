@@ -7,115 +7,149 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useWallet } from '@/context/WalletContext';
+import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
-// Native WebView only on iOS/Android
 let WebView: any = null;
 if (Platform.OS !== 'web') {
   WebView = require('react-native-webview').WebView;
 }
 
 const { width: SW, height: SH } = Dimensions.get('window');
-const GAME_URL     = `${getApiUrl()}/arcade/index.html`;
-const SETTINGS_URL = `${getApiUrl()}/api/app/settings`;
+const BASE        = getApiUrl();
+const GAME_URL    = `${BASE}/arcade/index.html`;
+const GAME_DATA   = (pbId: string) => `${BASE}/api/app/game/data/${pbId}`;
+const SYNC_SCORE  = `${BASE}/api/app/game/sync-score`;
+const SETTINGS_URL = `${BASE}/api/app/settings`;
 
-/* ─── Ad settings ─────────────────────────────────────────────────────────── */
+/* ─── Ad types ────────────────────────────────────────────────────────────── */
 type AdNetwork = 'admob' | 'unity' | 'applovin';
 interface AdSettings {
-  showAds: boolean;
-  activeAdNetwork: string;
-  admobUnitId: string;
-  applovinRewardedId: string;
-  applovinSdkKey: string;
-  unityGameId: string;
-  unityRewardedId: string;
+  showAds: boolean; activeAdNetwork: string;
+  admobUnitId: string; applovinRewardedId: string;
+  applovinSdkKey: string; unityGameId: string; unityRewardedId: string;
 }
-const DEFAULT: AdSettings = {
-  showAds: false, activeAdNetwork: '', admobUnitId: '',
-  applovinRewardedId: '', applovinSdkKey: '', unityGameId: '', unityRewardedId: '',
+const AD_DEFAULT: AdSettings = {
+  showAds: false, activeAdNetwork: '',
+  admobUnitId: '', applovinRewardedId: '', applovinSdkKey: '', unityGameId: '', unityRewardedId: '',
 };
-
 function networkOrder(active: string): AdNetwork[] {
   const k = (active || '').toLowerCase();
   const prio: AdNetwork | null =
-    k.includes('admob') ? 'admob' : k.includes('unity') ? 'unity' :
+    k.includes('admob')   ? 'admob'    :
+    k.includes('unity')   ? 'unity'    :
     (k.includes('applovin') || k.includes('max')) ? 'applovin' : null;
   const all: AdNetwork[] = ['admob', 'unity', 'applovin'];
   return prio ? [prio, ...all.filter(n => n !== prio)] : all;
 }
-
-/* ─── Simulated ad (replace with real SDK in custom dev build) ────────────── */
 function showAd(
-  type: 'interstitial' | 'rewarded',
-  network: AdNetwork,
-  cfg: AdSettings,
+  type: 'interstitial' | 'rewarded', net: AdNetwork, cfg: AdSettings,
   onDone: (watched: boolean) => void,
 ) {
-  const TAG = '[Games][Ad]';
-  console.log(TAG, 'Showing', type, 'via', network,
-    '| adMob:', cfg.admobUnitId || '(no ID)',
-    '| unity:', cfg.unityGameId || '(no ID)',
-    '| applovin:', cfg.applovinSdkKey || '(no key)');
-
-  // ── Uncomment & fill in when doing custom dev build ──
-  // if (network === 'admob' && cfg.admobUnitId) { … }
-  // if (network === 'unity' && cfg.unityGameId) { … }
-  // if (network === 'applovin' && cfg.applovinSdkKey) { … }
-
-  // Stub: delay then done
-  setTimeout(() => {
-    console.log(TAG, 'Ad complete (simulated)');
-    onDone(true);
-  }, type === 'rewarded' ? 5000 : 3000);
+  console.log(`[Games][Ad] network=${net} type=${type}`);
+  console.log(`[Games][Ad] admobUnitId="${cfg.admobUnitId}" unityGameId="${cfg.unityGameId}" applovinSdkKey="${cfg.applovinSdkKey}"`);
+  /* ── Real SDK stubs (uncomment in custom dev build) ──
+  // AdMob: react-native-google-mobile-ads
+  // if (net === 'admob' && cfg.admobUnitId) { ... }
+  // Unity Ads: unity-ads-react-native
+  // if (net === 'unity' && cfg.unityGameId) { ... }
+  // AppLovin MAX: react-native-applovin-max
+  // if (net === 'applovin' && cfg.applovinSdkKey) { ... }
+  */
+  setTimeout(() => { console.log('[Games][Ad] complete (simulated)'); onDone(true); },
+    type === 'rewarded' ? 5000 : 3000);
 }
 
-/* ─── Component ───────────────────────────────────────────────────────────── */
+/* ─── Game data from server ───────────────────────────────────────────────── */
+interface GameData {
+  power_tokens: number;
+  collected_tomatoes: number;
+  last_session_score: number;
+  total_accumulated_score: number;
+}
+
+/* ─── Phase state machine ─────────────────────────────────────────────────── */
 type Phase = 'game' | 'exit_modal' | 'retry_ad' | 'claim_ad' | 'double_ad' | 'saving' | 'reward';
 const NET_LABEL: Record<AdNetwork, string> = { admob: 'AdMob', unity: 'Unity Ads', applovin: 'AppLovin MAX' };
 
+/* ─── Component ───────────────────────────────────────────────────────────── */
 export default function GamesScreen() {
   const insets = useSafeAreaInsets();
   const { addPowerTokens, powerTokens } = useWallet();
+  const { pbUser } = useAuth();
 
-  const wvRef        = useRef<any>(null);
-  const adCfg        = useRef<AdSettings>(DEFAULT);
-  const netQueue     = useRef<AdNetwork[]>(['admob', 'unity', 'applovin']);
-  const netIdx       = useRef(0);
-  const scoreRef     = useRef(0);
+  const wvRef     = useRef<any>(null);
+  const adCfg     = useRef<AdSettings>(AD_DEFAULT);
+  const netQueue  = useRef<AdNetwork[]>(['admob', 'unity', 'applovin']);
+  const netIdx    = useRef(0);
+  const scoreRef  = useRef(0);
+  const pbIdRef   = useRef<string>('');
+  const gameDataRef = useRef<GameData | null>(null);
 
-  const [phase,   setPhase]   = useState<Phase>('game');
-  const [score,   setScore]   = useState(0);
-  const [earned,  setEarned]  = useState(0);
-  const [adNet,   setAdNet]   = useState<AdNetwork>('admob');
-  const [adTimer, setAdTimer] = useState(0);
-  const timerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [phase,      setPhase]      = useState<Phase>('game');
+  const [score,      setScore]      = useState(0);
+  const [earned,     setEarned]     = useState(0);
+  const [adNet,      setAdNet]      = useState<AdNetwork>('admob');
+  const [adTimer,    setAdTimer]    = useState(0);
+  const [gameStats,  setGameStats]  = useState<GameData | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const TOP = Platform.OS === 'web' ? 67 : insets.top;
 
-  /* ── Load settings ── */
+  /* ── Store pbId when auth resolves ── */
   useEffect(() => {
-    console.log('[Games] Fetching ad settings from', SETTINGS_URL);
+    if (pbUser?.pbId) {
+      pbIdRef.current = pbUser.pbId;
+      console.log('[Games] pbId set:', pbUser.pbId);
+    }
+  }, [pbUser]);
+
+  /* ── Load ad settings ── */
+  useEffect(() => {
     fetch(SETTINGS_URL)
       .then(r => r.json())
       .then(s => {
-        adCfg.current = { ...DEFAULT, ...s };
+        adCfg.current = { ...AD_DEFAULT, ...s };
         netQueue.current = networkOrder(s.activeAdNetwork || '');
-        console.log('[Games] Ad settings loaded:', JSON.stringify(adCfg.current));
-        console.log('[Games] Network order:', netQueue.current);
+        console.log('[Games] Settings loaded:', JSON.stringify(adCfg.current));
+        console.log('[Games] Ad network order:', netQueue.current);
       })
       .catch(err => console.warn('[Games] Settings fetch failed:', err));
   }, []);
 
+  /* ── Fetch game data from server for this user ── */
+  const fetchGameData = useCallback(async (pbId: string) => {
+    if (!pbId) return;
+    try {
+      console.log('[Games] Fetching game data for pbId:', pbId);
+      const res = await fetch(GAME_DATA(pbId));
+      const data: GameData = await res.json();
+      console.log('[Games] Game data received:', JSON.stringify(data));
+      gameDataRef.current = data;
+      setGameStats(data);
+      return data;
+    } catch (err) {
+      console.warn('[Games] fetchGameData failed:', err);
+      return null;
+    }
+  }, []);
+
+  /* ── Load game data on mount / when pbId available ── */
+  useEffect(() => {
+    const pbId = pbUser?.pbId;
+    if (pbId) fetchGameData(pbId);
+  }, [pbUser, fetchGameData]);
+
   /* ── Helpers ── */
-  const nextNetwork = () => {
-    const n = netQueue.current[netIdx.current % netQueue.current.length];
+  const nextNet = () => {
+    const n = netQueue.current[netIdx.current % netQueue.current.length] as AdNetwork;
     netIdx.current += 1;
-    return n as AdNetwork;
+    return n;
   };
 
-  const startTimer = (secs: number) => {
-    setAdTimer(secs);
+  const startTimer = (s: number) => {
+    setAdTimer(s);
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
       setAdTimer(t => { if (t <= 1) { clearInterval(timerRef.current!); return 0; } return t - 1; });
@@ -129,10 +163,10 @@ export default function GamesScreen() {
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
-  /* ── Send a message INTO the WebView / iframe ── */
+  /* ── Send message into WebView / iframe ── */
   const sendToGame = useCallback((msg: object) => {
     const json = JSON.stringify(msg);
-    console.log('[Games] Sending to game:', json);
+    console.log('[Games] →game:', json);
     if (Platform.OS !== 'web') {
       wvRef.current?.injectJavaScript(
         `window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(json)}}));true;`
@@ -143,135 +177,174 @@ export default function GamesScreen() {
     }
   }, []);
 
-  /* ── Reload the game completely ── */
+  /* ── Reload the game ── */
   const reloadGame = useCallback(() => {
     console.log('[Games] Reloading game');
-    scoreRef.current = 0;
-    setScore(0);
-    setEarned(0);
-    setPhase('game');
-    if (Platform.OS !== 'web') {
-      wvRef.current?.reload();
-    } else {
-      const frame = document.querySelector<HTMLIFrameElement>('iframe[title="WeaponMaster"]');
-      if (frame) { frame.src = ''; frame.src = GAME_URL; }
+    scoreRef.current = 0; setScore(0); setEarned(0); setPhase('game');
+    if (Platform.OS !== 'web') { wvRef.current?.reload(); }
+    else {
+      const f = document.querySelector<HTMLIFrameElement>('iframe[title="WeaponMaster"]');
+      if (f) { const s = f.src; f.src = ''; f.src = s; }
     }
   }, []);
 
-  /* ────────────────────────────────────────────────────────────────────────
-   *  GAME_OVER received → show the exit modal
-   * ────────────────────────────────────────────────────────────────────── */
+  /* ── Bridge ready → inject server data into C3 ── */
+  const handleBridgeReady = useCallback(() => {
+    console.log('[Games] Bridge ready — injecting game state');
+    const data = gameDataRef.current;
+    if (data) {
+      sendToGame({
+        type: 'INJECT_VARS',
+        powerTokens:       data.power_tokens,
+        collectedTomatoes: data.collected_tomatoes,
+        lastSessionScore:  data.last_session_score,
+        totalScore:        data.total_accumulated_score,
+      });
+    } else {
+      // Re-fetch if not yet loaded (timing issue)
+      const pbId = pbIdRef.current;
+      if (pbId) {
+        fetchGameData(pbId).then(data => {
+          if (data) sendToGame({
+            type: 'INJECT_VARS',
+            powerTokens:       data.power_tokens,
+            collectedTomatoes: data.collected_tomatoes,
+            lastSessionScore:  data.last_session_score,
+            totalScore:        data.total_accumulated_score,
+          });
+        });
+      }
+    }
+  }, [sendToGame, fetchGameData]);
+
+  /* ── Sync score to server on game-over ── */
+  const syncScore = useCallback(async (score: number) => {
+    const pbId = pbIdRef.current;
+    if (!pbId) { console.warn('[Games] syncScore: no pbId'); return; }
+    try {
+      console.log(`[Games] Syncing score=${score} to PocketBase (pbId=${pbId})`);
+      const res = await fetch(SYNC_SCORE, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pbId, score }),
+      });
+      const data = await res.json();
+      console.log('[Games] sync-score response:', JSON.stringify(data));
+      if (data.success) {
+        setGameStats(prev => prev ? { ...prev,
+          last_session_score: data.last_session_score,
+          collected_tomatoes: data.collected_tomatoes,
+        } : prev);
+      }
+    } catch (err) {
+      console.error('[Games] syncScore FAILED:', err);
+    }
+  }, []);
+
+  /* ── GAME OVER ── */
   const handleGameOver = useCallback((rawScore: number) => {
     const s = Math.max(0, Math.round(rawScore));
-    console.log('[Games] GAME_OVER received — score =', s);
+    console.log('[Games] GAME_OVER — score =', s);
     scoreRef.current = s;
     setScore(s);
     setPhase('exit_modal');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-  }, []);
+    syncScore(s);   // update last_session_score + collected_tomatoes in PB
+  }, [syncScore]);
 
-  /* ────────────────────────────────────────────────────────────────────────
-   *  RETRY (Circle button in game) → interstitial → reload game
-   * ────────────────────────────────────────────────────────────────────── */
+  /* ── RETRY (Circle) → interstitial → reload ── */
   const handleRetry = useCallback(() => {
-    const net = nextNetwork();
-    setAdNet(net);
-    setPhase('retry_ad');
-    startTimer(3);
-    console.log('[Games] RETRY — showing interstitial via', net);
+    const net = nextNet();
+    setAdNet(net); setPhase('retry_ad'); startTimer(3);
+    console.log('[Games] RETRY — interstitial via', net);
     showAd('interstitial', net, adCfg.current, () => {
       stopTimer();
-      console.log('[Games] Retry ad done — reloading game');
+      console.log('[Games] Retry ad done — reloading');
       reloadGame();
     });
   }, [reloadGame]);
 
-  /* ────────────────────────────────────────────────────────────────────────
-   *  CLAIM (Arrow/Back button → user taps "Claim") → interstitial → tokens
-   * ────────────────────────────────────────────────────────────────────── */
+  /* ── CLAIM → interstitial → add score PT → reset last_session_score ── */
   const handleClaim = useCallback(async () => {
-    const net = nextNetwork();
-    setAdNet(net);
-    setPhase('claim_ad');
-    startTimer(3);
-    console.log('[Games] CLAIM — showing interstitial via', net, 'score=', scoreRef.current);
+    const net = nextNet();
+    setAdNet(net); setPhase('claim_ad'); startTimer(3);
+    console.log('[Games] CLAIM — interstitial via', net, 'score=', scoreRef.current);
     showAd('interstitial', net, adCfg.current, async () => {
       stopTimer();
       setPhase('saving');
       const pts = scoreRef.current;
-      console.log('[Games] Interstitial done — adding', pts, 'PT to DB');
       try {
+        console.log(`[Games] Adding ${pts} PT to PocketBase…`);
         await addPowerTokens(pts, 'knife_hit');
-        console.log('[Games] DB updated ✓ — awarded', pts, 'PT');
+        console.log(`[Games] Claimed ${pts} PT — PocketBase updated`);
         setEarned(pts);
         setPhase('reward');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        // Refresh game stats to reflect reset last_session_score
+        if (pbIdRef.current) fetchGameData(pbIdRef.current);
       } catch (err) {
         console.error('[Games] addPowerTokens FAILED:', err);
-        setPhase('reward');   // still show reward UI with what we tried
-        setEarned(pts);
+        setEarned(pts); setPhase('reward');
       }
     });
-  }, [addPowerTokens]);
+  }, [addPowerTokens, fetchGameData]);
 
-  /* ────────────────────────────────────────────────────────────────────────
-   *  DOUBLE (2×) → rewarded ad → tokens × 2
-   * ────────────────────────────────────────────────────────────────────── */
+  /* ── DOUBLE (2×) → rewarded → add score×2 PT ── */
   const handleDouble = useCallback(async () => {
-    const net = nextNetwork();
-    setAdNet(net);
-    setPhase('double_ad');
-    startTimer(5);
-    console.log('[Games] DOUBLE — showing rewarded ad via', net, 'score=', scoreRef.current);
+    const net = nextNet();
+    setAdNet(net); setPhase('double_ad'); startTimer(5);
+    console.log('[Games] DOUBLE — rewarded via', net, 'score=', scoreRef.current);
     showAd('rewarded', net, adCfg.current, async (watched) => {
       stopTimer();
-      if (!watched) { console.log('[Games] Rewarded ad skipped — reverting to exit_modal'); setPhase('exit_modal'); return; }
+      if (!watched) { setPhase('exit_modal'); return; }
       setPhase('saving');
       const pts = scoreRef.current * 2;
-      console.log('[Games] Rewarded done — adding', pts, 'PT (2×) to DB');
       try {
+        console.log(`[Games] Adding ${pts} PT (2×) to PocketBase…`);
         await addPowerTokens(pts, 'knife_hit');
-        console.log('[Games] DB updated ✓ — awarded', pts, 'PT');
+        console.log(`[Games] Double claimed ${pts} PT — PocketBase updated`);
         setEarned(pts);
         setPhase('reward');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        if (pbIdRef.current) fetchGameData(pbIdRef.current);
       } catch (err) {
         console.error('[Games] addPowerTokens FAILED:', err);
-        setEarned(pts);
-        setPhase('reward');
+        setEarned(pts); setPhase('reward');
       }
     });
-  }, [addPowerTokens]);
+  }, [addPowerTokens, fetchGameData]);
 
-  /* ── Handle messages from bridge.js (native WebView) ── */
+  /* ── Handle native WebView messages ── */
   const onNativeMessage = useCallback((e: { nativeEvent: { data: string } }) => {
     try {
       const msg = JSON.parse(e.nativeEvent.data);
-      console.log('[Games] Native message:', JSON.stringify(msg));
-      if (msg.type === 'BRIDGE_READY') console.log('[Games] Bridge ready ✓');
+      console.log('[Games] native msg:', JSON.stringify(msg));
+      if (msg.type === 'BRIDGE_READY') handleBridgeReady();
       if (msg.type === 'GAME_OVER')    handleGameOver(Number(msg.score) || 0);
       if (msg.type === 'RETRY_GAME')   handleRetry();
-    } catch (err) { console.warn('[Games] Bad native message:', e.nativeEvent.data); }
-  }, [handleGameOver, handleRetry]);
+      if (msg.type === 'INJECT_DONE')  console.log('[Games] C3 inject confirmed:', JSON.stringify(msg));
+    } catch { /* ignore */ }
+  }, [handleBridgeReady, handleGameOver, handleRetry]);
 
-  /* ── Handle messages from bridge.js (web iframe) ── */
+  /* ── Handle web iframe messages ── */
   useEffect(() => {
     if (Platform.OS !== 'web') return;
-    const handler = (e: MessageEvent) => {
+    const h = (e: MessageEvent) => {
       try {
-        const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
-        if (!data || !data.type) return;
-        console.log('[Games][web] iframe message:', JSON.stringify(data));
-        if (data.type === 'BRIDGE_READY') console.log('[Games][web] Bridge ready ✓');
-        if (data.type === 'GAME_OVER')    handleGameOver(Number(data.score) || 0);
-        if (data.type === 'RETRY_GAME')   handleRetry();
+        const msg = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+        if (!msg?.type) return;
+        console.log('[Games][web] iframe msg:', JSON.stringify(msg));
+        if (msg.type === 'BRIDGE_READY') handleBridgeReady();
+        if (msg.type === 'GAME_OVER')    handleGameOver(Number(msg.score) || 0);
+        if (msg.type === 'RETRY_GAME')   handleRetry();
+        if (msg.type === 'INJECT_DONE')  console.log('[Games][web] C3 inject confirmed:', JSON.stringify(msg));
       } catch { /* ignore non-JSON */ }
     };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, [handleGameOver, handleRetry]);
+    window.addEventListener('message', h);
+    return () => window.removeEventListener('message', h);
+  }, [handleBridgeReady, handleGameOver, handleRetry]);
 
-  /* ── Android hardware back ── */
+  /* ── Android back button ── */
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -281,39 +354,28 @@ export default function GamesScreen() {
     return () => sub.remove();
   }, [phase]);
 
-  /* ── Render ── */
-  const renderGameView = () => {
+  /* ── Render game view ── */
+  const renderGame = () => {
     if (Platform.OS === 'web') {
       return (
-        <iframe
-          src={GAME_URL}
-          title="WeaponMaster"
+        <iframe src={GAME_URL} title="WeaponMaster"
           style={{ flex: 1, border: 'none', width: '100%', height: '100%' } as any}
-          allow="autoplay"
-        />
+          allow="autoplay" />
       );
     }
     return (
-      <WebView
-        ref={wvRef}
-        source={{ uri: GAME_URL }}
-        style={{ flex: 1 }}
+      <WebView ref={wvRef} source={{ uri: GAME_URL }} style={{ flex: 1 }}
         onMessage={onNativeMessage}
-        javaScriptEnabled
-        domStorageEnabled
-        allowsInlineMediaPlayback
-        mediaPlaybackRequiresUserAction={false}
-        mixedContentMode="always"
-        originWhitelist={['*']}
-        startInLoadingState
+        javaScriptEnabled domStorageEnabled allowsInlineMediaPlayback
+        mediaPlaybackRequiresUserAction={false} mixedContentMode="always"
+        originWhitelist={['*']} startInLoadingState
         renderLoading={() => (
           <View style={S.loader}>
             <ActivityIndicator size="large" color={Colors.gold} />
-            <Text style={S.loaderTxt}>Loading…</Text>
+            <Text style={S.loaderTxt}>Loading game…</Text>
           </View>
         )}
-        containerStyle={{ flex: 1 }}
-      />
+        containerStyle={{ flex: 1 }} />
     );
   };
 
@@ -321,42 +383,46 @@ export default function GamesScreen() {
 
   return (
     <View style={S.root}>
-      {renderGameView()}
+      {renderGame()}
 
-      {/* ── PT badge ─────────────────────────────────── */}
+      {/* ── PT badge ── */}
       <View style={[S.badge, { top: TOP + 8 }]} pointerEvents="none">
         <Ionicons name="flash" size={13} color={Colors.gold} />
         <Text style={S.badgeTxt}>{powerTokens} PT</Text>
       </View>
 
-      {/* ══════════════ EXIT MODAL ═══════════════════ */}
+      {/* ══ EXIT MODAL ══════════════════════════════════ */}
       <Modal visible={phase === 'exit_modal'} transparent animationType="slide">
         <View style={S.overlay}>
           <View style={S.card}>
             <Text style={S.title}>GAME OVER</Text>
 
             <View style={S.row}>
-              <Text style={S.muted}>Your Score</Text>
+              <Text style={S.muted}>Score</Text>
               <Text style={S.bigNum}>{score}</Text>
             </View>
+
+            {gameStats && (
+              <View style={S.statsBox}>
+                <StatRow label="Total Tomatoes" value={gameStats.collected_tomatoes} />
+                <StatRow label="Total Score" value={gameStats.total_accumulated_score} />
+                <StatRow label="Current PT" value={powerTokens} gold />
+              </View>
+            )}
+
             <View style={S.sep} />
-            <View style={S.row}>
-              <Ionicons name="flash" size={18} color={Colors.gold} />
-              <Text style={S.ptNum}>{score} PT</Text>
-              <Text style={S.muted}>1 score = 1 PT</Text>
-            </View>
 
             {/* Retry — no tokens */}
             <Pressable style={S.retryBtn} onPress={handleRetry}>
-              <Ionicons name="refresh-circle-outline" size={20} color={Colors.text} />
-              <Text style={S.retryTxt}>Retry (watch ad, no tokens)</Text>
+              <Ionicons name="refresh-circle-outline" size={18} color={Colors.textMuted} />
+              <Text style={S.retryTxt}>Retry (no tokens)</Text>
             </Pressable>
 
-            {/* Double — rewarded */}
+            {/* Double — rewarded ad */}
             {score > 0 && (
               <Pressable style={S.doubleBtn} onPress={handleDouble}>
-                <Ionicons name="play-circle" size={20} color="#fff" />
-                <Text style={S.doubleTxt}>Watch Ad → Get {score * 2} PT (2×)</Text>
+                <Ionicons name="play-circle" size={18} color="#fff" />
+                <Text style={S.doubleTxt}>Watch Ad  →  {score * 2} PT (2×)</Text>
               </Pressable>
             )}
 
@@ -368,15 +434,13 @@ export default function GamesScreen() {
         </View>
       </Modal>
 
-      {/* ══════════════ AD MODAL ═════════════════════ */}
+      {/* ══ AD MODAL ════════════════════════════════════ */}
       <Modal visible={adPlaying} transparent animationType="fade">
         <View style={S.adFull}>
           <View style={S.adCard}>
             <View style={S.adBar}>
               <Text style={S.adNetTxt}>{NET_LABEL[adNet]}</Text>
-              {adTimer > 0 && (
-                <View style={S.timerPill}><Text style={S.timerTxt}>{adTimer}s</Text></View>
-              )}
+              {adTimer > 0 && <View style={S.timerPill}><Text style={S.timerTxt}>{adTimer}s</Text></View>}
             </View>
             <View style={S.adBody}>
               <Ionicons
@@ -388,26 +452,27 @@ export default function GamesScreen() {
                 {phase === 'double_ad' ? 'Rewarded Video' : 'Advertisement'}
               </Text>
               <Text style={S.adSub}>
-                {phase === 'retry_ad'  ? 'Resuming game after ad…' :
-                 phase === 'claim_ad'  ? 'Claiming your tokens…'  :
-                                         `Watch to earn ${score * 2} PT (2×)`}
+                {phase === 'retry_ad' ? 'Resuming game…' :
+                 phase === 'claim_ad' ? 'Preparing your reward…' :
+                 `Earn ${score * 2} PT for watching`}
               </Text>
+              <Text style={S.adHint}>Network: {NET_LABEL[adNet]}</Text>
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* ══════════════ SAVING ═══════════════════════ */}
+      {/* ══ SAVING ══════════════════════════════════════ */}
       <Modal visible={phase === 'saving'} transparent animationType="fade">
         <View style={S.overlay}>
           <View style={S.card}>
             <ActivityIndicator size="large" color={Colors.gold} />
-            <Text style={S.muted}>Saving to database…</Text>
+            <Text style={S.muted}>Updating database…</Text>
           </View>
         </View>
       </Modal>
 
-      {/* ══════════════ REWARD ═══════════════════════ */}
+      {/* ══ REWARD ══════════════════════════════════════ */}
       <Modal visible={phase === 'reward'} transparent animationType="fade">
         <View style={S.overlay}>
           <View style={S.card}>
@@ -424,10 +489,19 @@ export default function GamesScreen() {
   );
 }
 
+/* ── Stat row helper ── */
+function StatRow({ label, value, gold }: { label: string; value: number; gold?: boolean }) {
+  return (
+    <View style={S.statRow}>
+      <Text style={S.statLabel}>{label}</Text>
+      <Text style={[S.statVal, gold && { color: Colors.gold }]}>{value}</Text>
+    </View>
+  );
+}
+
 /* ─── Styles ──────────────────────────────────────────────────────────────── */
 const S = StyleSheet.create({
   root:   { flex: 1, backgroundColor: '#000' },
-
   loader: { ...StyleSheet.absoluteFillObject, backgroundColor: '#0a1f1c', alignItems: 'center', justifyContent: 'center', gap: 12 },
   loaderTxt: { color: Colors.textMuted, fontFamily: 'Inter_500Medium', fontSize: 14 },
 
@@ -435,20 +509,23 @@ const S = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, zIndex: 99 },
   badgeTxt: { fontFamily: 'Inter_700Bold', fontSize: 13, color: Colors.gold },
 
-  // Modals
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', alignItems: 'center', justifyContent: 'center' },
-  card: { backgroundColor: '#0d1a17', borderRadius: 24, padding: 28, width: SW * 0.86,
-    alignItems: 'center', gap: 14, borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)' },
-  title:  { fontFamily: 'Inter_700Bold', fontSize: 26, color: Colors.text, letterSpacing: 2 },
-  row:    { flexDirection: 'row', alignItems: 'center', gap: 10, width: '100%', justifyContent: 'space-between' },
-  bigNum: { fontFamily: 'Inter_700Bold', fontSize: 38, color: Colors.text },
-  ptNum:  { fontFamily: 'Inter_700Bold', fontSize: 28, color: Colors.gold },
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.86)', alignItems: 'center', justifyContent: 'center' },
+  card: { backgroundColor: '#0d1a17', borderRadius: 24, padding: 26, width: SW * 0.87,
+    alignItems: 'center', gap: 12, borderWidth: 1, borderColor: 'rgba(244,196,48,0.18)' },
+  title:  { fontFamily: 'Inter_700Bold', fontSize: 24, color: Colors.text, letterSpacing: 2 },
+  row:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' },
+  bigNum: { fontFamily: 'Inter_700Bold', fontSize: 36, color: Colors.text },
   muted:  { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted },
   sep:    { width: '100%', height: 1, backgroundColor: 'rgba(255,255,255,0.07)' },
 
+  statsBox: { width: '100%', backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 12, gap: 6 },
+  statRow:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  statLabel: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted },
+  statVal:   { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.text },
+
   retryBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', paddingVertical: 13, borderRadius: 28, width: '100%' },
-  retryTxt: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.text },
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', paddingVertical: 12, borderRadius: 28, width: '100%' },
+  retryTxt: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textMuted },
 
   doubleBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center',
     backgroundColor: '#7c3aed', paddingVertical: 14, borderRadius: 28, width: '100%' },
@@ -457,7 +534,6 @@ const S = StyleSheet.create({
   claimBtn: { backgroundColor: Colors.gold, paddingVertical: 14, borderRadius: 28, width: '100%', alignItems: 'center' },
   claimTxt: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000', letterSpacing: 0.5 },
 
-  // Ad overlay
   adFull: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
   adCard: { width: SW * 0.92, backgroundColor: '#111', borderRadius: 16, overflow: 'hidden',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
@@ -469,4 +545,5 @@ const S = StyleSheet.create({
   adBody: { height: SH * 0.42, alignItems: 'center', justifyContent: 'center', gap: 14, paddingHorizontal: 24 },
   adLabel: { fontFamily: 'Inter_700Bold', fontSize: 18, color: 'rgba(255,255,255,0.5)', letterSpacing: 1 },
   adSub:   { fontFamily: 'Inter_500Medium', fontSize: 14, color: 'rgba(255,255,255,0.32)', textAlign: 'center' },
+  adHint:  { fontFamily: 'Inter_400Regular', fontSize: 11, color: 'rgba(255,255,255,0.18)', textAlign: 'center' },
 });

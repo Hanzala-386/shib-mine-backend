@@ -1111,6 +1111,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Game: Fetch user game state (for initial injection into C3) ───────────
+  app.get("/api/app/game/data/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // collected_tomatoes field in PB is wrong type (date) — use total_accumulated_score as proxy
+      const data = {
+        power_tokens:           Number(user.power_tokens)            || 0,
+        collected_tomatoes:     Number(user.total_accumulated_score) || 0,  // running total = tomatoes
+        last_session_score:     Number(user.last_session_score)      || 0,
+        total_accumulated_score: Number(user.total_accumulated_score) || 0,
+      };
+      console.log(`[/api/app/game/data/${pbId}]`, JSON.stringify(data));
+      res.json(data);
+    } catch (e: any) {
+      console.error("[/api/app/game/data]", e.message);
+      res.status(500).json({ error: "Failed to fetch game data" });
+    }
+  });
+
+  // ── Game: Sync score on game-over (save last_session_score + collected_tomatoes) ──
+  app.post("/api/app/game/sync-score", async (req: Request, res: Response) => {
+    try {
+      const { pbId, score } = req.body;
+      if (!pbId || score === undefined)
+        return res.status(400).json({ error: "pbId and score required" });
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      const pts = Number(score) || 0;
+      // Note: collected_tomatoes field is wrong type (date) in PB — use total_accumulated_score
+      // sync-score only saves last_session_score; cumulative total is updated on reward/claim
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        last_session_score: pts,
+      });
+      const currentTotal = Number(user.total_accumulated_score) || 0;
+      console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts} runningTotal=${currentTotal}`);
+      res.json({ success: true, last_session_score: pts, collected_tomatoes: currentTotal });
+    } catch (e: any) {
+      console.error("[/api/app/game/sync-score]", e.message);
+      res.status(500).json({ error: "Failed to sync score" });
+    }
+  });
+
   // ── Game: Add power tokens ────────────────────────────────────────────────
   app.post("/api/app/game/reward", async (req: Request, res: Response) => {
     try {
@@ -1121,16 +1170,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
-      const newPT = (user.power_tokens || 0) + amount;
-      const newWins =
-        type === "game_win"
+      const newPT   = (Number(user.power_tokens) || 0) + amount;
+      const newTotal = (Number(user.total_accumulated_score) || 0) + amount;
+      const newWins  = type === "game_win"
           ? (user.total_wins || 0) + 1
           : user.total_wins || 0;
 
       await pbPatch(`/api/collections/users/records/${pbId}`, {
-        power_tokens: newPT,
-        total_wins: newWins,
+        power_tokens:            newPT,
+        total_wins:              newWins,
+        total_accumulated_score: newTotal,
+        last_session_score:      0,        // reset after claim
       });
+      console.log(`[/api/app/game/reward] pbId=${pbId} +${amount}PT → newPT=${newPT} totalScore=${newTotal}`);
 
       // 10% referral commission on game earnings
       if (user.referred_by) {
