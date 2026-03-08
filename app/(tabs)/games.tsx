@@ -24,11 +24,14 @@ if (Platform.OS !== 'web') {
 }
 
 const { width: SW, height: SH } = Dimensions.get('window');
+/* Fix: getApiUrl() returns a URL with trailing slash (e.g. "https://domain:5000/").
+ * Using `${BASE}/path` would produce double-slash "…:5000//path" → Express 404 HTML.
+ * new URL(path, base) correctly resolves to single-slash "…:5000/path". */
 const BASE        = getApiUrl();
-const GAME_URL    = `${BASE}/arcade/index.html`;
-const GAME_DATA   = (pbId: string) => `${BASE}/api/app/game/data/${pbId}`;
-const SYNC_SCORE  = `${BASE}/api/app/game/sync-score`;
-const SETTINGS_URL = `${BASE}/api/app/settings`;
+const GAME_URL    = new URL('/arcade/index.html', BASE).href;
+const GAME_DATA   = (pbId: string) => new URL(`/api/app/game/data/${pbId}`, BASE).href;
+const SYNC_SCORE  = new URL('/api/app/game/sync-score', BASE).href;
+const SETTINGS_URL = new URL('/api/app/settings', BASE).href;
 
 /* ─── Ad types ────────────────────────────────────────────────────────────── */
 type AdNetwork = 'admob' | 'unity' | 'applovin';
@@ -345,7 +348,14 @@ export default function GamesScreen() {
         console.log(`[Games][onMessage] GAME_OVER score=${score} collected_tomatoes=${tomatoes}`);
         handleGameOver(score, tomatoes);
       }
-      // RETRY_REQUEST = sprite14 clicked in C3 death screen → interstitial → reload
+      // DOUBLE_REWARD = sprite14 (circle/refresh icon) clicked in C3 death screen → 2× rewarded ad
+      if (msg.type === 'DOUBLE_REWARD') {
+        const s = Number(msg.score) || 0;
+        const t = Number(msg.collected_tomatoes) || 0;
+        console.log(`[Games][onMessage] DOUBLE_REWARD score=${s} — triggering 2× rewarded ad`);
+        handleGameOver(s, t);   // show exit modal first, then user can pick "Watch Ad" for 2×
+      }
+      // Legacy RETRY_REQUEST → treat as no-token retry
       if (msg.type === 'RETRY_REQUEST' || msg.type === 'RETRY_GAME') {
         console.log('[Games][onMessage] RETRY_REQUEST — showing interstitial then reload');
         handleRetry();
@@ -369,7 +379,14 @@ export default function GamesScreen() {
           console.log(`[Games][web][onMessage] GAME_OVER score=${score} collected_tomatoes=${tomatoes}`);
           handleGameOver(score, tomatoes);
         }
-        // RETRY_REQUEST = sprite14 clicked → interstitial → reload (no token modal)
+        // DOUBLE_REWARD = sprite14 (circle/refresh) clicked → 2× rewarded ad
+        if (msg.type === 'DOUBLE_REWARD') {
+          const s = Number(msg.score) || 0;
+          const t = Number(msg.collected_tomatoes) || 0;
+          console.log(`[Games][web][onMessage] DOUBLE_REWARD score=${s}`);
+          handleGameOver(s, t);
+        }
+        // Legacy RETRY_REQUEST
         if (msg.type === 'RETRY_REQUEST' || msg.type === 'RETRY_GAME') {
           console.log('[Games][web][onMessage] RETRY_REQUEST — showing interstitial then reload');
           handleRetry();
