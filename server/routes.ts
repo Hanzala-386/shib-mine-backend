@@ -1086,8 +1086,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const match = itemId.match(/^knife_(\d+)$/);
       if (match) {
         const n = parseInt(match[1], 10);
-        if (n > 1 && !purchased.includes(`knife_${n - 1}`)) {
-          return res.status(400).json({ error: "Unlock previous knife first" });
+        if (n > 1) {
+          const prevId = `knife_${n - 1}`;
+          // knife_1 is always free/owned — don't require it in purchased_items
+          const prevOwned = prevId === 'knife_1' || purchased.includes(prevId);
+          if (!prevOwned) {
+            return res.status(400).json({ error: "Unlock previous knife first" });
+          }
         }
       }
       if ((user.power_tokens || 0) < KNIFE_PRICE) {
