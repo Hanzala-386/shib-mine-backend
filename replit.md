@@ -16,7 +16,7 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
 4. **Speed Boosters** — 2x/4x/6x/10x, time-limited 1 hour, single active at a time, countdown timer on active card; decoupled from mining start
 5. **Server-Side Claim Verification** — Server computes expected reward from rate × 3600 × booster_multiplier; client reward validated within 5% tolerance
 6. **Rolling Counter** — Smooth animated SHIB balance display during mining
-7. **Knife Hit Game** — Tap-to-throw game, win 3 PT per round
+7. **Weapon Master Game (Construct 3)** — Full HTML5 game hosted at `/arcade/`, rendered via WebView (iOS/Android) or iframe (web). bridge.js polls C3 runtime for layout changes; on "death" layout sends GAME_OVER postMessage with score. Collect modal: 1 score = 1 PT. "Double My Tokens" rewarded ad (2x). Ad mediation waterfall: AdMob → Unity Ads → AppLovin (rotated randomly; stub implementation — replace `showSimulatedAd()` with real SDK calls in a custom dev build).
 8. **Admin Panel** — Restricted to hanzala386@gmail.com, controls all economic settings
 9. **Wallet** — SHIB balance & Power Token tracking (BEP-20 + Binance Email withdrawal)
 10. **Invite** — Referral code sharing, 10% server-side commission
