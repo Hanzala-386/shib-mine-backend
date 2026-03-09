@@ -16,7 +16,15 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
 4. **Speed Boosters** — 2x/4x/6x/10x, time-limited 1 hour, single active at a time, countdown timer on active card; decoupled from mining start
 5. **Server-Side Claim Verification** — Server computes expected reward from rate × 3600 × booster_multiplier; client reward validated within 5% tolerance
 6. **Rolling Counter** — Smooth animated SHIB balance display during mining
-7. **Weapon Master Game (Construct 3)** — Full HTML5 game hosted at `/arcade/`, rendered via WebView (iOS/Android) or iframe (web). bridge.js polls C3 runtime for layout changes; on "death" layout sends GAME_OVER postMessage with score. Collect modal: 1 score = 1 PT. "Double My Tokens" rewarded ad (2x). Ad mediation waterfall: AdMob → Unity Ads → AppLovin (rotated randomly; stub implementation — replace `showSimulatedAd()` with real SDK calls in a custom dev build).
+7. **Weapon Master Game (Construct 3)** — Full HTML5 game hosted at `/arcade/`, rendered via WebView (iOS/Android) or iframe (web). bridge.js reads C3 score via `esm._allGlobalVars[]` (each var has `._name` / `._value`). On "death" layout: GAME_OVER postMessage with score & tomatoes → syncScore API. 1 score = 1 PT. "Double My Tokens" rewarded ad (2x).
+8. **Professional Ad Integration** — `react-native-google-mobile-ads` SDK (requires custom EAS build for real ads; simulates gracefully in Expo Go). Architecture:
+   - `context/AdContext.tsx`: SDK init + fetches all unit IDs from PocketBase settings; exposes `showInterstitial()` / `showRewarded()` with loading state
+   - `components/StickyBannerAd.tsx`: Persistent banner above tab bar, 30s auto-refresh via key remount
+   - `lib/nativeAds.ts`: SDK wrapper with `createForAdRequest` → LOADED → show → CLOSED/EARNED_REWARD callbacks; graceful fallback to simulation when native module not available
+   - `metro.config.js`: Web stub for `react-native-google-mobile-ads` + @iabtcf ESM `.js` extension resolver fix
+   - PocketBase settings fields: `admob_unit_id` (interstitial), `admob_banner_unit_id`, `admob_rewarded_id`, `unity_game_id`, `unity_rewarded_id`, `applovin_sdk_key`, `applovin_rewarded_id`
+   - Mediation waterfall: AdMob primary → Unity Ads → AppLovin MAX (configured via AdMob dashboard mediation groups)
+   - app.json plugin: `react-native-google-mobile-ads` with test App IDs (update to production IDs before release)
 8. **Admin Panel** — Restricted to hanzala386@gmail.com, controls all economic settings
 9. **Wallet** — SHIB balance & Power Token tracking (BEP-20 + Binance Email withdrawal)
 10. **Invite** — Referral code sharing, 10% server-side commission

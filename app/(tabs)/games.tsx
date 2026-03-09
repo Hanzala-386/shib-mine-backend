@@ -37,12 +37,14 @@ const SETTINGS_URL = new URL('/api/app/settings', BASE).href;
 type AdNetwork = 'admob' | 'unity' | 'applovin';
 interface AdSettings {
   showAds: boolean; activeAdNetwork: string;
-  admobUnitId: string; applovinRewardedId: string;
+  admobUnitId: string; admobRewardedId: string;
+  applovinRewardedId: string;
   applovinSdkKey: string; unityGameId: string; unityRewardedId: string;
 }
 const AD_DEFAULT: AdSettings = {
   showAds: false, activeAdNetwork: '',
-  admobUnitId: '', applovinRewardedId: '', applovinSdkKey: '', unityGameId: '', unityRewardedId: '',
+  admobUnitId: '', admobRewardedId: '',
+  applovinRewardedId: '', applovinSdkKey: '', unityGameId: '', unityRewardedId: '',
 };
 function networkOrder(active: string): AdNetwork[] {
   const k = (active || '').toLowerCase();
@@ -502,6 +504,11 @@ export default function GamesScreen() {
                 size={56}
                 color={phase === 'double_ad' ? Colors.gold : 'rgba(255,255,255,0.18)'}
               />
+              <ActivityIndicator
+                size="large"
+                color={phase === 'double_ad' ? Colors.gold : 'rgba(255,255,255,0.5)'}
+                style={{ marginTop: 4 }}
+              />
               <Text style={[S.adLabel, phase === 'double_ad' && { color: Colors.gold }]}>
                 {phase === 'double_ad' ? 'Rewarded Video' : 'Advertisement'}
               </Text>
@@ -510,7 +517,7 @@ export default function GamesScreen() {
                  phase === 'claim_ad' ? 'Preparing your reward…' :
                  `Earn ${score * 2} PT for watching`}
               </Text>
-              <Text style={S.adHint}>Network: {NET_LABEL[adNet]}</Text>
+              <Text style={S.adHint}>Loading ad · {NET_LABEL[adNet]}</Text>
             </View>
           </View>
         </View>

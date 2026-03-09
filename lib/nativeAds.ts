@@ -1,170 +1,182 @@
 /**
- * Native Ad Bridge — nativeAds.ts
+ * nativeAds.ts — Google Mobile Ads SDK wrapper
  *
- * Architecture:
- *  • Expo Go / Web  : Simulates ads with a countdown timer (no real SDK calls)
- *  • Custom Build   : Calls real native SDK via NativeModules
+ * Works in 3 environments:
+ *  1. Expo Go / web  : Simulates ads with a countdown timer
+ *  2. Custom build   : Uses real react-native-google-mobile-ads SDK
+ *  3. Build with mediation: SDK calls AdMob which waterfalls to Unity / AppLovin
  *
- * How to activate real ads in a custom build:
- *  1. Run: npx expo prebuild
- *  2. Add to android/build.gradle:
- *       implementation 'com.google.android.gms:play-services-ads:22.6.0'   // AdMob
- *       implementation 'com.unity3d.ads:unity-ads:4.10.0'                   // Unity
- *       implementation 'com.applovin:applovin-sdk:+'                        // AppLovin MAX
- *  3. Create a native module (NativeAdModule.kt) that registers:
- *       showInterstitial(adUnitId: String, callback: Callback)
- *       showRewarded(adUnitId: String, callback: Callback)
- *  4. In app.json plugins array add your native module
- *  5. Uncomment the NativeModules block below
+ * To activate real ads, run `eas build` (or `npx expo prebuild && npx react-native run-android`).
+ * The admob_unit_id, admob_rewarded_id values in PocketBase settings are used as unit IDs.
  */
 
-import { NativeModules, Platform } from 'react-native';
+import { Platform } from 'react-native';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-// Flexible config — accepts any object that has at least some of these keys.
-// Compatible with AdSettings from games.tsx without requiring an exact match.
-export interface AdConfig {
-  admobInterstitialId?:    string;
-  admobRewardedId?:        string;
-  admobUnitId?:            string;     // interstitial alias used in PB settings
-  admobBannerUnitId?:      string;
-  unityGameId?:            string;
-  unityInterstitialId?:    string;
-  unityRewardedId?:        string;
-  applovinSdkKey?:         string;
-  applovinInterstitialId?: string;
-  applovinRewardedId?:     string;
-  [key: string]: string | boolean | undefined;  // allow extra keys
-}
-
+/* ─── Types ─────────────────────────────────────────────────────────────────── */
 export type AdNetwork  = 'admob' | 'unity' | 'applovin';
-export type AdCallback = (watched: boolean) => void;
+export type AdCallback = (completed: boolean) => void;
 
-// ─── Detect if the native module is available ─────────────────────────────────
-const { ShibAds } = NativeModules as { ShibAds?: {
-  showInterstitial: (unitId: string, cb: AdCallback) => void;
-  showRewarded:     (unitId: string, cb: AdCallback) => void;
-} };
+export interface AdConfig {
+  admobUnitId?:        string;   // interstitial
+  admobRewardedId?:    string;   // rewarded
+  admobBannerUnitId?:  string;   // banner
+  unityGameId?:        string;
+  unityRewardedId?:    string;
+  applovinSdkKey?:     string;
+  applovinRewardedId?: string;
+  showAds?:            boolean;
+  [key: string]: string | boolean | undefined;
+}
 
-const NATIVE_AVAILABLE = Platform.OS !== 'web' && !!ShibAds;
+/* ─── AdMob test IDs ─────────────────────────────────────────────────────────── */
+const TEST_INTERSTITIAL = 'ca-app-pub-3940256099942544/1033173712';
+const TEST_REWARDED     = 'ca-app-pub-3940256099942544/5224354917';
 
-// ─── Simulation delays (Expo Go / dev) ───────────────────────────────────────
-const SIM_INTERSTITIAL_MS = 3000;
-const SIM_REWARDED_MS     = 5000;
+/* ─── Try to load the native SDK ─────────────────────────────────────────────── */
+let _AdEventType: any        = null;
+let _RewardedEventType: any  = null;
+let _InterstitialAd: any     = null;
+let _RewardedAd: any         = null;
+let _sdkAvailable            = false;
+let _sdkInitialized          = false;
 
-// ─── Core: show interstitial ad ──────────────────────────────────────────────
+if (Platform.OS !== 'web') {
+  try {
+    const pkg = require('react-native-google-mobile-ads');
+    _AdEventType       = pkg.AdEventType;
+    _RewardedEventType = pkg.RewardedAdEventType;
+    _InterstitialAd    = pkg.InterstitialAd;
+    _RewardedAd        = pkg.RewardedAd;
+    _sdkAvailable      = true;
+    console.log('[NativeAds] react-native-google-mobile-ads loaded');
+  } catch (e) {
+    console.log('[NativeAds] SDK not available (Expo Go / web)');
+  }
+}
+
+/* ─── Initialize SDK (idempotent) ────────────────────────────────────────────── */
+async function ensureSdkInitialized(): Promise<boolean> {
+  if (!_sdkAvailable) return false;
+  if (_sdkInitialized) return true;
+  try {
+    const { default: mobileAds } = require('react-native-google-mobile-ads');
+    await mobileAds().initialize();
+    _sdkInitialized = true;
+    console.log('[NativeAds] SDK initialized');
+    return true;
+  } catch (e: any) {
+    console.warn('[NativeAds] SDK init failed:', e.message);
+    return false;
+  }
+}
+
+/* ─── Show interstitial ad ───────────────────────────────────────────────────── */
 export function showInterstitialAd(
-  network: AdNetwork,
+  _network: AdNetwork,
   cfg: Partial<AdConfig>,
   onDone: AdCallback,
 ): void {
-  console.log(`[NativeAds] showInterstitial network=${network}`);
+  const unitId = cfg.admobUnitId || TEST_INTERSTITIAL;
+  console.log(`[NativeAds] showInterstitial unitId=${unitId}`);
 
-  if (NATIVE_AVAILABLE) {
-    // ── Real native SDK call ──
-    // Uncomment when custom build with NativeAdModule.kt is ready:
-    /*
-    let unitId = '';
-    if (network === 'admob')    unitId = cfg.admobInterstitialId    || '';
-    if (network === 'unity')    unitId = cfg.unityInterstitialId    || '';
-    if (network === 'applovin') unitId = cfg.applovinInterstitialId || '';
-    ShibAds!.showInterstitial(unitId, onDone);
+  if (!_sdkAvailable || !_InterstitialAd) {
+    console.log('[NativeAds] Simulating interstitial (3s)');
+    setTimeout(() => { console.log('[NativeAds] Interstitial done (sim)'); onDone(true); }, 3000);
     return;
-    */
   }
 
-  // ── Simulation (Expo Go / web) ──
-  console.log(`[NativeAds] Simulating interstitial (${SIM_INTERSTITIAL_MS}ms)…`);
-  setTimeout(() => {
-    console.log('[NativeAds] Interstitial complete (simulated)');
-    onDone(true);
-  }, SIM_INTERSTITIAL_MS);
+  ensureSdkInitialized().then(ready => {
+    if (!ready) {
+      setTimeout(() => onDone(true), 3000);
+      return;
+    }
+
+    const cleanup: Array<() => void> = [];
+    try {
+      const ad = _InterstitialAd.createForAdRequest(unitId, {
+        requestNonPersonalizedAdsOnly: true,
+      });
+
+      cleanup.push(ad.addAdEventListener(_AdEventType.LOADED, () => {
+        console.log('[NativeAds] Interstitial loaded — showing');
+        ad.show();
+      }));
+      cleanup.push(ad.addAdEventListener(_AdEventType.CLOSED, () => {
+        cleanup.forEach(fn => fn());
+        console.log('[NativeAds] Interstitial closed');
+        onDone(true);
+      }));
+      cleanup.push(ad.addAdEventListener(_AdEventType.ERROR, (e: Error) => {
+        console.warn('[NativeAds] Interstitial error:', e.message, '— falling back to sim');
+        cleanup.forEach(fn => fn());
+        setTimeout(() => onDone(true), 1000);
+      }));
+
+      ad.load();
+    } catch (e: any) {
+      console.warn('[NativeAds] Interstitial exception:', e.message);
+      setTimeout(() => onDone(true), 1000);
+    }
+  });
 }
 
-// ─── Core: show rewarded video ad ─────────────────────────────────────────────
-// This is the TRIGGER for the "Double" button — call this from handleDouble()
+/* ─── Show rewarded video ad ─────────────────────────────────────────────────── */
 export function showRewardedAd(
-  network: AdNetwork,
+  _network: AdNetwork,
   cfg: Partial<AdConfig>,
   onDone: AdCallback,
 ): void {
-  console.log(`[NativeAds] showRewarded network=${network}`);
+  const unitId = cfg.admobRewardedId || TEST_REWARDED;
+  console.log(`[NativeAds] showRewarded unitId=${unitId}`);
 
-  if (NATIVE_AVAILABLE) {
-    // ── Real native SDK call ──
-    // Uncomment when custom build with NativeAdModule.kt is ready:
-    /*
-    let unitId = '';
-    if (network === 'admob')    unitId = cfg.admobRewardedId    || '';
-    if (network === 'unity')    unitId = cfg.unityRewardedId    || '';
-    if (network === 'applovin') unitId = cfg.applovinRewardedId || '';
-    ShibAds!.showRewarded(unitId, (watched: boolean) => {
-      console.log('[NativeAds] Rewarded done, watched=', watched);
-      onDone(watched);
-    });
+  if (!_sdkAvailable || !_RewardedAd) {
+    console.log('[NativeAds] Simulating rewarded (5s)');
+    setTimeout(() => { console.log('[NativeAds] Rewarded done — watched=true (sim)'); onDone(true); }, 5000);
     return;
-    */
   }
 
-  // ── Simulation (Expo Go / web) ──
-  console.log(`[NativeAds] Simulating rewarded video (${SIM_REWARDED_MS}ms)…`);
-  setTimeout(() => {
-    console.log('[NativeAds] Rewarded complete — watched=true (simulated)');
-    onDone(true);
-  }, SIM_REWARDED_MS);
-}
-
-// ─── Kotlin stub (for reference) ──────────────────────────────────────────────
-// File: android/app/src/main/java/com/shibmine/ShibAdsModule.kt
-/*
-package com.shibmine
-
-import com.facebook.react.bridge.*
-import com.google.android.gms.ads.*
-import com.google.android.gms.ads.rewarded.RewardedAd
-import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
-
-class ShibAdsModule(reactContext: ReactApplicationContext) :
-    ReactContextBaseJavaModule(reactContext) {
-
-    override fun getName() = "ShibAds"
-
-    @ReactMethod
-    fun showInterstitial(adUnitId: String, callback: Callback) {
-        val activity = currentActivity ?: return
-        InterstitialAd.load(reactApplicationContext, adUnitId,
-            AdRequest.Builder().build(),
-            object : InterstitialAdLoadCallback() {
-                override fun onAdLoaded(ad: InterstitialAd) {
-                    ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-                        override fun onAdDismissedFullScreenContent() { callback.invoke(true) }
-                        override fun onAdFailedToShowFullScreenContent(e: AdError) { callback.invoke(false) }
-                    }
-                    activity.runOnUiThread { ad.show(activity) }
-                }
-                override fun onAdFailedToLoad(e: LoadAdError) { callback.invoke(false) }
-            }
-        )
+  ensureSdkInitialized().then(ready => {
+    if (!ready) {
+      setTimeout(() => onDone(true), 5000);
+      return;
     }
 
-    @ReactMethod
-    fun showRewarded(adUnitId: String, callback: Callback) {
-        val activity = currentActivity ?: return
-        RewardedAd.load(reactApplicationContext, adUnitId,
-            AdRequest.Builder().build(),
-            object : RewardedAdLoadCallback() {
-                override fun onAdLoaded(ad: RewardedAd) {
-                    ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-                        override fun onAdDismissedFullScreenContent() { callback.invoke(true) }
-                        override fun onAdFailedToShowFullScreenContent(e: AdError) { callback.invoke(false) }
-                    }
-                    var rewarded = false
-                    ad.show(activity) { rewarded = true }
-                    // callback with rewarded flag is already handled by dismiss
-                }
-                override fun onAdFailedToLoad(e: LoadAdError) { callback.invoke(false) }
-            }
-        )
+    let rewarded = false;
+    const cleanup: Array<() => void> = [];
+    try {
+      const ad = _RewardedAd.createForAdRequest(unitId, {
+        requestNonPersonalizedAdsOnly: true,
+      });
+
+      cleanup.push(ad.addAdEventListener(_RewardedEventType.LOADED, () => {
+        console.log('[NativeAds] Rewarded loaded — showing');
+        ad.show();
+      }));
+      cleanup.push(ad.addAdEventListener(_RewardedEventType.EARNED_REWARD, (reward: any) => {
+        console.log('[NativeAds] Reward earned:', JSON.stringify(reward));
+        rewarded = true;
+      }));
+      cleanup.push(ad.addAdEventListener(_AdEventType.CLOSED, () => {
+        cleanup.forEach(fn => fn());
+        console.log('[NativeAds] Rewarded closed, rewarded=', rewarded);
+        onDone(rewarded);
+      }));
+      cleanup.push(ad.addAdEventListener(_AdEventType.ERROR, (e: Error) => {
+        console.warn('[NativeAds] Rewarded error:', e.message, '— falling back');
+        cleanup.forEach(fn => fn());
+        onDone(false);
+      }));
+
+      ad.load();
+    } catch (e: any) {
+      console.warn('[NativeAds] Rewarded exception:', e.message);
+      onDone(false);
     }
+  });
 }
-*/
+
+/* ─── Initialize SDK at app start (call from AdProvider or app boot) ─────────── */
+export function initializeMobileAds(): void {
+  if (!_sdkAvailable) return;
+  ensureSdkInitialized().catch(() => {});
+}

@@ -17,6 +17,7 @@ import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { WalletProvider } from "@/context/WalletContext";
 import { MiningProvider } from "@/context/MiningContext";
 import { AdminProvider } from "@/context/AdminContext";
+import { AdProvider } from "@/context/AdContext";
 import Colors from "@/constants/colors";
 
 SplashScreen.preventAutoHideAsync();
@@ -54,13 +55,15 @@ function RootLayoutNav() {
 
 function ProvidedApp() {
   return (
-    <WalletProvider>
-      <MiningProvider>
-        <AdminProvider>
-          <RootLayoutNav />
-        </AdminProvider>
-      </MiningProvider>
-    </WalletProvider>
+    <AdProvider>
+      <WalletProvider>
+        <MiningProvider>
+          <AdminProvider>
+            <RootLayoutNav />
+          </AdminProvider>
+        </MiningProvider>
+      </WalletProvider>
+    </AdProvider>
   );
 }
 

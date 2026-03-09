@@ -166,6 +166,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         activeAdNetwork: s.active_ad_network,
         admobUnitId: s.admob_unit_id,
         admobBannerUnitId: s.admob_banner_unit_id,
+        admobRewardedId: s.admob_rewarded_id,
         applovinSdkKey: s.applovin_sdk_key,
         applovinRewardedId: s.applovin_rewarded_id,
         unityGameId: s.unity_game_id,
