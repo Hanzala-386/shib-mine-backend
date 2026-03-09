@@ -2,6 +2,7 @@
   "expo": {
     "name": "SHIB Mine",
     "slug": "shib-mine",
+    "owner": "hanzalasha",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -15,10 +16,10 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.myapp"
+      "bundleIdentifier": "com.hanzalasha.shibmine"
     },
     "android": {
-      "package": "com.myapp",
+      "package": "com.hanzalasha.shibmine",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -50,6 +51,11 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "3388a05b-ebda-4ee3-b143-4ba6eb582017"
+      }
     }
   }
 }

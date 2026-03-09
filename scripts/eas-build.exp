@@ -1,0 +1,34 @@
+#!/usr/bin/env expect
+set timeout 300
+
+# cd to workspace
+cd /home/runner/workspace
+
+spawn ./node_modules/.bin/eas build --profile development --platform android --no-wait
+
+# Answer any project creation prompt with Y
+expect {
+    "Would you like to automatically create" { send "y\r"; exp_continue }
+    "Generate a new Android Keystore"        { send "y\r"; exp_continue }
+    "Generate new Android Keystore"          { send "y\r"; exp_continue }
+    "Do you want to set up a new keystore"   { send "y\r"; exp_continue }
+    "Which build credentials sources"        { send "\r"; exp_continue }
+    "Keystore generated successfully"        { exp_continue }
+    "Build queued"                           { exp_continue }
+    "in progress"                            { exp_continue }
+    "Build submitted"                        { exp_continue }
+    "https://expo.dev/accounts/"             { 
+        puts "\n\nBUILD_URL_FOUND"
+        exp_continue 
+    }
+    "Error:" {
+        puts "\n\nERROR_DETECTED"
+        exp_continue
+    }
+    eof { 
+        puts "\n\nProcess ended"
+    }
+    timeout {
+        puts "\n\nTimeout reached"
+    }
+}
