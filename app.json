@@ -46,7 +46,8 @@
           "iosAppId": "ca-app-pub-3940256099942544~1458002511",
           "userTrackingUsageDescription": "This identifier will be used to deliver personalized ads to you."
         }
-      ]
+      ],
+      "./plugins/withAndroidConfig"
     ],
     "experiments": {
       "typedRoutes": true,
