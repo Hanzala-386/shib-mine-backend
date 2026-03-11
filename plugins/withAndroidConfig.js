@@ -1,12 +1,14 @@
 /**
  * plugins/withAndroidConfig.js
  *
- * Expo Config Plugin that patches the generated Android files every time
- * `npx expo prebuild` runs. Fixes three things:
+ * Expo Config Plugin — patches generated Android files on every `npx expo prebuild`.
  *
- *  1. AGP version  — Downgrades to 8.9.1 (max supported by Android Studio 2024.x)
- *  2. Gradle wrap  — Updates wrapper to Gradle 8.11.1 (required by AGP 8.9.1)
- *  3. Ad adapters  — Adds Unity Ads + AppLovin mediation adapter deps to app/build.gradle
+ *  1. AGP version     — Downgrades to 8.9.1 (max supported by Android Studio Panda 2)
+ *  2. Gradle wrapper  — Updates to Gradle 8.11.1 (required by AGP 8.9.1)
+ *  3. Ad adapters     — Adds Unity Ads + AppLovin mediation adapter deps
+ *  4. NDK version     — Pins to 26.1.10909125 (stable for RN 0.81, avoids NDK 27 ABI issues)
+ *  5. C++ STL         — Adds -DANDROID_STL=c++_shared to cmake to fix
+ *                       "undefined symbol: operator delete(void*)" with NDK 27 / RN 0.81
  */
 
 const {
@@ -88,10 +90,77 @@ function withAdMediationAdapters(config) {
   });
 }
 
-/* ─── Compose all three patches and export ───────────────────────────────────── */
+/* ─── 4. Root build.gradle — pin NDK to 26.1.10909125 ───────────────────────── */
+//
+// NDK 27.1 changed C++ ABI in ways that break prebuilt .so files in many
+// React Native native modules (react-native-screens, react-native-reanimated,
+// etc.), causing "undefined symbol: operator delete(void*)" linker errors.
+// NDK 26.1.10909125 is the LTS release explicitly supported by RN 0.81.
+//
+function withNdkVersion(config) {
+  return withProjectBuildGradle(config, (cfg) => {
+    let content = cfg.modResults.contents;
+
+    // Patch `ndkVersion = "X.X.X"` inside the ext { } block
+    content = content.replace(
+      /ndkVersion\s*=\s*["'][^"']+["']/,
+      'ndkVersion = "26.1.10909125"'
+    );
+
+    cfg.modResults.contents = content;
+    return cfg;
+  });
+}
+
+/* ─── 5. app/build.gradle — add -DANDROID_STL=c++_shared to cmake ───────────── */
+//
+// Using c++_shared ensures all native modules share the same C++ runtime,
+// preventing duplicate/missing C++ symbols when linking with NDK 26/27.
+// Handles three cases in the generated build.gradle:
+//   A) cmake { arguments "..." } already exists  → append to it
+//   B) cmake { } exists but no arguments line    → inject arguments line
+//   C) no cmake block in defaultConfig at all    → inject full cmake block
+//
+function withCppShared(config) {
+  return withAppBuildGradle(config, (cfg) => {
+    let content = cfg.modResults.contents;
+
+    // Skip if already patched
+    if (content.includes('-DANDROID_STL=c++_shared')) return cfg;
+
+    // Case A: cmake { arguments "..." } — append to existing arguments string
+    if (/cmake\s*\{[^}]*arguments\s+"/.test(content)) {
+      content = content.replace(
+        /(cmake\s*\{[^}]*arguments\s+")([^"]*)(")/,
+        (_, pre, args, post) => `${pre}${args} -DANDROID_STL=c++_shared${post}`
+      );
+    }
+    // Case B: cmake { } exists but no arguments line — inject one
+    else if (/externalNativeBuild\s*\{[\s\S]*?cmake\s*\{/.test(content)) {
+      content = content.replace(
+        /(cmake\s*\{)/,
+        '$1\n                arguments "-DANDROID_STL=c++_shared"'
+      );
+    }
+    // Case C: no cmake block in defaultConfig — create one
+    else {
+      content = content.replace(
+        /(defaultConfig\s*\{)/,
+        '$1\n        externalNativeBuild {\n            cmake {\n                arguments "-DANDROID_STL=c++_shared"\n            }\n        }'
+      );
+    }
+
+    cfg.modResults.contents = content;
+    return cfg;
+  });
+}
+
+/* ─── Compose all five patches and export ────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   config = withAgpVersion(config);
   config = withGradleWrapper(config);
   config = withAdMediationAdapters(config);
+  config = withNdkVersion(config);
+  config = withCppShared(config);
   return config;
 };
