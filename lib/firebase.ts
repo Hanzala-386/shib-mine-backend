@@ -40,7 +40,7 @@ function createAuth() {
   }
 
   try {
-    const { getReactNativePersistence } = require('@firebase/auth/react-native');
+    const { getReactNativePersistence } = require('@firebase/auth/dist/rn/index.js');
     const AsyncStorage = require('@react-native-async-storage/async-storage').default;
     return initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) });
   } catch {
