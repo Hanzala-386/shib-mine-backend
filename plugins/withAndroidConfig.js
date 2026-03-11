@@ -6,9 +6,10 @@
  *  1. AGP version     — Downgrades to 8.9.1 (max supported by Android Studio Panda 2)
  *  2. Gradle wrapper  — Updates to Gradle 8.11.1 (required by AGP 8.9.1)
  *  3. Ad adapters     — Adds Unity Ads + AppLovin mediation adapter deps
- *  4. NDK version     — Pins to 26.1.10909125 (stable for RN 0.81, avoids NDK 27 ABI issues)
- *  5. C++ STL         — Adds -DANDROID_STL=c++_shared to cmake to fix
- *                       "undefined symbol: operator delete(void*)" with NDK 27 / RN 0.81
+ *  4. NDK version     — Pins to 26.1.10909125 (stable LTS for RN 0.81)
+ *  5. C++ config      — Sets -DANDROID_STL=c++_shared + cppFlags "-std=c++17" in cmake
+ *                       Fixes "operator delete(void*)" and "no member named 'format'"
+ *                       caused by NDK 27 defaulting to C++20 headers.
  */
 
 const {
@@ -92,16 +93,16 @@ function withAdMediationAdapters(config) {
 
 /* ─── 4. Root build.gradle — pin NDK to 26.1.10909125 ───────────────────────── */
 //
-// NDK 27.1 changed C++ ABI in ways that break prebuilt .so files in many
-// React Native native modules (react-native-screens, react-native-reanimated,
-// etc.), causing "undefined symbol: operator delete(void*)" linker errors.
-// NDK 26.1.10909125 is the LTS release explicitly supported by RN 0.81.
+// NDK 27.x ships C++20 standard library headers by default. Several prebuilt
+// .so files bundled with react-native-screens, react-native-reanimated, and
+// other modules were compiled against NDK 26 / C++17. Mixing them with NDK 27
+// causes ABI mismatches: "undefined symbol: operator delete(void*)".
+// NDK 26.1.10909125 is the LTS release explicitly validated against RN 0.81.
 //
 function withNdkVersion(config) {
   return withProjectBuildGradle(config, (cfg) => {
     let content = cfg.modResults.contents;
 
-    // Patch `ndkVersion = "X.X.X"` inside the ext { } block
     content = content.replace(
       /ndkVersion\s*=\s*["'][^"']+["']/,
       'ndkVersion = "26.1.10909125"'
@@ -112,41 +113,79 @@ function withNdkVersion(config) {
   });
 }
 
-/* ─── 5. app/build.gradle — add -DANDROID_STL=c++_shared to cmake ───────────── */
+/* ─── 5. app/build.gradle — set STL=c++_shared and force C++17 ──────────────── */
 //
-// Using c++_shared ensures all native modules share the same C++ runtime,
-// preventing duplicate/missing C++ symbols when linking with NDK 26/27.
-// Handles three cases in the generated build.gradle:
-//   A) cmake { arguments "..." } already exists  → append to it
-//   B) cmake { } exists but no arguments line    → inject arguments line
-//   C) no cmake block in defaultConfig at all    → inject full cmake block
+// Two flags are required together:
 //
-function withCppShared(config) {
+//   -DANDROID_STL=c++_shared
+//     All native modules share one copy of the C++ runtime .so instead of each
+//     bundling a static copy. Prevents duplicate/conflicting C++ symbols at link time.
+//
+//   cppFlags "-std=c++17"
+//     Forces every C++ translation unit through the C++17 standard. NDK 27 defaults
+//     to C++20, which enables std::format and other C++20 constructs in NDK headers.
+//     Prebuilt React Native modules don't use those constructs, so compiling against
+//     C++20 headers causes "no member named 'format' in namespace 'std'" errors when
+//     the compiler enables C++20 mode but a dependency doesn't expect it.
+//
+// The patch is idempotent — running prebuild multiple times won't double-inject.
+// It handles all four shapes of the generated app/build.gradle:
+//   A) externalNativeBuild { cmake { arguments "..." } } — appends to existing args
+//   B) externalNativeBuild { cmake { } } no args/flags   — injects both lines
+//   C) cmake block with cppFlags but no args             — adds args, extends cppFlags
+//   D) no cmake block at all                             — creates full block
+//
+function withCppConfig(config) {
   return withAppBuildGradle(config, (cfg) => {
     let content = cfg.modResults.contents;
 
-    // Skip if already patched
-    if (content.includes('-DANDROID_STL=c++_shared')) return cfg;
+    const STL_ARG   = '-DANDROID_STL=c++_shared';
+    const CPP17     = '-std=c++17';
+    const ARGS_LINE = `arguments "${STL_ARG}"`;
+    const CPP_LINE  = `cppFlags "${CPP17}"`;
 
-    // Case A: cmake { arguments "..." } — append to existing arguments string
-    if (/cmake\s*\{[^}]*arguments\s+"/.test(content)) {
-      content = content.replace(
-        /(cmake\s*\{[^}]*arguments\s+")([^"]*)(")/,
-        (_, pre, args, post) => `${pre}${args} -DANDROID_STL=c++_shared${post}`
-      );
+    // ── Helper: patch inside an already-located cmake { ... } block ──────────
+    function ensureCmakeFlags(block) {
+      let b = block;
+
+      // arguments line
+      if (/\barguments\s+"/.test(b)) {
+        if (!b.includes(STL_ARG)) {
+          b = b.replace(
+            /(arguments\s+")([^"]*)(")/,
+            (_, pre, args, post) => `${pre}${args.trimEnd()} ${STL_ARG}${post}`
+          );
+        }
+      } else {
+        b = b.replace(/(cmake\s*\{)/, `$1\n                ${ARGS_LINE}`);
+      }
+
+      // cppFlags line
+      if (/\bcppFlags\s+"/.test(b)) {
+        if (!b.includes(CPP17)) {
+          b = b.replace(
+            /(cppFlags\s+")([^"]*)(")/,
+            (_, pre, flags, post) => `${pre}${flags.trimEnd()} ${CPP17}${post}`
+          );
+        }
+      } else {
+        b = b.replace(/(cmake\s*\{)/, `$1\n                ${CPP_LINE}`);
+      }
+
+      return b;
     }
-    // Case B: cmake { } exists but no arguments line — inject one
-    else if (/externalNativeBuild\s*\{[\s\S]*?cmake\s*\{/.test(content)) {
+
+    // Case A/B/C: externalNativeBuild { cmake { ... } } already present
+    if (/externalNativeBuild\s*\{[\s\S]*?cmake\s*\{/.test(content)) {
       content = content.replace(
-        /(cmake\s*\{)/,
-        '$1\n                arguments "-DANDROID_STL=c++_shared"'
+        /(externalNativeBuild\s*\{[\s\S]*?cmake\s*\{[\s\S]*?\}[\s\S]*?\})/,
+        (match) => ensureCmakeFlags(match)
       );
-    }
-    // Case C: no cmake block in defaultConfig — create one
-    else {
+    } else {
+      // Case D: no cmake block — inject into defaultConfig
       content = content.replace(
         /(defaultConfig\s*\{)/,
-        '$1\n        externalNativeBuild {\n            cmake {\n                arguments "-DANDROID_STL=c++_shared"\n            }\n        }'
+        `$1\n        externalNativeBuild {\n            cmake {\n                ${ARGS_LINE}\n                ${CPP_LINE}\n            }\n        }`
       );
     }
 
@@ -155,12 +194,12 @@ function withCppShared(config) {
   });
 }
 
-/* ─── Compose all five patches and export ────────────────────────────────────── */
+/* ─── Compose all patches and export ─────────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   config = withAgpVersion(config);
   config = withGradleWrapper(config);
   config = withAdMediationAdapters(config);
   config = withNdkVersion(config);
-  config = withCppShared(config);
+  config = withCppConfig(config);
   return config;
 };
