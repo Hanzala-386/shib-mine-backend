@@ -23,14 +23,15 @@ const config = getDefaultConfig(__dirname);
  *    Metro strips extensions and re-appends them, so it can't find the files.
  *    Strip the trailing .js so Metro's resolver works normally.
  *
- * 4. Replit state directory watcher crash fix:
+ * 4. Replit .local directory watcher crash fix:
  *    Metro's FallbackWatcher walks all project subdirectories and crashes with
  *    ENOENT if a directory disappears between the walk and the fs.watch() call.
- *    Replit's workflow-logs folder is deleted and recreated on every workflow
- *    restart. Blocking .local/state prevents Metro from ever watching it.
+ *    Replit creates and deletes volatile temp folders inside .local/ (workflow
+ *    logs, skill swap dirs, etc.). Blocking the entire .local/ tree prevents
+ *    Metro from ever watching any of those transient paths.
  */
 config.resolver.blockList = [
-  /[/\\]\.local[/\\]state[/\\]/,
+  /[/\\]\.local[/\\]/,
 ];
 
 const originalResolveRequest = config.resolver.resolveRequest;
