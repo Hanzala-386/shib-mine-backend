@@ -20,6 +20,7 @@ import { adService } from '@/lib/AdService';
 import Colors from '@/constants/colors';
 
 function formatTime(ms: number) {
+  if (!ms || !isFinite(ms) || ms < 0) return '00:00:00';
   const totalSeconds = Math.floor(ms / 1000);
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
@@ -28,10 +29,11 @@ function formatTime(ms: number) {
 }
 
 function formatShib(val: number) {
-  if (val >= 1_000_000_000) return `${(val / 1_000_000_000).toFixed(2)}B`;
-  if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(2)}M`;
-  if (val >= 1_000) return `${(val / 1_000).toFixed(1)}K`;
-  return val.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  const v = isFinite(val) ? val : 0;
+  if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(2)}B`;
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
 function useRollingNumber(target: number, duration = 600) {
@@ -76,9 +78,11 @@ export default function HomeScreen() {
 
   const displayedPT = useRollingNumber(powerTokens, 400);
 
+  const safeShibBalance = isFinite(shibBalance) ? shibBalance : 0;
+  const safeDisplayed = isFinite(displayedShibBalance) ? displayedShibBalance : 0;
   const liveBalance = status === 'mining'
-    ? shibBalance + displayedShibBalance
-    : shibBalance;
+    ? safeShibBalance + safeDisplayed
+    : safeShibBalance;
   const displayedShibFinal = useRollingNumber(liveBalance, status === 'mining' ? 100 : 800);
 
   const rotation = useSharedValue(0);

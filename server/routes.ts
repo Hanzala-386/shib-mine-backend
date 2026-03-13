@@ -468,14 +468,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (user.code) return res.status(404).json({ error: "User not found" });
       if (!settings) return res.status(503).json({ error: "Settings unavailable" });
 
-      // Check for existing active booster
-      if (user.booster_expires) {
-        const expires = parseInt(user.booster_expires);
-        if (expires > Date.now()) {
-          return res.status(400).json({ error: "A booster is already active" });
-        }
-      }
-
       // Determine cost
       const costKey = `boost_${multiplier}x_cost`;
       const cost = settings[costKey];
