@@ -45,6 +45,16 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     };
   }
 
+  /* ── Web stub for AsyncStorage ── */
+  /* On web the package's merge-options dep exports undefined, crashing on
+     .bind(). Redirect to a localStorage-backed shim for web previews.     */
+  if (platform === "web" && moduleName === "@react-native-async-storage/async-storage") {
+    return {
+      filePath: path.resolve(__dirname, "lib/asyncStorageWeb.ts"),
+      type: "sourceFile",
+    };
+  }
+
   /* ── Firebase auth React Native subpath fix ── */
   if (moduleName === "@firebase/auth/react-native") {
     if (platform === "web") {
