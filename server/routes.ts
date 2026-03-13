@@ -1137,9 +1137,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ── Game: Sync score on game-over (save last_session_score + collected_tomatoes) ──
+  //
+  // Server-side score validation constants:
+  //   MAX_SCORE_PER_SECOND – the absolute theoretical maximum a human can earn.
+  //                          15 = 3 knives/sec × 5 pts each (very generous).
+  //   ABSOLUTE_MAX_SCORE   – hard cap for a single session; any higher value is
+  //                          rejected outright regardless of session length.
+  //   MIN_SESSION_MS       – minimum realistic session duration for a non-zero score.
+  const MAX_SCORE_PER_SECOND = 15;
+  const ABSOLUTE_MAX_SCORE   = 9999;
+  const MIN_SESSION_MS       = 2000; // 2 s — anything faster is impossible
+
   app.post("/api/app/game/sync-score", async (req: Request, res: Response) => {
     try {
-      const { pbId, score, collected_tomatoes: clientTomatoes } = req.body;
+      const { pbId, score, collected_tomatoes: clientTomatoes, elapsed_ms } = req.body;
       if (!pbId || score === undefined)
         return res.status(400).json({ error: "pbId and score required" });
 
@@ -1153,26 +1164,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
-      const pts = Math.max(0, Math.round(Number(score) || 0));
+      let pts = Math.max(0, Math.round(Number(score) || 0));
+
+      // ── Hard cap: no single session can ever exceed ABSOLUTE_MAX_SCORE ──────
+      if (pts > ABSOLUTE_MAX_SCORE) {
+        console.warn(`[/api/app/game/sync-score] Score ${pts} exceeds absolute max ${ABSOLUTE_MAX_SCORE}, capping`);
+        pts = ABSOLUTE_MAX_SCORE;
+      }
+
+      // ── Time-based validation (optional — bridge sends elapsed_ms) ───────────
+      if (elapsed_ms !== undefined && elapsed_ms !== null) {
+        const elapsedSec = Math.max(0, Number(elapsed_ms) / 1000);
+        if (elapsedSec < MIN_SESSION_MS / 1000 && pts > 0) {
+          console.warn(`[/api/app/game/sync-score] Session too short (${elapsedSec.toFixed(1)}s) for score ${pts} — rejecting`);
+          return res.status(400).json({ error: "Session duration too short for reported score" });
+        }
+        const maxAllowed = Math.ceil(elapsedSec * MAX_SCORE_PER_SECOND);
+        if (pts > maxAllowed) {
+          console.warn(`[/api/app/game/sync-score] Score ${pts} impossible in ${elapsedSec.toFixed(1)}s (max=${maxAllowed}), capping`);
+          pts = maxAllowed;
+        }
+      }
+
+      const pts_final = pts;
 
       // collected_tomatoes:
       //  • If client sent it (bridge computed it) → use client value (already a NUMBER)
       //  • Otherwise → server computes: current DB value + this session's score
       let newTomatoes: number;
       if (clientTomatoes !== undefined && clientTomatoes !== null) {
-        newTomatoes = Math.max(0, Math.round(Number(clientTomatoes)));
-        console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts} tomatoes=client:${newTomatoes}`);
+        // Also cap client-reported tomatoes: can't exceed current DB value + validated pts
+        const currentTomatoes = Number(user.collected_tomatoes) || 0;
+        const maxTomatoes = currentTomatoes + pts_final;
+        newTomatoes = Math.min(Math.max(0, Math.round(Number(clientTomatoes))), maxTomatoes);
+        console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts_final} tomatoes=client:${newTomatoes}`);
       } else {
         const currentTomatoes = Number(user.collected_tomatoes) || 0;
-        newTomatoes = currentTomatoes + pts;
-        console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts} tomatoes:${currentTomatoes}→${newTomatoes}`);
+        newTomatoes = currentTomatoes + pts_final;
+        console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts_final} tomatoes:${currentTomatoes}→${newTomatoes}`);
       }
 
       await pbPatch(`/api/collections/users/records/${pbId}`, {
-        last_session_score:  pts,
-        collected_tomatoes:  newTomatoes,   // always stored as NUMBER
+        last_session_score:  pts_final,
+        collected_tomatoes:  newTomatoes,
       });
-      res.json({ success: true, last_session_score: pts, collected_tomatoes: newTomatoes });
+      res.json({ success: true, last_session_score: pts_final, collected_tomatoes: newTomatoes });
     } catch (e: any) {
       console.error("[/api/app/game/sync-score]", e.message);
       res.status(500).json({ error: "Failed to sync score" });
@@ -1186,11 +1222,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!pbId || !amount)
         return res.status(400).json({ error: "pbId and amount required" });
 
+      // Cap incoming amount to prevent inflated rewards from client tampering.
+      // ABSOLUTE_MAX_SCORE * 2 covers the double-reward (2×) ad scenario.
+      const safeAmount = Math.min(
+        Math.max(0, Math.round(Number(amount) || 0)),
+        ABSOLUTE_MAX_SCORE * 2
+      );
+      if (safeAmount !== Number(amount)) {
+        console.warn(`[/api/app/game/reward] Amount capped: ${amount} → ${safeAmount}`);
+      }
+
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
-      const newPT   = (Number(user.power_tokens) || 0) + amount;
-      const newTotal = (Number(user.total_accumulated_score) || 0) + amount;
+      const newPT   = (Number(user.power_tokens) || 0) + safeAmount;
+      const newTotal = (Number(user.total_accumulated_score) || 0) + safeAmount;
       const newWins  = type === "game_win"
           ? (user.total_wins || 0) + 1
           : user.total_wins || 0;
@@ -1201,7 +1247,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         total_accumulated_score: newTotal,
         last_session_score:      0,        // reset after claim
       });
-      console.log(`[/api/app/game/reward] pbId=${pbId} +${amount}PT → newPT=${newPT} totalScore=${newTotal}`);
+      console.log(`[/api/app/game/reward] pbId=${pbId} +${safeAmount}PT → newPT=${newPT} totalScore=${newTotal}`);
 
       // 10% referral commission on game earnings
       if (user.referred_by) {
@@ -1218,7 +1264,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               referrer = byCode.items?.[0] || null;
             }
             if (referrer) {
-              const commission = Math.round(amount * 0.1);
+              const commission = Math.round(safeAmount * 0.1);
               if (commission > 0) {
                 await pbPatch(`/api/collections/users/records/${referrer.id}`, {
                   power_tokens: (referrer.power_tokens || 0) + commission,

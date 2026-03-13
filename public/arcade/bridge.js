@@ -54,6 +54,21 @@
   var navBlocked  = false;
   var pendingNav  = null;
 
+  /* ── Score integrity guards ──────────────────────────────────────────────
+   *  The C3 collision system can fire the score-add event multiple times for
+   *  the same knife hit before C3 sets the knife to "stuck", causing the score
+   *  to jump hundreds of points in a single 300 ms tick.
+   *
+   *  MAX_DELTA_PER_TICK  – max points we allow per 300 ms polling tick.
+   *                        10 pts × 2 knives/tick = 20 is already generous;
+   *                        anything above this is a collision-debounce glitch.
+   *  ABSOLUTE_MAX_SCORE  – hard cap for a single session score (sent to server).
+   * ──────────────────────────────────────────────────────────────────────── */
+  var MAX_DELTA_PER_TICK = 20;
+  var ABSOLUTE_MAX_SCORE = 9999;
+  var lastTrackedScore   = 0;   // last verified score value
+  var sessionStartMs     = 0;   // set when bridge becomes ready
+
   /* ── Runtime accessor ────────────────────────────────────────────────── */
   function rt() {
     try {
@@ -218,13 +233,19 @@
           pendingNav = { fn: orig, args: Array.prototype.slice.call(arguments) };
           if (intent === 'double') {
             /* sprite14 clicked: trigger 2× reward in React Native */
-            var score2x = readGlobal(runtime, 'score');
+            var score2x = Math.min(readGlobal(runtime, 'score'), ABSOLUTE_MAX_SCORE);
+            var elapsed2x = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
+            if (elapsed2x > 0) {
+              var maxForTime2x = Math.ceil((elapsed2x / 1000) * 15);
+              if (score2x > maxForTime2x) score2x = maxForTime2x;
+            }
             var prevTomatoes = (window.__shibGameState && typeof window.__shibGameState.collectedTomatoes === 'number')
               ? window.__shibGameState.collectedTomatoes : 0;
             post('DOUBLE_REWARD', {
               score:              score2x,
               collected_tomatoes: prevTomatoes + score2x,
-              pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || ''
+              pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || '',
+              elapsed_ms:         elapsed2x,
             });
           }
           /* rstrt: GAME_OVER already sent when death layout entered — no extra message needed */
@@ -296,11 +317,35 @@
 
     if (!bridgeReady) {
       bridgeReady = true;
+      sessionStartMs   = Date.now();
+      lastTrackedScore = 0;
       hookNavigation(runtime);
       if (injectQueue) { applyInject(runtime, injectQueue); injectQueue = null; }
       post('BRIDGE_READY', {});
       console.log('[Bridge] Ready — runtime obtained via _GetLocalRuntime()');
       dumpAllVars(runtime);
+    }
+
+    /* ── Per-tick score integrity check ─────────────────────────────────────
+     *  Read the live C3 score. If it jumped by more than MAX_DELTA_PER_TICK
+     *  (20 pts per 300 ms) in this tick, the collision event fired multiple
+     *  times for the same knife (C3 debounce failure). Write the capped value
+     *  back into C3 immediately so the in-game display stays correct too.
+     * ─────────────────────────────────────────────────────────────────────── */
+    var currentScore = readGlobal(runtime, 'score');
+    if (currentScore > lastTrackedScore) {
+      var delta = currentScore - lastTrackedScore;
+      if (delta > MAX_DELTA_PER_TICK) {
+        var cappedScore = lastTrackedScore + MAX_DELTA_PER_TICK;
+        console.warn('[Bridge] Score spike detected: ' + lastTrackedScore +
+          ' → ' + currentScore + ' (delta=' + delta + '). Capping to ' + cappedScore);
+        writeGlobal(runtime, 'score', cappedScore);
+        currentScore = cappedScore;
+      }
+      lastTrackedScore = currentScore;
+    } else if (currentScore < lastTrackedScore) {
+      /* Game restarted or layout changed — reset tracker */
+      lastTrackedScore = currentScore;
     }
 
     var name = layoutName(runtime);
@@ -309,8 +354,21 @@
       lastLayout = name;
 
       if (name.toLowerCase() === 'death') {
-        /* Read score from C3 global using the FIXED path (_allGlobalVars) */
-        var score = readGlobal(runtime, 'score');
+        /* Re-read after any per-tick correction, then apply the absolute cap */
+        var score = Math.min(readGlobal(runtime, 'score'), ABSOLUTE_MAX_SCORE);
+        var elapsedMs = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
+
+        /* Additional time-based sanity: clamp to max possible for elapsed time.
+         * Allow 15 pts/sec absolute maximum (generous: 3 knives/sec × 5 pts). */
+        if (elapsedMs > 0) {
+          var maxForTime = Math.ceil((elapsedMs / 1000) * 15);
+          if (score > maxForTime) {
+            console.warn('[Bridge] Score ' + score + ' exceeds time-based max ' + maxForTime +
+              ' for ' + Math.round(elapsedMs / 1000) + 's session. Capping.');
+            score = maxForTime;
+            writeGlobal(runtime, 'score', score);
+          }
+        }
 
         if (score === 0) {
           console.error('[Bridge] [ERROR] Score sync failed - Value is 0. Dumping all vars:');
@@ -325,16 +383,22 @@
         if (window.__shibGameState) window.__shibGameState.collectedTomatoes = newTomatoes;
 
         console.log('[Bridge] DEATH — score=' + score +
-          ' collected_tomatoes=' + newTomatoes + ' (prev=' + prevTomatoes + ')');
+          ' collected_tomatoes=' + newTomatoes + ' (prev=' + prevTomatoes + ')' +
+          ' elapsed=' + Math.round(elapsedMs / 1000) + 's');
 
         navBlocked = true;
 
-        /* Send GAME_OVER — all values as numbers */
+        /* Send GAME_OVER — all values as numbers, plus elapsed for server validation */
         post('GAME_OVER', {
           score:              score,
           collected_tomatoes: newTomatoes,
-          pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || ''
+          pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || '',
+          elapsed_ms:         elapsedMs,
         });
+
+        /* Reset session timer for the next game */
+        sessionStartMs   = Date.now();
+        lastTrackedScore = 0;
 
       } else if (navBlocked && name.toLowerCase() !== 'death') {
         navBlocked = false;
