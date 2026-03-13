@@ -5,16 +5,27 @@ async function request<T = any>(
   method: string,
   path: string,
   body?: object,
+  timeoutMs = 12000,
 ): Promise<T> {
   const url = new URL(path, getApiUrl()).toString();
-  const res = await fetch(url, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-  return data as T;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    return data as T;
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw new Error('Request timed out. Check your connection.');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export const api = {
