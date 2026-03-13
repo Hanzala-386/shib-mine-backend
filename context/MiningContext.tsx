@@ -2,7 +2,7 @@ import React, {
   createContext, useContext, useState, useEffect,
   useRef, useMemo, ReactNode,
 } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
 
@@ -178,7 +178,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
           };
 
           setSession(local);
-          if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(local));
+          if (cacheKey) await storage.setItem(cacheKey, JSON.stringify(local));
 
           if (status === 'mining') {
             setTimeRemaining(Math.max(0, remaining));
@@ -191,7 +191,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
           }
         } else {
           // Server says no active session — clear everything
-          if (cacheKey) await AsyncStorage.removeItem(cacheKey);
+          if (cacheKey) await storage.removeItem(cacheKey);
           setSession(null);
         }
         return;
@@ -199,7 +199,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       // No pbId yet — try local cache (only for 'mining', never for 'ready_to_claim')
       if (cacheKey) {
-        const raw = await AsyncStorage.getItem(cacheKey);
+        const raw = await storage.getItem(cacheKey);
         if (raw) {
           try {
             const s: MiningSession = JSON.parse(raw);
@@ -216,7 +216,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
                 // Expired locally — wait for server confirmation on next load
                 const done: MiningSession = { ...s, status: 'ready_to_claim' };
                 setSession(done);
-                await AsyncStorage.setItem(cacheKey, JSON.stringify(done));
+                await storage.setItem(cacheKey, JSON.stringify(done));
               }
             }
           } catch { /* corrupt cache — ignore */ }
@@ -251,7 +251,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         setSession((prev) => {
           if (!prev) return null;
           const done: MiningSession = { ...prev, status: 'ready_to_claim' };
-          if (cacheKey) AsyncStorage.setItem(cacheKey, JSON.stringify(done));
+          if (cacheKey) storage.setItem(cacheKey, JSON.stringify(done));
           return done;
         });
       }
@@ -305,7 +305,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       setTimeRemaining(Math.max(0, endTimeMs - Date.now()));
       setElapsedMs(0);
       setDisplayedShibBalance(0);
-      if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(newSession));
+      if (cacheKey) await storage.setItem(cacheKey, JSON.stringify(newSession));
       startTimers(newSession);
       return { success: true };
     } catch (e: any) {
@@ -328,7 +328,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     setElapsedMs(0);
     setDisplayedShibBalance(0);
     setSession(null);
-    if (cacheKey) await AsyncStorage.removeItem(cacheKey);
+    if (cacheKey) await storage.removeItem(cacheKey);
 
     try {
       const res = await api.claimMining({ sessionId: s.pbSessionId, pbId });

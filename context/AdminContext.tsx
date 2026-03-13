@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import storage from '@/lib/storage';
 import { api, type AppSettings } from '@/lib/api';
 import { configureAds } from '@/lib/AdService';
 
@@ -45,7 +45,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   async function load() {
     try {
       // Load cache first for instant UI
-      const cached = await AsyncStorage.getItem(CACHE_KEY);
+      const cached = await storage.getItem(CACHE_KEY);
       if (cached) {
         const parsed: AppSettings = JSON.parse(cached);
         setSettings(parsed);
@@ -58,7 +58,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       const fresh = await api.getSettings();
       setSettings(fresh);
       applyAdsConfig(fresh);
-      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(fresh));
+      await storage.setItem(CACHE_KEY, JSON.stringify(fresh));
     } catch (e) {
       console.warn('[Admin] Failed to fetch settings, using cache/defaults', e);
       if (!settings) setSettings(DEFAULT_SETTINGS);
@@ -88,7 +88,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     };
 
     setSettings(merged);
-    await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(merged));
+    await storage.setItem(CACHE_KEY, JSON.stringify(merged));
     applyAdsConfig(merged);
 
     if (merged.id) {

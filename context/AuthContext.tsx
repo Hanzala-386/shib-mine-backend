@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import storage from '@/lib/storage';
 import { router } from 'expo-router';
 import {
   auth,
@@ -109,7 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Confirms verification in PB and loads user profile
   async function confirmAndLoadUser(fbUser: FirebaseUser): Promise<void> {
     try {
-      const cached = await AsyncStorage.getItem(`shib_pending_${fbUser.uid}`);
+      const cached = await storage.getItem(`shib_pending_${fbUser.uid}`);
       const pending = cached ? JSON.parse(cached) : {};
 
       const pb = await api.confirmVerified({
@@ -120,11 +120,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         referredBy: pending.referredBy || '',
       });
 
-      if (cached) await AsyncStorage.removeItem(`shib_pending_${fbUser.uid}`);
+      if (cached) await storage.removeItem(`shib_pending_${fbUser.uid}`);
 
       setPbUser(pb);
       setUser(pbToProfile(pb, fbUser));
-      await AsyncStorage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
+      await storage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
     } catch (e) {
       console.warn('[Auth] confirmAndLoadUser failed:', e);
       setPbUser(null);
@@ -146,7 +146,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
 
       // Store pending profile data for when they verify
-      await AsyncStorage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify({
+      await storage.setItem(`shib_pending_${cred.user.uid}`, JSON.stringify({
         displayName,
         referralCode: generateReferralCode(),
         referredBy: referredBy?.toUpperCase() || '',

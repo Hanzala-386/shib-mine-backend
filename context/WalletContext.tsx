@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
 
@@ -63,7 +63,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       // Load cached withdrawals
       if (uid) {
         try {
-          const raw = await AsyncStorage.getItem(`shib_withdrawals_${uid}`);
+          const raw = await storage.getItem(`shib_withdrawals_${uid}`);
           if (raw) setWithdrawals(JSON.parse(raw));
         } catch { }
       }
