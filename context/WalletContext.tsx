@@ -34,10 +34,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [minWithdrawalAmount, setMinWithdrawalAmount] = useState(100);
   const [isLoading, setIsLoading] = useState(false);
 
-  const pbId = pbUser?.pbId;
-  const uid = user?.uid;
-  const shibBalance = pbUser?.shibBalance ?? 0;
-  const powerTokens = pbUser?.powerTokens ?? 10;
+  const pbId = pbUser?.pbId ?? null;
+  const uid = user?.uid ?? null;
+  const rawShib = pbUser?.shibBalance;
+  const rawPT = pbUser?.powerTokens;
+  const shibBalance = typeof rawShib === 'number' && isFinite(rawShib) ? rawShib : 0;
+  const powerTokens = typeof rawPT === 'number' && isFinite(rawPT) ? rawPT : 10;
 
   useEffect(() => {
     if (pbId) {

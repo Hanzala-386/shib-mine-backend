@@ -169,6 +169,8 @@ export interface PBUser {
   is_verified: boolean;
   isVerified?: boolean;
   created: string;
+  activeBoosterMultiplier: number;
+  boosterExpires: string;
 }
 
 export interface AppSettings {

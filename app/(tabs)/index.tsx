@@ -37,17 +37,19 @@ function formatShib(val: number) {
 }
 
 function useRollingNumber(target: number, duration = 600) {
-  const [displayed, setDisplayed] = useState(target);
-  const animVal = useRef(new RNAnimated.Value(target)).current;
+  const safeTarget = isFinite(target) ? target : 0;
+  const [displayed, setDisplayed] = useState(safeTarget);
+  const animVal = useRef(new RNAnimated.Value(safeTarget)).current;
 
   useEffect(() => {
+    const t = isFinite(target) ? target : 0;
     RNAnimated.timing(animVal, {
-      toValue: target,
+      toValue: t,
       duration,
       useNativeDriver: false,
     }).start();
     const listener = animVal.addListener(({ value }) => {
-      setDisplayed(value);
+      setDisplayed(isFinite(value) ? value : 0);
     });
     return () => animVal.removeListener(listener);
   }, [target]);
