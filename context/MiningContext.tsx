@@ -10,7 +10,8 @@ export type MiningStatus = 'idle' | 'mining' | 'ready_to_claim';
 
 export interface MiningSession {
   pbSessionId?: string;
-  startTime: number;
+  startTimeMs: number;   // Unix ms — drives shib animation
+  endTimeMs: number;     // Unix ms — drives countdown: remaining = endTimeMs - Date.now()
   durationMs: number;
   multiplier: number;
   status: MiningStatus;
@@ -41,16 +42,44 @@ const MiningContext = createContext<MiningContextValue | null>(null);
 
 // ── Math helpers ─────────────────────────────────────────────────────────────
 
-/** Return 0 (or `fallback`) for anything that is NaN / Infinity / null / undefined */
+/** Returns `fallback` for anything that is NaN / Infinity / null / undefined */
 function safe(n: number | undefined | null, fallback = 0): number {
   return typeof n === 'number' && isFinite(n) ? n : fallback;
 }
 
-/** Parse PocketBase booster_expires — stored as epoch-ms string, e.g. "1710000000000" */
+/** Parse PocketBase booster_expires — stored as epoch-ms string e.g. "1710000000000" */
 function parseBoosterTs(raw: string | number | null | undefined): number {
   if (raw === null || raw === undefined || raw === '') return 0;
   const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
   return isFinite(n) ? n : 0;
+}
+
+/**
+ * Derive a reliable startTimeMs from a server response.
+ * Priority: explicit startTimeMs number → compute from endTimeMs − durationMs → Date.now() fallback
+ */
+function resolveStartMs(
+  startTimeMs: number | undefined,
+  endTimeMs: number | undefined,
+  durationMs: number,
+): number {
+  if (typeof startTimeMs === 'number' && isFinite(startTimeMs) && startTimeMs > 0) return startTimeMs;
+  if (typeof endTimeMs === 'number' && isFinite(endTimeMs) && endTimeMs > 0) return endTimeMs - durationMs;
+  return Date.now();
+}
+
+/**
+ * Derive a reliable endTimeMs from a server response.
+ * Priority: explicit endTimeMs number → startTimeMs + durationMs → Date.now() + durationMs
+ */
+function resolveEndMs(
+  endTimeMs: number | undefined,
+  startTimeMs: number | undefined,
+  durationMs: number,
+): number {
+  if (typeof endTimeMs === 'number' && isFinite(endTimeMs) && endTimeMs > 0) return endTimeMs;
+  if (typeof startTimeMs === 'number' && isFinite(startTimeMs) && startTimeMs > 0) return startTimeMs + durationMs;
+  return Date.now() + durationMs;
 }
 
 // ── Provider ──────────────────────────────────────────────────────────────────
@@ -58,45 +87,35 @@ function parseBoosterTs(raw: string | number | null | undefined): number {
 export function MiningProvider({ children }: { children: ReactNode }) {
   const { user, pbUser, refreshBalance } = useAuth();
 
-  // Session / timer state
   const [session, setSession] = useState<MiningSession | null>(null);
   const [timeRemaining, setTimeRemaining] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [displayedShibBalance, setDisplayedShibBalance] = useState(0);
   const [isClaiming, setIsClaiming] = useState(false);
 
-  // Settings state (loaded once from server)
   const [miningRatePerSec, setMiningRatePerSec] = useState(0.01736);
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [miningEntryCost, setMiningEntryCost] = useState(24);
-
-  // Booster state — derived reactively from pbUser (updated after every refreshBalance call)
   const [activeBooster, setActiveBooster] = useState<{ multiplier: number; expiresAt: number } | null>(null);
 
-  // Interval refs
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shibIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Claim mutex (ref survives re-renders without stale closure problems)
   const isClaimingRef = useRef(false);
   const sessionRef = useRef<MiningSession | null>(null);
 
-  // Live refs — intervals always read fresh values without stale closures
+  // Live refs — intervals always read the freshest value without stale closures
   const miningRateRef = useRef(miningRatePerSec);
   const activeBoosterRef = useRef(activeBooster);
 
   const uid = user?.uid ?? null;
   const pbId = pbUser?.pbId ?? null;
-  const cacheKey = uid ? `shib_mining_${uid}` : null;
+  const cacheKey = uid ? `shib_mining_v2_${uid}` : null; // v2 = endTimeMs-based schema
 
-  // ── Keep refs in sync ───────────────────────────────────────────────────────
   useEffect(() => { miningRateRef.current = miningRatePerSec; }, [miningRatePerSec]);
   useEffect(() => { activeBoosterRef.current = activeBooster; }, [activeBooster]);
   useEffect(() => { sessionRef.current = session; }, [session]);
 
-  // ── REACTIVE: derive booster state from pbUser whenever it updates ──────────
-  // This is the key to instant UI refresh after booster purchase — no logout needed.
-  // refreshBalance() updates pbUser → this effect fires → UI ticks update immediately.
+  // ── Reactive booster: re-derive from pbUser on every refreshBalance() call ──
   useEffect(() => {
     if (!pbUser) return;
     const multiplier = safe(pbUser.activeBoosterMultiplier, 1);
@@ -104,14 +123,14 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     if (expiresAt > Date.now() && multiplier > 1) {
       const booster = { multiplier, expiresAt };
       setActiveBooster(booster);
-      activeBoosterRef.current = booster;    // update ref immediately for running intervals
+      activeBoosterRef.current = booster;
     } else {
       setActiveBooster(null);
       activeBoosterRef.current = null;
     }
   }, [pbUser]);
 
-  // ── Load settings once ──────────────────────────────────────────────────────
+  // ── Load settings once ─────────────────────────────────────────────────────
   useEffect(() => {
     api.getSettings().then((s) => {
       if (s?.miningRatePerSec) setMiningRatePerSec(safe(s.miningRatePerSec, 0.01736));
@@ -120,23 +139,17 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     }).catch(() => {});
   }, []);
 
-  // ── Load session when user signs in ────────────────────────────────────────
+  // ── Load session on sign-in ───────────────────────────────────────────────
   useEffect(() => {
     if (uid) loadSession();
     return () => clearAllTimers();
   }, [uid, pbId]);
 
-  // ── Helpers ─────────────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
   function clearAllTimers() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     if (shibIntervalRef.current) { clearInterval(shibIntervalRef.current); shibIntervalRef.current = null; }
-  }
-
-  function toMs(raw: string | undefined): number {
-    if (!raw) return Date.now();
-    const iso = raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z';
-    return safe(new Date(iso).getTime(), Date.now());
   }
 
   async function loadSession() {
@@ -145,52 +158,68 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         const res = await api.getActiveMining(pbId);
         if (res?.session) {
           const s = res.session;
-          const startTime = toMs(s.startTime);
           const durationMs = safe(s.durationMs, 3600000);
-          const elapsed = Date.now() - startTime;
-          const status: MiningStatus = elapsed >= durationMs ? 'ready_to_claim' : 'mining';
+
+          // Use explicit Unix-ms fields from server — no string parsing
+          const endTimeMs = resolveEndMs(s.endTimeMs, s.startTimeMs, durationMs);
+          const startTimeMs = resolveStartMs(s.startTimeMs, s.endTimeMs, durationMs);
+
+          const remaining = endTimeMs - Date.now();
+          const status: MiningStatus = remaining <= 0 ? 'ready_to_claim' : 'mining';
+
           const local: MiningSession = {
             pbSessionId: s.id,
-            startTime,
+            startTimeMs,
+            endTimeMs,
             durationMs,
             multiplier: safe(s.multiplier, 1),
             status,
             expectedReward: safe(miningRatePerSec * (durationMs / 1000), 0),
           };
+
           setSession(local);
           if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(local));
+
           if (status === 'mining') {
-            setTimeRemaining(Math.max(0, durationMs - elapsed));
-            setElapsedMs(elapsed);
+            setTimeRemaining(Math.max(0, remaining));
+            setElapsedMs(Math.max(0, Date.now() - startTimeMs));
             startTimers(local);
+          } else {
+            // Already done — make sure timers are cleared and state is consistent
+            clearAllTimers();
+            setTimeRemaining(0);
           }
         } else {
+          // Server says no active session — clear everything
           if (cacheKey) await AsyncStorage.removeItem(cacheKey);
           setSession(null);
         }
         return;
       }
 
-      // No pbId yet — local cache only for 'mining' state
+      // No pbId yet — try local cache (only for 'mining', never for 'ready_to_claim')
       if (cacheKey) {
         const raw = await AsyncStorage.getItem(cacheKey);
         if (raw) {
-          const s: MiningSession = JSON.parse(raw);
-          const startTime = safe(s.startTime, Date.now());
-          const durationMs = safe(s.durationMs, 3600000);
-          const elapsed = Date.now() - startTime;
-          if (s.status === 'mining') {
-            if (elapsed < durationMs) {
-              setSession(s);
-              setTimeRemaining(durationMs - elapsed);
-              setElapsedMs(elapsed);
-              startTimers(s);
-            } else {
-              const completed: MiningSession = { ...s, status: 'ready_to_claim' };
-              setSession(completed);
-              await AsyncStorage.setItem(cacheKey, JSON.stringify(completed));
+          try {
+            const s: MiningSession = JSON.parse(raw);
+            const endTimeMs = safe(s.endTimeMs, 0);
+            const durationMs = safe(s.durationMs, 3600000);
+            if (s.status === 'mining' && endTimeMs > 0) {
+              const remaining = endTimeMs - Date.now();
+              if (remaining > 0) {
+                setSession(s);
+                setTimeRemaining(remaining);
+                setElapsedMs(Date.now() - safe(s.startTimeMs, endTimeMs - durationMs));
+                startTimers(s);
+              } else {
+                // Expired locally — wait for server confirmation on next load
+                const done: MiningSession = { ...s, status: 'ready_to_claim' };
+                setSession(done);
+                await AsyncStorage.setItem(cacheKey, JSON.stringify(done));
+              }
             }
-          }
+          } catch { /* corrupt cache — ignore */ }
         }
       }
     } catch (e) {
@@ -198,16 +227,22 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  /**
+   * Start countdown and SHIB animation timers.
+   * Both intervals derive time from endTimeMs — survives any re-render or re-attach.
+   */
   function startTimers(s: MiningSession) {
     clearAllTimers();
 
-    const startTime = safe(s.startTime, Date.now());
+    const endTimeMs = safe(s.endTimeMs, Date.now() + s.durationMs);
+    const startTimeMs = safe(s.startTimeMs, endTimeMs - s.durationMs);
     const durationMs = safe(s.durationMs, 3600000);
 
-    // ── Countdown timer (1 s tick) ────────────────────────────────────────────
+    // ── 1-second countdown ─────────────────────────────────────────────────
     intervalRef.current = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      const remaining = Math.max(0, durationMs - elapsed);
+      // Always compute from endTimeMs — consistent across logout/login/device switches
+      const remaining = Math.max(0, endTimeMs - Date.now());
+      const elapsed = Math.min(Date.now() - startTimeMs, durationMs);
       setTimeRemaining(remaining);
       setElapsedMs(elapsed);
 
@@ -222,12 +257,11 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       }
     }, 1000);
 
-    // ── Live SHIB balance animation (100 ms tick) ─────────────────────────────
-    // Reads activeBoosterRef and miningRateRef on every tick — no stale closure.
+    // ── 100ms SHIB balance animation ───────────────────────────────────────
+    // Reads live refs so that booster changes appear instantly without timer restart
     shibIntervalRef.current = setInterval(() => {
-      const elapsed = Math.min(Date.now() - startTime, durationMs);
+      const elapsed = Math.min(Math.max(0, Date.now() - startTimeMs), durationMs);
 
-      // Use live booster multiplier if still valid; otherwise fall back to session multiplier
       const booster = activeBoosterRef.current;
       const effectiveMultiplier =
         booster && booster.expiresAt > Date.now()
@@ -235,37 +269,40 @@ export function MiningProvider({ children }: { children: ReactNode }) {
           : safe(s.multiplier, 1);
 
       const rate = safe(miningRateRef.current, 0.01736) * effectiveMultiplier;
-      const accumulated = rate * (safe(elapsed, 0) / 1000);
-      setDisplayedShibBalance(safe(accumulated, 0));
+      setDisplayedShibBalance(safe(rate * (elapsed / 1000), 0));
     }, 100);
   }
 
-  // ── Public actions ────────────────────────────────────────────────────────
+  // ── Public actions ─────────────────────────────────────────────────────────
 
   async function startMining(): Promise<{ success: boolean; error?: string }> {
     if (!pbId) return { success: false, error: 'Account not ready. Please wait.' };
 
     const booster = activeBoosterRef.current;
-    const multiplier =
-      booster && booster.expiresAt > Date.now() ? safe(booster.multiplier, 1) : 1;
+    const multiplier = booster && booster.expiresAt > Date.now() ? safe(booster.multiplier, 1) : 1;
 
     try {
       const res = await api.startMining({ pbId, multiplier });
       if (res?.miningRatePerSec) setMiningRatePerSec(safe(res.miningRatePerSec, 0.01736));
       await refreshBalance();
 
-      const startTime = toMs(res.startTime);
+      const durationMs = safe(res.durationMs, 3600000);
+      // Use server-provided explicit timestamps — no string parsing
+      const endTimeMs = resolveEndMs(res.endTimeMs, res.startTimeMs, durationMs);
+      const startTimeMs = resolveStartMs(res.startTimeMs, res.endTimeMs, durationMs);
+
       const newSession: MiningSession = {
         pbSessionId: res.id,
-        startTime,
-        durationMs: safe(res.durationMs, 3600000),
+        startTimeMs,
+        endTimeMs,
+        durationMs,
         multiplier,
         status: 'mining',
         expectedReward: safe(res.expectedReward, 0),
       };
 
       setSession(newSession);
-      setTimeRemaining(safe(res.durationMs, 3600000));
+      setTimeRemaining(Math.max(0, endTimeMs - Date.now()));
       setElapsedMs(0);
       setDisplayedShibBalance(0);
       if (cacheKey) await AsyncStorage.setItem(cacheKey, JSON.stringify(newSession));
@@ -285,7 +322,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     isClaimingRef.current = true;
     setIsClaiming(true);
 
-    // Optimistically clear everything immediately — no phantom Claim button
+    // Optimistically wipe everything immediately — no phantom Claim button
     clearAllTimers();
     setTimeRemaining(0);
     setElapsedMs(0);
@@ -311,10 +348,9 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     try {
       const res = await api.activateBooster({ pbId, multiplier });
       if (res?.success) {
-        // refreshBalance updates pbUser → the useEffect([pbUser]) fires → activeBooster updates
-        // The ref is also updated immediately so the shibInterval picks it up on the next 100ms tick
         const expiresAt = parseBoosterTs(res.expiresAt);
         const newBooster = { multiplier: safe(res.multiplier, multiplier), expiresAt };
+        // Update state AND ref simultaneously — shibInterval picks it up on next 100ms tick
         setActiveBooster(newBooster);
         activeBoosterRef.current = newBooster;
         await refreshBalance();
@@ -327,16 +363,14 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  // ── Derived values ────────────────────────────────────────────────────────
+  // ── Derived values ─────────────────────────────────────────────────────────
 
   const status: MiningStatus = session?.status ?? 'idle';
 
   const progress =
     session?.status === 'mining'
       ? Math.min(1, safe(elapsedMs) / safe(session.durationMs, 1))
-      : session?.status === 'ready_to_claim'
-        ? 1
-        : 0;
+      : session?.status === 'ready_to_claim' ? 1 : 0;
 
   const shibReward = session
     ? safe(miningRatePerSec) * safe(session.multiplier, 1) * (safe(session.durationMs) / 1000)

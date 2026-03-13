@@ -602,11 +602,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (session.code)
         return res.status(400).json({ error: session.message });
 
+      const durationMs = dur * 60 * 1000;
+      // Parse start_time stored by this server (no-T, no-Z format)
+      const rawStart = (session.start_time || "").replace(" ", "T");
+      const parsedStart = rawStart.endsWith("Z") ? rawStart : rawStart + "Z";
+      const startTimeMs = new Date(parsedStart).getTime();
+      const endTimeMs = startTimeMs + durationMs;
+
       res.json({
         id: session.id,
         pbId,
         startTime: session.start_time,
-        durationMs: dur * 60 * 1000,
+        startTimeMs,   // explicit Unix-ms — no client-side string parsing needed
+        endTimeMs,     // explicit deadline — remaining = endTimeMs - Date.now()
+        durationMs,
         multiplier: activeMultiplier,
         expectedReward,
         miningRatePerSec: rate,
@@ -634,14 +643,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         const settings = await fetchSettings();
         const dur = (settings?.mining_duration_minutes || 60) * 60 * 1000;
-        const startTime = new Date(s.start_time.replace(" ", "T") + "Z").getTime();
-        const elapsed = Date.now() - startTime;
+
+        // Robust start_time parsing — handle both "2024-03-13 10:30:00.123" and "2024-03-13T10:30:00.123Z"
+        const rawStart = (s.start_time || "").replace(" ", "T");
+        const parsedStart = rawStart.endsWith("Z") ? rawStart : rawStart + "Z";
+        const startTimeMs = new Date(parsedStart).getTime();
+        const endTimeMs = startTimeMs + dur;
+        const elapsed = Date.now() - startTimeMs;
         const status = elapsed >= dur ? "ready_to_claim" : "mining";
 
         res.json({
           session: {
             id: s.id,
-            startTime: s.start_time,
+            startTime: s.start_time,   // kept for legacy compatibility
+            startTimeMs,               // explicit Unix-ms start timestamp
+            endTimeMs,                 // explicit Unix-ms deadline: remaining = endTimeMs - Date.now()
             durationMs: dur,
             status,
             multiplier: s.booster_multiplier || 1,

@@ -86,6 +86,7 @@ export const api = {
       multiplier: number;
       expiresAt: string;
       newPowerTokens: number;
+      error?: string;
     }>('POST', '/api/app/boosters/activate', payload),
 
   getActiveBooster: (pbId: string) =>
@@ -208,6 +209,8 @@ export interface MiningSessionResponse {
   id: string;
   pbId: string;
   startTime: string;
+  startTimeMs: number;   // Unix ms — no client string parsing needed
+  endTimeMs: number;     // Unix ms deadline: remaining = endTimeMs - Date.now()
   durationMs: number;
   multiplier: number;
   expectedReward: number;
@@ -220,7 +223,10 @@ export interface MiningSessionResponse {
 export interface ActiveSession {
   id: string;
   startTime: string;
+  startTimeMs: number;   // Unix ms
+  endTimeMs: number;     // Unix ms deadline
   durationMs: number;
+  multiplier: number;
   status: 'mining' | 'ready_to_claim';
 }
 
