@@ -101,6 +101,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shibIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isClaimingRef = useRef(false);
   const sessionRef = useRef<MiningSession | null>(null);
 
@@ -148,14 +149,36 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   // ── Load session on sign-in ───────────────────────────────────────────────
   useEffect(() => {
     if (uid) loadSession();
-    return () => clearAllTimers();
+    return () => { clearAllTimers(); clearSyncTimer(); };
   }, [uid, pbId]);
+
+  // ── Real-time server sync — polls every 30 s while a session is active ────
+  // Keeps the UI in sync with the server without requiring logout/login.
+  // Runs whenever session.status changes (mining → idle, etc.).
+  useEffect(() => {
+    const currentSession = sessionRef.current;
+    if (currentSession && (currentSession.status === 'mining' || currentSession.status === 'ready_to_claim')) {
+      clearSyncTimer();
+      syncIntervalRef.current = setInterval(() => {
+        if (!isClaimingRef.current && pbIdRef.current) {
+          loadSession();
+        }
+      }, 30000);
+    } else {
+      clearSyncTimer();
+    }
+    return () => clearSyncTimer();
+  }, [session?.status]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   function clearAllTimers() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     if (shibIntervalRef.current) { clearInterval(shibIntervalRef.current); shibIntervalRef.current = null; }
+  }
+
+  function clearSyncTimer() {
+    if (syncIntervalRef.current) { clearInterval(syncIntervalRef.current); syncIntervalRef.current = null; }
   }
 
   async function loadSession() {
