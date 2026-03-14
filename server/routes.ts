@@ -499,6 +499,99 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Boosters: Activate + Start Mining (atomic) ───────────────────────────
+  // Combines booster activation and mining start into one round-trip.
+  // Deducts boosterCost + miningEntryCost, sets booster fields, creates session.
+  app.post("/api/app/boosters/activate-and-mine", async (req: Request, res: Response) => {
+    try {
+      const { pbId, multiplier } = req.body;
+      if (!pbId || !multiplier)
+        return res.status(400).json({ error: "pbId and multiplier required" });
+
+      const [user, settings] = await Promise.all([
+        pbGet(`/api/collections/users/records/${pbId}`),
+        fetchSettings(),
+      ]);
+
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      if (!settings) return res.status(503).json({ error: "Settings unavailable" });
+
+      // Booster cost
+      const costKey = `boost_${multiplier}x_cost`;
+      const boosterCost = settings[costKey];
+      if (boosterCost === undefined)
+        return res.status(400).json({ error: "Invalid multiplier" });
+
+      // Mining entry cost
+      const miningCost = settings.power_token_per_click || 24;
+      const totalCost = boosterCost + miningCost;
+
+      const currentPT = user.power_tokens || 0;
+      if (currentPT < boosterCost)
+        return res.status(400).json({ error: `Not enough Power Tokens for booster (need ${boosterCost} PT)`, code: "INSUFFICIENT_PT" });
+      if (currentPT < totalCost)
+        return res.status(400).json({ error: `Not enough Power Tokens (need ${totalCost} PT: ${boosterCost} PT booster + ${miningCost} PT mining)`, code: "INSUFFICIENT_PT" });
+
+      const boosterExpiresAt = (Date.now() + 3600000).toString();
+
+      // 1. Deduct total cost AND set booster in one PATCH
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens: currentPT - totalCost,
+        active_booster_multiplier: multiplier,
+        booster_expires: boosterExpiresAt,
+      });
+
+      // 2. Expire any existing unclaimed sessions
+      const existing = await pbGet(
+        `/api/collections/mining_sessions/records?filter=${encodeURIComponent(`user="${pbId}" && claimed_amount=0`)}&perPage=50`,
+      );
+      for (const s of existing.items || []) {
+        await pbPatch(`/api/collections/mining_sessions/records/${s.id}`, { claimed_amount: -1 });
+      }
+
+      // 3. Create new mining session
+      const rate = settings.mining_rate_per_sec || 0.01736;
+      const dur = settings.mining_duration_minutes || 60;
+      const expectedReward = rate * dur * 60 * multiplier;
+
+      const session = await pbPost("/api/collections/mining_sessions/records", {
+        user: pbId,
+        start_time: new Date().toISOString().replace("T", " ").replace("Z", ""),
+        claimed_amount: 0,
+        is_verified: false,
+        ip_address: String(req.ip || req.socket?.remoteAddress || ""),
+        booster_multiplier: multiplier,
+      });
+
+      if (session.code)
+        return res.status(400).json({ error: session.message });
+
+      const durationMs = dur * 60 * 1000;
+      const rawStart = (session.start_time || "").replace(" ", "T");
+      const parsedStart = rawStart.endsWith("Z") ? rawStart : rawStart + "Z";
+      const startTimeMs = new Date(parsedStart).getTime();
+      const endTimeMs = startTimeMs + durationMs;
+
+      res.json({
+        id: session.id,
+        pbId,
+        startTimeMs,
+        endTimeMs,
+        durationMs,
+        multiplier,
+        expectedReward,
+        miningRatePerSec: rate,
+        boosterExpiresAt,
+        ptDeducted: totalCost,
+        newPowerTokens: currentPT - totalCost,
+        status: "mining",
+      });
+    } catch (e: any) {
+      console.error("[/api/app/boosters/activate-and-mine]", e.message);
+      res.status(500).json({ error: "Failed to activate booster and start mining" });
+    }
+  });
+
   // ── Boosters: Get active ──────────────────────────────────────────────────
   app.get(
     "/api/app/boosters/active/:pbId",

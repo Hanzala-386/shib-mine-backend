@@ -64,7 +64,7 @@ export default function HomeScreen() {
   const {
     status, timeRemaining, progress, startMining, claimReward,
     shibReward, session, miningRatePerSec, displayedShibBalance,
-    miningEntryCost, activeBooster, activateBooster, isClaiming,
+    miningEntryCost, activeBooster, activateBooster, startMiningWithBooster, isClaiming,
   } = useMining();
   const { settings } = useAdmin();
 
@@ -135,13 +135,13 @@ export default function HomeScreen() {
 
   // ── Action handlers ───────────────────────────────────────────────────────
 
-  // Shows an interstitial ad then starts mining — shared by both "Start Mining" and booster flow
-  async function triggerMiningStart() {
+  // Shows an interstitial ad then runs the given mining action
+  async function withAd(mineAction: () => Promise<{ success: boolean; error?: string }>) {
     setShowAdLoader(true);
     await adService.showUnityInterstitial(
       async () => {
         setShowAdLoader(false);
-        const result = await startMining();
+        const result = await mineAction();
         if (result.success) {
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } else {
@@ -162,7 +162,7 @@ export default function HomeScreen() {
       return;
     }
     setShowLowPtWarning(false);
-    await triggerMiningStart();
+    await withAd(startMining);
   }
 
   async function handleClaim() {
@@ -175,8 +175,9 @@ export default function HomeScreen() {
   }
 
   // ── Booster handler ───────────────────────────────────────────────────────
-  // When idle:  clicking a booster activates it AND immediately starts mining.
-  // When mining: clicking a booster only upgrades the current multiplier.
+  // When idle:  clicking a booster uses the ATOMIC activate-and-mine endpoint
+  //             (one round-trip: deduct both costs, set booster, create session).
+  // When mining: clicking a booster only upgrades the multiplier (no restart).
   async function handleBooster(b: typeof BOOSTERS[0]) {
     const isMining = status === 'mining';
     const isActive = !!(activeBooster && activeBooster.multiplier === b.multiplier && activeBooster.expiresAt > now);
@@ -206,7 +207,6 @@ export default function HomeScreen() {
     let actionLabel: string;
 
     if (isMining) {
-      const timeLeft = isActive ? Math.max(0, activeBooster!.expiresAt - now) : 0;
       if (isActive) {
         msg = `Reset your ${b.label} booster timer to +1 hour?\n\nCost: ${b.cost} PT`;
       } else if (anyActive) {
@@ -216,7 +216,7 @@ export default function HomeScreen() {
       }
       actionLabel = 'Activate';
     } else {
-      // Idle — booster will auto-start mining
+      // Idle — booster will atomically start mining
       if (anyActive && !isActive) {
         msg = `Replace current ${activeBooster!.multiplier}x booster with ${b.label} and start 1 hour of mining?\n\nTotal cost: ${b.cost} PT + ${miningEntryCost} PT = ${totalCost} PT`;
       } else if (isActive) {
@@ -232,18 +232,18 @@ export default function HomeScreen() {
       {
         text: actionLabel,
         onPress: async () => {
-          // Step 1: Activate booster
-          const res = await activateBooster(b.multiplier);
-          if (!res.success) {
-            Alert.alert('Error', res.error || 'Failed to activate booster.');
-            return;
-          }
-          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-          // Step 2: If idle → auto-start mining immediately (no separate button press needed)
-          if (!isMining) {
+          if (isMining) {
+            // Already mining — just upgrade multiplier, no session restart
+            const res = await activateBooster(b.multiplier);
+            if (!res.success) {
+              Alert.alert('Error', res.error || 'Failed to activate booster.');
+              return;
+            }
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          } else {
+            // Idle — atomic: activate booster + create session in one request
             setShowLowPtWarning(false);
-            await triggerMiningStart();
+            await withAd(() => startMiningWithBooster(b.multiplier));
           }
         },
       },

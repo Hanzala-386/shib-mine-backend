@@ -89,6 +89,23 @@ export const api = {
       error?: string;
     }>('POST', '/api/app/boosters/activate', payload),
 
+  // Atomic: deducts booster + mining cost, sets booster, creates session — one round-trip
+  activateAndMine: (payload: { pbId: string; multiplier: number }) =>
+    request<{
+      id: string;
+      pbId: string;
+      startTimeMs: number;
+      endTimeMs: number;
+      durationMs: number;
+      multiplier: number;
+      expectedReward: number;
+      miningRatePerSec: number;
+      boosterExpiresAt: string;
+      ptDeducted: number;
+      newPowerTokens: number;
+      status: string;
+    }>('POST', '/api/app/boosters/activate-and-mine', payload),
+
   getActiveBooster: (pbId: string) =>
     request<{ multiplier: number; expiresAt: string | null }>(
       'GET',

@@ -36,6 +36,7 @@ interface MiningContextValue {
   miningEntryCost: number;
   activeBooster: { multiplier: number; expiresAt: number } | null;
   activateBooster: (multiplier: number) => Promise<{ success: boolean; error?: string }>;
+  startMiningWithBooster: (multiplier: number) => Promise<{ success: boolean; error?: string }>;
 }
 
 const MiningContext = createContext<MiningContextValue | null>(null);
@@ -374,6 +375,55 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // ── Atomic: activate booster + start mining in ONE server round-trip ───────
+  // Eliminates the race condition between booster activation and mine start.
+  async function startMiningWithBooster(multiplier: number): Promise<{ success: boolean; error?: string }> {
+    const currentPbId = pbIdRef.current;
+    const currentCacheKey = cacheKeyRef.current;
+    if (!currentPbId) return { success: false, error: 'Account not ready. Please wait.' };
+
+    try {
+      const res = await api.activateAndMine({ pbId: currentPbId, multiplier });
+
+      if (res?.miningRatePerSec) setMiningRatePerSec(safe(res.miningRatePerSec, 0.01736));
+
+      // Update booster state immediately — no need to wait for refreshBalance
+      const expiresAt = parseBoosterTs(res.boosterExpiresAt);
+      const newBooster = { multiplier: safe(res.multiplier, multiplier), expiresAt };
+      setActiveBooster(newBooster);
+      activeBoosterRef.current = newBooster;
+
+      const durationMs = safe(res.durationMs, 3600000);
+      const endTimeMs = resolveEndMs(res.endTimeMs, res.startTimeMs, durationMs);
+      const startTimeMs = resolveStartMs(res.startTimeMs, res.endTimeMs, durationMs);
+
+      const newSession: MiningSession = {
+        pbSessionId: res.id,
+        startTimeMs,
+        endTimeMs,
+        durationMs,
+        multiplier,
+        status: 'mining',
+        expectedReward: safe(res.expectedReward, 0),
+      };
+
+      setSession(newSession);
+      setTimeRemaining(Math.max(0, endTimeMs - Date.now()));
+      setElapsedMs(0);
+      setDisplayedShibBalance(0);
+      if (currentCacheKey) await storage.setItem(currentCacheKey, JSON.stringify(newSession));
+      startTimers(newSession);
+
+      // Refresh balance in the background — doesn't block the UI update
+      refreshBalance().catch(() => {});
+
+      return { success: true };
+    } catch (e: any) {
+      console.warn('[Mining] startMiningWithBooster failed', e);
+      return { success: false, error: e?.message || 'Failed to start mining with booster.' };
+    }
+  }
+
   // ── Derived values ─────────────────────────────────────────────────────────
 
   const status: MiningStatus = session?.status ?? 'idle';
@@ -394,7 +444,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     miningRatePerSec, setMiningRatePerSec,
     durationMinutes, setDurationMinutes,
     miningEntryCost,
-    activeBooster, activateBooster,
+    activeBooster, activateBooster, startMiningWithBooster,
   }), [
     session, status, timeRemaining, elapsedMs, progress,
     displayedShibBalance, isClaiming, shibReward,
