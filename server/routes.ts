@@ -636,7 +636,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const { pbId } = req.params;
         const r = await pbGet(
-          `/api/collections/mining_sessions/records?filter=user="${pbId}" && claimed_amount=0&sort=-start_time&perPage=1`,
+          `/api/collections/mining_sessions/records?filter=${encodeURIComponent(`user="${pbId}" && claimed_amount=0`)}&sort=-start_time&perPage=1`,
         );
         const s = r.items?.[0];
         if (!s) return res.json({ session: null });
@@ -773,7 +773,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const { pbId } = req.params;
         const settings = await fetchSettings();
         const r = await pbGet(
-          `/api/collections/withdrawals/records?filter=user="${pbId}" && status="completed"&perPage=200`,
+          `/api/collections/withdrawals/records?filter=${encodeURIComponent(`user="${pbId}" && status="completed"`)}&perPage=200`,
         );
         const count = r.totalItems || 0;
         let minAmount: number;
@@ -804,7 +804,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Get withdrawal tier minimum
       const tierRes = await pbGet(
-        `/api/collections/withdrawals/records?filter=user="${pbId}" && status="completed"&perPage=200`,
+        `/api/collections/withdrawals/records?filter=${encodeURIComponent(`user="${pbId}" && status="completed"`)}&perPage=200`,
       );
       const settings = await fetchSettings();
       const count = tierRes.totalItems || 0;

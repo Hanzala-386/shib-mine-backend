@@ -103,17 +103,22 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   const isClaimingRef = useRef(false);
   const sessionRef = useRef<MiningSession | null>(null);
 
-  // Live refs — intervals always read the freshest value without stale closures
+  // Live refs — updated on every render so async functions never see stale closures
   const miningRateRef = useRef(miningRatePerSec);
   const activeBoosterRef = useRef(activeBooster);
+  const pbIdRef = useRef<string | null>(null);
+  const cacheKeyRef = useRef<string | null>(null);
 
   const uid = user?.uid ?? null;
   const pbId = pbUser?.pbId ?? null;
-  const cacheKey = uid ? `shib_mining_v2_${uid}` : null; // v2 = endTimeMs-based schema
+  const cacheKey = uid ? `shib_mining_v2_${uid}` : null;
 
-  useEffect(() => { miningRateRef.current = miningRatePerSec; }, [miningRatePerSec]);
-  useEffect(() => { activeBoosterRef.current = activeBooster; }, [activeBooster]);
-  useEffect(() => { sessionRef.current = session; }, [session]);
+  // Update live refs synchronously on every render — no useEffect needed
+  pbIdRef.current = pbId;
+  cacheKeyRef.current = cacheKey;
+  miningRateRef.current = miningRatePerSec;
+  activeBoosterRef.current = activeBooster;
+  sessionRef.current = session;
 
   // ── Reactive booster: re-derive from pbUser on every refreshBalance() call ──
   useEffect(() => {
@@ -153,14 +158,16 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   }
 
   async function loadSession() {
+    // Snapshot refs at call time — safe across all awaits in this function
+    const currentPbId = pbIdRef.current;
+    const currentCacheKey = cacheKeyRef.current;
     try {
-      if (pbId) {
-        const res = await api.getActiveMining(pbId);
+      if (currentPbId) {
+        const res = await api.getActiveMining(currentPbId);
         if (res?.session) {
           const s = res.session;
           const durationMs = safe(s.durationMs, 3600000);
 
-          // Use explicit Unix-ms fields from server — no string parsing
           const endTimeMs = resolveEndMs(s.endTimeMs, s.startTimeMs, durationMs);
           const startTimeMs = resolveStartMs(s.startTimeMs, s.endTimeMs, durationMs);
 
@@ -174,32 +181,31 @@ export function MiningProvider({ children }: { children: ReactNode }) {
             durationMs,
             multiplier: safe(s.multiplier, 1),
             status,
-            expectedReward: safe(miningRatePerSec * (durationMs / 1000), 0),
+            expectedReward: safe(miningRateRef.current * (durationMs / 1000), 0),
           };
 
           setSession(local);
-          if (cacheKey) await storage.setItem(cacheKey, JSON.stringify(local));
+          if (currentCacheKey) await storage.setItem(currentCacheKey, JSON.stringify(local));
 
           if (status === 'mining') {
             setTimeRemaining(Math.max(0, remaining));
             setElapsedMs(Math.max(0, Date.now() - startTimeMs));
             startTimers(local);
           } else {
-            // Already done — make sure timers are cleared and state is consistent
             clearAllTimers();
             setTimeRemaining(0);
           }
         } else {
           // Server says no active session — clear everything
-          if (cacheKey) await storage.removeItem(cacheKey);
+          if (currentCacheKey) await storage.removeItem(currentCacheKey);
           setSession(null);
         }
         return;
       }
 
       // No pbId yet — try local cache (only for 'mining', never for 'ready_to_claim')
-      if (cacheKey) {
-        const raw = await storage.getItem(cacheKey);
+      if (currentCacheKey) {
+        const raw = await storage.getItem(currentCacheKey);
         if (raw) {
           try {
             const s: MiningSession = JSON.parse(raw);
@@ -213,10 +219,9 @@ export function MiningProvider({ children }: { children: ReactNode }) {
                 setElapsedMs(Date.now() - safe(s.startTimeMs, endTimeMs - durationMs));
                 startTimers(s);
               } else {
-                // Expired locally — wait for server confirmation on next load
                 const done: MiningSession = { ...s, status: 'ready_to_claim' };
                 setSession(done);
-                await storage.setItem(cacheKey, JSON.stringify(done));
+                await storage.setItem(currentCacheKey, JSON.stringify(done));
               }
             }
           } catch { /* corrupt cache — ignore */ }
@@ -251,7 +256,8 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         setSession((prev) => {
           if (!prev) return null;
           const done: MiningSession = { ...prev, status: 'ready_to_claim' };
-          if (cacheKey) storage.setItem(cacheKey, JSON.stringify(done));
+          const key = cacheKeyRef.current;
+          if (key) storage.setItem(key, JSON.stringify(done));
           return done;
         });
       }
@@ -276,18 +282,20 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   // ── Public actions ─────────────────────────────────────────────────────────
 
   async function startMining(): Promise<{ success: boolean; error?: string }> {
-    if (!pbId) return { success: false, error: 'Account not ready. Please wait.' };
+    // Read live ref — never stale regardless of when useMemo last ran
+    const currentPbId = pbIdRef.current;
+    const currentCacheKey = cacheKeyRef.current;
+    if (!currentPbId) return { success: false, error: 'Account not ready. Please wait.' };
 
     const booster = activeBoosterRef.current;
     const multiplier = booster && booster.expiresAt > Date.now() ? safe(booster.multiplier, 1) : 1;
 
     try {
-      const res = await api.startMining({ pbId, multiplier });
+      const res = await api.startMining({ pbId: currentPbId, multiplier });
       if (res?.miningRatePerSec) setMiningRatePerSec(safe(res.miningRatePerSec, 0.01736));
       await refreshBalance();
 
       const durationMs = safe(res.durationMs, 3600000);
-      // Use server-provided explicit timestamps — no string parsing
       const endTimeMs = resolveEndMs(res.endTimeMs, res.startTimeMs, durationMs);
       const startTimeMs = resolveStartMs(res.startTimeMs, res.endTimeMs, durationMs);
 
@@ -305,7 +313,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       setTimeRemaining(Math.max(0, endTimeMs - Date.now()));
       setElapsedMs(0);
       setDisplayedShibBalance(0);
-      if (cacheKey) await storage.setItem(cacheKey, JSON.stringify(newSession));
+      if (currentCacheKey) await storage.setItem(currentCacheKey, JSON.stringify(newSession));
       startTimers(newSession);
       return { success: true };
     } catch (e: any) {
@@ -317,21 +325,23 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   async function claimReward(): Promise<number> {
     if (isClaimingRef.current) return 0;
     const s = sessionRef.current;
-    if (!s || s.status !== 'ready_to_claim' || !s.pbSessionId || !pbId) return 0;
+    const currentPbId = pbIdRef.current;
+    const currentCacheKey = cacheKeyRef.current;
+    if (!s || s.status !== 'ready_to_claim' || !s.pbSessionId || !currentPbId) return 0;
 
     isClaimingRef.current = true;
     setIsClaiming(true);
 
-    // Optimistically wipe everything immediately — no phantom Claim button
+    // Optimistically wipe immediately — prevents phantom Claim button
     clearAllTimers();
     setTimeRemaining(0);
     setElapsedMs(0);
     setDisplayedShibBalance(0);
     setSession(null);
-    if (cacheKey) await storage.removeItem(cacheKey);
+    if (currentCacheKey) await storage.removeItem(currentCacheKey);
 
     try {
-      const res = await api.claimMining({ sessionId: s.pbSessionId, pbId });
+      const res = await api.claimMining({ sessionId: s.pbSessionId, pbId: currentPbId });
       await refreshBalance();
       return safe(res?.reward, 0);
     } catch (e: any) {
@@ -344,9 +354,10 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   }
 
   async function activateBooster(multiplier: number): Promise<{ success: boolean; error?: string }> {
-    if (!pbId) return { success: false, error: 'Account not ready. Please wait.' };
+    const currentPbId = pbIdRef.current;
+    if (!currentPbId) return { success: false, error: 'Account not ready. Please wait.' };
     try {
-      const res = await api.activateBooster({ pbId, multiplier });
+      const res = await api.activateBooster({ pbId: currentPbId, multiplier });
       if (res?.success) {
         const expiresAt = parseBoosterTs(res.expiresAt);
         const newBooster = { multiplier: safe(res.multiplier, multiplier), expiresAt };
