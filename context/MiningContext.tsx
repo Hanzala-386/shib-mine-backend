@@ -86,7 +86,7 @@ function resolveEndMs(
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export function MiningProvider({ children }: { children: ReactNode }) {
-  const { user, pbUser, refreshBalance } = useAuth();
+  const { user, pbUser, refreshBalance, optimisticUpdatePt } = useAuth();
 
   const [session, setSession] = useState<MiningSession | null>(null);
   const [timeRemaining, setTimeRemaining] = useState(0);
@@ -306,7 +306,6 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   // ── Public actions ─────────────────────────────────────────────────────────
 
   async function startMining(): Promise<{ success: boolean; error?: string }> {
-    // Read live ref — never stale regardless of when useMemo last ran
     const currentPbId = pbIdRef.current;
     const currentCacheKey = cacheKeyRef.current;
     if (!currentPbId) return { success: false, error: 'Account not ready. Please wait.' };
@@ -314,10 +313,13 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     const booster = activeBoosterRef.current;
     const multiplier = booster && booster.expiresAt > Date.now() ? safe(booster.multiplier, 1) : 1;
 
+    clearAllTimers();
+
     try {
       const res = await api.startMining({ pbId: currentPbId, multiplier });
+
+      // ── Synchronous state update — no awaits until fire-and-forget ──
       if (res?.miningRatePerSec) setMiningRatePerSec(safe(res.miningRatePerSec, 0.01736));
-      await refreshBalance();
 
       const durationMs = safe(res.durationMs, 3600000);
       const endTimeMs = resolveEndMs(res.endTimeMs, res.startTimeMs, durationMs);
@@ -333,14 +335,23 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         expectedReward: safe(res.expectedReward, 0),
       };
 
+      sessionRef.current = newSession;
       setSession(newSession);
       setTimeRemaining(Math.max(0, endTimeMs - Date.now()));
       setElapsedMs(0);
       setDisplayedShibBalance(0);
-      if (currentCacheKey) await storage.setItem(currentCacheKey, JSON.stringify(newSession));
       startTimers(newSession);
+
+      if (typeof res.newPowerTokens === 'number' && isFinite(res.newPowerTokens)) {
+        optimisticUpdatePt(res.newPowerTokens);
+      }
+
+      if (currentCacheKey) storage.setItem(currentCacheKey, JSON.stringify(newSession)).catch(() => {});
+      refreshBalance().catch(() => {});
+
       return { success: true };
     } catch (e: any) {
+      if (sessionRef.current?.status === 'mining') startTimers(sessionRef.current);
       console.warn('[Mining] startMining failed', e);
       return { success: false, error: e?.message || 'Failed to start mining.' };
     }
@@ -399,26 +410,31 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   }
 
   // ── Atomic: activate booster + start mining in ONE server round-trip ───────
-  // Eliminates the race condition between booster activation and mine start.
+  // After the API returns, every state update runs SYNCHRONOUSLY (no awaits)
+  // so the UI flips to 'mining' mode in 0 ms — no logout/login required.
   async function startMiningWithBooster(multiplier: number): Promise<{ success: boolean; error?: string }> {
     const currentPbId = pbIdRef.current;
     const currentCacheKey = cacheKeyRef.current;
     if (!currentPbId) return { success: false, error: 'Account not ready. Please wait.' };
 
+    // Kill any stale timers NOW — before the network call so nothing fires during await
+    clearAllTimers();
+
     try {
       const res = await api.activateAndMine({ pbId: currentPbId, multiplier });
 
+      // ── Everything below is SYNCHRONOUS — no awaits until fire-and-forget ──
+
+      // 1. Compute all derived values first
       if (res?.miningRatePerSec) setMiningRatePerSec(safe(res.miningRatePerSec, 0.01736));
 
-      // Update booster state immediately — no need to wait for refreshBalance
       const expiresAt = parseBoosterTs(res.boosterExpiresAt);
       const newBooster = { multiplier: safe(res.multiplier, multiplier), expiresAt };
-      setActiveBooster(newBooster);
-      activeBoosterRef.current = newBooster;
 
       const durationMs = safe(res.durationMs, 3600000);
       const endTimeMs = resolveEndMs(res.endTimeMs, res.startTimeMs, durationMs);
       const startTimeMs = resolveStartMs(res.startTimeMs, res.endTimeMs, durationMs);
+      const remaining = Math.max(0, endTimeMs - Date.now());
 
       const newSession: MiningSession = {
         pbSessionId: res.id,
@@ -430,18 +446,33 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         expectedReward: safe(res.expectedReward, 0),
       };
 
+      // 2. Update all refs immediately (BEFORE setSession so refs are ready for timers)
+      activeBoosterRef.current = newBooster;
+      sessionRef.current = newSession;
+
+      // 3. Batch all state updates — React will flush these together
+      setActiveBooster(newBooster);
       setSession(newSession);
-      setTimeRemaining(Math.max(0, endTimeMs - Date.now()));
+      setTimeRemaining(remaining);
       setElapsedMs(0);
       setDisplayedShibBalance(0);
-      if (currentCacheKey) await storage.setItem(currentCacheKey, JSON.stringify(newSession));
+
+      // 4. Start timers synchronously — no await before this line
       startTimers(newSession);
 
-      // Refresh balance in the background — doesn't block the UI update
+      // 5. Immediately update PT display — no waiting for server round-trip
+      if (typeof res.newPowerTokens === 'number' && isFinite(res.newPowerTokens)) {
+        optimisticUpdatePt(res.newPowerTokens);
+      }
+
+      // 6. Fire-and-forget side effects — must NOT block state updates above
+      if (currentCacheKey) storage.setItem(currentCacheKey, JSON.stringify(newSession)).catch(() => {});
       refreshBalance().catch(() => {});
 
       return { success: true };
     } catch (e: any) {
+      // Restart timers in case we cleared them above but the API failed
+      if (sessionRef.current?.status === 'mining') startTimers(sessionRef.current);
       console.warn('[Mining] startMiningWithBooster failed', e);
       return { success: false, error: e?.message || 'Failed to start mining with booster.' };
     }

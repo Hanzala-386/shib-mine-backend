@@ -41,6 +41,7 @@ interface AuthContextValue {
   forgotPassword: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
   refreshBalance: () => Promise<void>;
+  optimisticUpdatePt: (newPt: number) => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -261,6 +262,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {}
   }
 
+  // Immediately updates the PT balance in state without a network round-trip.
+  // Used by MiningContext after a successful startMiningWithBooster call so the
+  // UI reflects the deducted cost in 0 ms — refreshBalance() reconciles later.
+  function optimisticUpdatePt(newPt: number) {
+    setPbUser((prev) => {
+      if (!prev) return prev;
+      return { ...prev, powerTokens: typeof newPt === 'number' && isFinite(newPt) ? newPt : prev.powerTokens };
+    });
+  }
+
   const isAdmin = !!(firebaseUser?.email?.toLowerCase() === ADMIN_EMAIL);
 
   const value = useMemo<AuthContextValue>(() => ({
@@ -277,6 +288,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     forgotPassword,
     refreshUser,
     refreshBalance,
+    optimisticUpdatePt,
   }), [user, firebaseUser, isLoading, isAdmin, pbUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

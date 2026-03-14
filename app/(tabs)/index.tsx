@@ -78,10 +78,15 @@ export default function HomeScreen() {
     return () => clearInterval(t);
   }, []);
 
-  // Safe balances — never NaN
-  const safePT = isFinite(powerTokens) ? powerTokens : 0;
-  const safeShib = isFinite(shibBalance) ? shibBalance : 0;
-  const safeDisplayed = isFinite(displayedShibBalance) ? displayedShibBalance : 0;
+  // ── Zero-NaN guards — all derived values default safely ──────────────────
+  // Demanded: check user + ensure nothing is undefined before any calculation
+  const safePT   = (typeof powerTokens === 'number' && isFinite(powerTokens)) ? powerTokens : 0;
+  const safeShib = (typeof shibBalance === 'number' && isFinite(shibBalance)) ? shibBalance : 0;
+  const safeDisplayed = (typeof displayedShibBalance === 'number' && isFinite(displayedShibBalance)) ? displayedShibBalance : 0;
+  const safeMultiplier = (session && typeof session.multiplier === 'number' && isFinite(session.multiplier)) ? session.multiplier : 1;
+  const safeProgress   = (typeof progress === 'number' && isFinite(progress)) ? Math.min(1, Math.max(0, progress)) : 0;
+  const safeShibReward = (typeof shibReward === 'number' && isFinite(shibReward)) ? shibReward : 0;
+  const safeTimeRemaining = (typeof timeRemaining === 'number' && isFinite(timeRemaining)) ? Math.max(0, timeRemaining) : 0;
 
   const liveBalance = status === 'mining' ? safeShib + safeDisplayed : safeShib;
 
@@ -337,7 +342,7 @@ export default function HomeScreen() {
                 color={status === 'ready_to_claim' ? '#000' : Colors.gold}
               />
               {status === 'mining' && (
-                <Text style={styles.timerText}>{formatTime(timeRemaining)}</Text>
+                <Text style={styles.timerText}>{formatTime(safeTimeRemaining)}</Text>
               )}
               {status === 'idle' && (
                 <Text style={styles.coreLabelMuted}>IDLE</Text>
@@ -353,10 +358,10 @@ export default function HomeScreen() {
         {status === 'mining' && (
           <Animated.View entering={FadeInDown.delay(50).springify()} style={styles.progressSection}>
             <View style={styles.progressBar}>
-              <View style={[styles.progressFill, { width: `${Math.min(100, Math.round(progress * 100))}%` as any }]} />
+              <View style={[styles.progressFill, { width: `${Math.round(safeProgress * 100)}%` as any }]} />
             </View>
             <Text style={styles.progressLabel}>
-              {Math.round(progress * 100)}% · {session?.multiplier ?? 1}x speed · ~{formatShib(isFinite(shibReward) ? shibReward : 0)} SHIB
+              {Math.round(safeProgress * 100)}% · {safeMultiplier}x speed · ~{formatShib(safeShibReward)} SHIB
             </Text>
           </Animated.View>
         )}
@@ -400,7 +405,7 @@ export default function HomeScreen() {
               </LinearGradient>
             </Pressable>
             <Text style={styles.rewardPreview}>
-              Earns ~{formatShib(isFinite(shibReward) ? shibReward : 0)} SHIB in {settings?.miningDurationMinutes ?? 60} min
+              Earns ~{formatShib(safeShibReward)} SHIB in {settings?.miningDurationMinutes ?? 60} min
             </Text>
           </Animated.View>
         )}
@@ -422,7 +427,7 @@ export default function HomeScreen() {
                   ? <ActivityIndicator size="small" color="#000" />
                   : <Ionicons name="checkmark-circle" size={22} color="#000" />}
                 <Text style={styles.actionText}>
-                  {isClaiming ? 'Claiming…' : `Claim ~${formatShib(isFinite(shibReward) ? shibReward : 0)} SHIB`}
+                  {isClaiming ? 'Claiming…' : `Claim ~${formatShib(safeShibReward)} SHIB`}
                 </Text>
               </LinearGradient>
             </Pressable>
