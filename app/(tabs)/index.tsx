@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, Alert, Platform,
   Animated as RNAnimated, ActivityIndicator, Modal,
@@ -11,7 +11,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, {
   useSharedValue, useAnimatedStyle, withRepeat, withTiming,
-  withSequence, Easing, FadeInDown, FadeIn,
+  withSequence, Easing, FadeInDown,
 } from 'react-native-reanimated';
 import { useAuth } from '@/context/AuthContext';
 import { useWallet } from '@/context/WalletContext';
@@ -61,11 +61,204 @@ const BOOSTER_COLORS: Record<string, string> = {
   '10x': '#F4C430',
 };
 
+// ── Booster Modal — defined OUTSIDE HomeScreen so it never causes a remount ───
+
+interface BoosterItem {
+  label: string;
+  multiplier: number;
+  cost: number;
+  color: string;
+}
+
+interface BoosterModalProps {
+  booster: BoosterItem | null;
+  onClose: () => void;
+  onConfirm: (b: BoosterItem) => void;
+  isMining: boolean;
+  miningEntryCost: number;
+  safePT: number;
+  activeBooster: { multiplier: number; expiresAt: number } | null;
+  now: number;
+}
+
+const BoosterModal = memo(function BoosterModal({
+  booster,
+  onClose,
+  onConfirm,
+  isMining,
+  miningEntryCost,
+  safePT,
+  activeBooster,
+  now,
+}: BoosterModalProps) {
+  const router = useRouter();
+
+  // Fade value for the backdrop overlay
+  const backdropOpacity = useRef(new RNAnimated.Value(0)).current;
+
+  useEffect(() => {
+    if (booster) {
+      RNAnimated.timing(backdropOpacity, {
+        toValue: 1,
+        duration: 220,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      backdropOpacity.setValue(0);
+    }
+  }, [booster]);
+
+  if (!booster) return null;
+
+  const b = booster;
+  const totalCost = isMining ? b.cost : b.cost + miningEntryCost;
+  const canAfford = safePT >= totalCost;
+  const isActive = !!(activeBooster && activeBooster.multiplier === b.multiplier && activeBooster.expiresAt > now);
+
+  return (
+    <Modal
+      transparent
+      animationType="none"
+      visible={!!booster}
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
+      {/* Animated backdrop — fades in smoothly */}
+      <RNAnimated.View style={[modal.backdropOverlay, { opacity: backdropOpacity }]}>
+        <BlurView intensity={45} tint="dark" style={StyleSheet.absoluteFill} />
+      </RNAnimated.View>
+
+      {/* Tap backdrop to dismiss */}
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+
+      {/* Bottom sheet card — slides + fades in */}
+      <RNAnimated.View
+        style={[
+          modal.sheet,
+          {
+            opacity: backdropOpacity,
+            transform: [{
+              translateY: backdropOpacity.interpolate({
+                inputRange: [0, 1],
+                outputRange: [60, 0],
+              }),
+            }],
+          },
+        ]}
+      >
+        <LinearGradient
+          colors={['rgba(26,26,40,0.98)', 'rgba(14,14,24,0.99)']}
+          style={modal.card}
+        >
+          {/* Close button */}
+          <Pressable style={modal.closeBtn} onPress={onClose} hitSlop={12}>
+            <Ionicons name="close" size={20} color={Colors.textMuted} />
+          </Pressable>
+
+          {/* Booster badge */}
+          <View style={[modal.badge, { borderColor: b.color + '60', backgroundColor: b.color + '18' }]}>
+            <Text style={[modal.badgeText, { color: b.color }]}>{b.label}</Text>
+            <Text style={[modal.badgeSub, { color: b.color + 'CC' }]}>SPEED BOOST</Text>
+          </View>
+
+          {/* Title */}
+          <Text style={modal.title}>
+            {isMining ? `Upgrade to ${b.label} Booster` : `Start Mining at ${b.label} Speed`}
+          </Text>
+
+          {/* Cost breakdown */}
+          <View style={[modal.costBox, { borderColor: canAfford ? b.color + '40' : 'rgba(255,80,80,0.3)' }]}>
+            <View style={modal.costRow}>
+              <Text style={modal.costLabel}>
+                <MaterialCommunityIcons name="lightning-bolt" size={13} color={b.color} /> Booster
+              </Text>
+              <Text style={[modal.costVal, { color: b.color }]}>{b.cost} PT</Text>
+            </View>
+            {!isMining && (
+              <View style={modal.costRow}>
+                <Text style={modal.costLabel}>
+                  <MaterialCommunityIcons name="pickaxe" size={13} color={Colors.textSecondary} /> Mining entry
+                </Text>
+                <Text style={modal.costVal}>{miningEntryCost} PT</Text>
+              </View>
+            )}
+            <View style={[modal.costDivider, { backgroundColor: canAfford ? b.color + '30' : 'rgba(255,80,80,0.2)' }]} />
+            <View style={modal.costRow}>
+              <Text style={[modal.costLabel, { color: Colors.textPrimary }]}>Total cost</Text>
+              <Text style={[modal.costVal, { color: canAfford ? Colors.textPrimary : '#FF5050', fontFamily: 'Inter_700Bold' }]}>
+                {totalCost} PT
+              </Text>
+            </View>
+            <View style={modal.costRow}>
+              <Text style={modal.costLabel}>Your balance</Text>
+              <Text style={[modal.costVal, { color: safePT >= totalCost ? Colors.gold : '#FF5050' }]}>
+                {Math.floor(safePT)} PT
+              </Text>
+            </View>
+          </View>
+
+          {/* Action area */}
+          {canAfford ? (
+            <>
+              {isActive && (
+                <Text style={modal.renewNote}>
+                  Renewing will reset your current {b.label} booster timer to +1 hour.
+                </Text>
+              )}
+              <Pressable
+                style={({ pressed }) => [modal.startBtn, { opacity: pressed ? 0.85 : 1 }]}
+                onPress={() => onConfirm(b)}
+              >
+                <LinearGradient
+                  colors={[b.color, b.color + 'BB']}
+                  style={modal.startBtnInner}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                >
+                  <MaterialCommunityIcons name="pickaxe" size={20} color="#000" />
+                  <Text style={modal.startBtnText}>
+                    {isMining ? 'Activate Booster' : 'Start Mining'}
+                  </Text>
+                </LinearGradient>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <View style={modal.insufficientBox}>
+                <Ionicons name="warning-outline" size={22} color="#FF5050" />
+                <Text style={modal.insufficientText}>Insufficient Power Tokens</Text>
+                <Text style={modal.insufficientSub}>
+                  You need {totalCost - Math.floor(safePT)} more PT to activate this booster.
+                </Text>
+              </View>
+              <Pressable
+                style={({ pressed }) => [modal.gamesBtn, { opacity: pressed ? 0.85 : 1 }]}
+                onPress={() => { onClose(); router.push('/(tabs)/games'); }}
+              >
+                <LinearGradient
+                  colors={[Colors.neonOrange, Colors.gold]}
+                  style={modal.startBtnInner}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                >
+                  <Ionicons name="game-controller-outline" size={20} color="#000" />
+                  <Text style={modal.startBtnText}>Play Games to Earn PT</Text>
+                </LinearGradient>
+              </Pressable>
+            </>
+          )}
+
+          <Pressable onPress={onClose} style={modal.cancelBtn} hitSlop={8}>
+            <Text style={modal.cancelText}>Cancel</Text>
+          </Pressable>
+        </LinearGradient>
+      </RNAnimated.View>
+    </Modal>
+  );
+});
+
 // ── Home screen ────────────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
   const { user, pbUser } = useAuth();
   const { powerTokens, shibBalance } = useWallet();
   const {
@@ -78,11 +271,10 @@ export default function HomeScreen() {
   const [showAdLoader, setShowAdLoader] = useState(false);
   const [showLowPtWarning, setShowLowPtWarning] = useState(false);
 
-  // Booster modal state
-  type BoosterItem = { label: string; multiplier: number; cost: number; color: string };
+  // Booster modal state — simple local flag, does NOT cause mining to reset
   const [selectedBooster, setSelectedBooster] = useState<BoosterItem | null>(null);
 
-  // 1-second clock for booster countdown
+  // 1-second clock for booster countdown display only
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -90,22 +282,26 @@ export default function HomeScreen() {
   }, []);
 
   // ── Zero-NaN safe values ─────────────────────────────────────────────────
-  const safePT           = (typeof powerTokens === 'number' && isFinite(powerTokens)) ? powerTokens : 0;
-  const safeShib         = (typeof shibBalance === 'number' && isFinite(shibBalance)) ? shibBalance : 0;
-  const safeDisplayed    = (typeof displayedShibBalance === 'number' && isFinite(displayedShibBalance)) ? displayedShibBalance : 0;
-  const safeMultiplier   = (session && typeof session.multiplier === 'number' && isFinite(session.multiplier)) ? session.multiplier : 1;
-  const safeProgress     = (typeof progress === 'number' && isFinite(progress)) ? Math.min(1, Math.max(0, progress)) : 0;
-  const safeShibReward   = (typeof shibReward === 'number' && isFinite(shibReward)) ? shibReward : 0;
+  const safePT            = (typeof powerTokens === 'number' && isFinite(powerTokens)) ? powerTokens : 0;
+  const safeShib          = (typeof shibBalance === 'number' && isFinite(shibBalance)) ? shibBalance : 0;
+  const safeDisplayed     = (typeof displayedShibBalance === 'number' && isFinite(displayedShibBalance)) ? displayedShibBalance : 0;
+  const safeMultiplier    = (session && typeof session.multiplier === 'number' && isFinite(session.multiplier)) ? session.multiplier : 1;
+  const safeProgress      = (typeof progress === 'number' && isFinite(progress)) ? Math.min(1, Math.max(0, progress)) : 0;
+  const safeShibReward    = (typeof shibReward === 'number' && isFinite(shibReward)) ? shibReward : 0;
   const safeTimeRemaining = (typeof timeRemaining === 'number' && isFinite(timeRemaining)) ? Math.max(0, timeRemaining) : 0;
 
+  // Live mining counter (top card only): wallet balance + mined so far this session
   const liveBalance = status === 'mining' ? safeShib + safeDisplayed : safeShib;
 
-  const displayedPT       = useRollingNumber(safePT, 400);
-  const displayedShibFinal = useRollingNumber(liveBalance, status === 'mining' ? 100 : 800);
+  const displayedPT        = useRollingNumber(safePT, 400);
+  // Top card: smooth rolling live counter
+  const displayedLiveShib  = useRollingNumber(liveBalance, status === 'mining' ? 100 : 800);
+  // Bottom stat card: static wallet balance — only animates on claim
+  const displayedStatShib  = useRollingNumber(safeShib, 800);
 
   // Animations
-  const rotation   = useSharedValue(0);
-  const pulse      = useSharedValue(1);
+  const rotation    = useSharedValue(0);
+  const pulse       = useSharedValue(1);
   const glowOpacity = useSharedValue(0.4);
 
   const boostCosts = settings?.boostCosts ?? { '2x': 200, '4x': 400, '6x': 600, '10x': 800 };
@@ -146,9 +342,9 @@ export default function HomeScreen() {
   const coreStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
   const glowStyle = useAnimatedStyle(() => ({ opacity: glowOpacity.value }));
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  // ── Helpers (memoized to avoid passing new refs to BoosterModal) ──────────
 
-  async function withAd(action: () => Promise<{ success: boolean; error?: string }>) {
+  const withAd = useCallback(async (action: () => Promise<{ success: boolean; error?: string }>) => {
     setShowAdLoader(true);
     await adService.showUnityInterstitial(
       async () => {
@@ -162,32 +358,32 @@ export default function HomeScreen() {
       },
       () => setShowAdLoader(false),
     );
-  }
+  }, []);
 
-  async function handleStartMining() {
+  const handleStartMining = useCallback(async () => {
     if (!pbUser) { Alert.alert('Not Ready', 'Account sync in progress. Please wait.'); return; }
     if (safePT < miningEntryCost) { setShowLowPtWarning(true); return; }
     setShowLowPtWarning(false);
     await withAd(startMining);
-  }
+  }, [pbUser, safePT, miningEntryCost, withAd, startMining]);
 
-  async function handleClaim() {
+  const handleClaim = useCallback(async () => {
     if (isClaiming) return;
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const reward = await claimReward();
     if (reward > 0) Alert.alert('Reward Claimed! 🎉', `You earned ${formatShib(reward)} SHIB!`);
-  }
+  }, [isClaiming, claimReward]);
 
-  // Open the glassmorphism booster modal
-  function handleBoosterTap(b: BoosterItem) {
+  // Opens the booster modal — does NOT affect the mining timer/animation
+  const handleBoosterTap = useCallback((b: BoosterItem) => {
     setSelectedBooster(b);
-  }
+  }, []);
 
-  // Called from modal when user confirms START MINING
-  async function handleBoosterConfirm(b: BoosterItem) {
+  // Called from modal when user confirms
+  const handleBoosterConfirm = useCallback(async (b: BoosterItem) => {
     setSelectedBooster(null);
-    const isMining = status === 'mining';
-    if (isMining) {
+    const isMiningNow = status === 'mining';
+    if (isMiningNow) {
       const res = await activateBooster(b.multiplier);
       if (!res.success) Alert.alert('Error', res.error || 'Failed to activate booster.');
       else await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -195,133 +391,9 @@ export default function HomeScreen() {
       setShowLowPtWarning(false);
       await withAd(() => startMiningWithBooster(b.multiplier));
     }
-  }
+  }, [status, activateBooster, withAd, startMiningWithBooster]);
 
-  // ── Booster Modal ──────────────────────────────────────────────────────────
-
-  function BoosterModal() {
-    if (!selectedBooster) return null;
-    const b = selectedBooster;
-    const isMining = status === 'mining';
-    const totalCost = isMining ? b.cost : b.cost + miningEntryCost;
-    const canAfford = safePT >= totalCost;
-    const isActive = !!(activeBooster && activeBooster.multiplier === b.multiplier && activeBooster.expiresAt > now);
-
-    return (
-      <Modal transparent animationType="fade" visible onRequestClose={() => setSelectedBooster(null)}>
-        <Pressable style={modal.backdrop} onPress={() => setSelectedBooster(null)}>
-          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
-        </Pressable>
-
-        <Animated.View entering={FadeIn.duration(180)} style={modal.sheet}>
-          <LinearGradient
-            colors={['rgba(26,26,40,0.97)', 'rgba(18,18,30,0.99)']}
-            style={modal.card}
-          >
-            {/* Close button */}
-            <Pressable style={modal.closeBtn} onPress={() => setSelectedBooster(null)}>
-              <Ionicons name="close" size={20} color={Colors.textMuted} />
-            </Pressable>
-
-            {/* Booster badge */}
-            <View style={[modal.badge, { borderColor: b.color + '60', backgroundColor: b.color + '18' }]}>
-              <Text style={[modal.badgeText, { color: b.color }]}>{b.label}</Text>
-              <Text style={[modal.badgeSub, { color: b.color + 'CC' }]}>SPEED BOOST</Text>
-            </View>
-
-            {/* Title */}
-            <Text style={modal.title}>
-              {isMining ? `Upgrade to ${b.label} Booster` : `Start Mining at ${b.label} Speed`}
-            </Text>
-
-            {/* Cost breakdown */}
-            <View style={[modal.costBox, { borderColor: canAfford ? b.color + '40' : 'rgba(255,80,80,0.3)' }]}>
-              <View style={modal.costRow}>
-                <Text style={modal.costLabel}>
-                  <MaterialCommunityIcons name="lightning-bolt" size={13} color={b.color} /> Booster
-                </Text>
-                <Text style={[modal.costVal, { color: b.color }]}>{b.cost} PT</Text>
-              </View>
-              {!isMining && (
-                <View style={modal.costRow}>
-                  <Text style={modal.costLabel}>
-                    <MaterialCommunityIcons name="pickaxe" size={13} color={Colors.textSecondary} /> Mining entry
-                  </Text>
-                  <Text style={modal.costVal}>{miningEntryCost} PT</Text>
-                </View>
-              )}
-              <View style={[modal.costDivider, { backgroundColor: canAfford ? b.color + '30' : 'rgba(255,80,80,0.2)' }]} />
-              <View style={modal.costRow}>
-                <Text style={[modal.costLabel, { color: Colors.textPrimary }]}>Total cost</Text>
-                <Text style={[modal.costVal, { color: canAfford ? Colors.textPrimary : '#FF5050', fontFamily: 'Inter_700Bold' }]}>
-                  {totalCost} PT
-                </Text>
-              </View>
-              <View style={modal.costRow}>
-                <Text style={modal.costLabel}>Your balance</Text>
-                <Text style={[modal.costVal, { color: safePT >= totalCost ? Colors.gold : '#FF5050' }]}>
-                  {Math.floor(safePT)} PT
-                </Text>
-              </View>
-            </View>
-
-            {/* Action area */}
-            {canAfford ? (
-              <>
-                {isActive && (
-                  <Text style={modal.renewNote}>
-                    Renewing will reset your current {b.label} booster timer to +1 hour.
-                  </Text>
-                )}
-                <Pressable
-                  style={({ pressed }) => [modal.startBtn, { opacity: pressed ? 0.85 : 1 }]}
-                  onPress={() => handleBoosterConfirm(b)}
-                >
-                  <LinearGradient
-                    colors={[b.color, b.color + 'BB']}
-                    style={modal.startBtnInner}
-                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  >
-                    <MaterialCommunityIcons name="pickaxe" size={20} color="#000" />
-                    <Text style={modal.startBtnText}>
-                      {isMining ? 'Activate Booster' : 'Start Mining'}
-                    </Text>
-                  </LinearGradient>
-                </Pressable>
-              </>
-            ) : (
-              <>
-                <View style={modal.insufficientBox}>
-                  <Ionicons name="warning-outline" size={22} color="#FF5050" />
-                  <Text style={modal.insufficientText}>Insufficient Power Tokens</Text>
-                  <Text style={modal.insufficientSub}>
-                    You need {totalCost - Math.floor(safePT)} more PT to activate this booster.
-                  </Text>
-                </View>
-                <Pressable
-                  style={({ pressed }) => [modal.gamesBtn, { opacity: pressed ? 0.85 : 1 }]}
-                  onPress={() => { setSelectedBooster(null); router.push('/(tabs)/games'); }}
-                >
-                  <LinearGradient
-                    colors={[Colors.neonOrange, Colors.gold]}
-                    style={modal.startBtnInner}
-                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  >
-                    <Ionicons name="game-controller-outline" size={20} color="#000" />
-                    <Text style={modal.startBtnText}>Play Games to Earn PT</Text>
-                  </LinearGradient>
-                </Pressable>
-              </>
-            )}
-
-            <Pressable onPress={() => setSelectedBooster(null)} style={modal.cancelBtn}>
-              <Text style={modal.cancelText}>Cancel</Text>
-            </Pressable>
-          </LinearGradient>
-        </Animated.View>
-      </Modal>
-    );
-  }
+  const handleModalClose = useCallback(() => setSelectedBooster(null), []);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -334,7 +406,17 @@ export default function HomeScreen() {
         end={{ x: 0.5, y: 0.5 }}
       />
 
-      <BoosterModal />
+      {/* BoosterModal lives OUTSIDE the ScrollView — never causes a scroll reset */}
+      <BoosterModal
+        booster={selectedBooster}
+        onClose={handleModalClose}
+        onConfirm={handleBoosterConfirm}
+        isMining={status === 'mining'}
+        miningEntryCost={miningEntryCost}
+        safePT={safePT}
+        activeBooster={activeBooster}
+        now={now}
+      />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -354,15 +436,15 @@ export default function HomeScreen() {
           </View>
         </Animated.View>
 
-        {/* Live balance card — only while mining */}
+        {/* Live balance card — only while mining. Shows the incrementing SHIB counter */}
         {status === 'mining' && (
           <Animated.View entering={FadeInDown.delay(50).springify()} style={styles.liveBalanceCard}>
             <LinearGradient
               colors={['rgba(244,196,48,0.1)', 'rgba(255,107,0,0.05)']}
               style={styles.liveBalanceInner}
             >
-              <Text style={styles.liveLabel}>Mining in progress — Live Balance</Text>
-              <Text style={styles.liveValue}>{formatShib(displayedShibFinal)} SHIB</Text>
+              <Text style={styles.liveLabel}>Mining in progress — Live Counter</Text>
+              <Text style={styles.liveValue}>{formatShib(displayedLiveShib)} SHIB</Text>
               {activeBooster && activeBooster.expiresAt > now && (
                 <Text style={styles.liveBoostLabel}>
                   {activeBooster.multiplier}x booster · {formatTime(activeBooster.expiresAt - now).substring(3)} left
@@ -449,7 +531,7 @@ export default function HomeScreen() {
                 <Text style={styles.warningText}>Play games to win free PT and start mining.</Text>
                 <Pressable
                   style={({ pressed }) => [styles.warningBtn, { opacity: pressed ? 0.8 : 1 }]}
-                  onPress={() => router.push('/(tabs)/games')}
+                  onPress={() => {}}
                 >
                   <Text style={styles.warningBtnText}>Play Games →</Text>
                 </Pressable>
@@ -551,11 +633,12 @@ export default function HomeScreen() {
           </Animated.View>
         )}
 
-        {/* Stats row */}
+        {/* Stats row — bottom boxes */}
         <Animated.View entering={FadeInDown.delay(450).springify()} style={styles.statsRow}>
+          {/* SHIB Balance: static wallet value from DB, only updates after claim */}
           <View style={styles.statCard}>
             <MaterialCommunityIcons name="bitcoin" size={20} color={Colors.gold} />
-            <Text style={styles.statValue}>{formatShib(displayedShibFinal)}</Text>
+            <Text style={styles.statValue}>{formatShib(displayedStatShib)}</Text>
             <Text style={styles.statLabel}>SHIB Balance</Text>
           </View>
           <View style={styles.statCard}>
@@ -652,10 +735,9 @@ const styles = StyleSheet.create({
 // ── Modal styles ───────────────────────────────────────────────────────────────
 
 const modal = StyleSheet.create({
-  backdrop: {
+  backdropOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.65)',
   },
   sheet: {
     position: 'absolute',
@@ -667,21 +749,21 @@ const modal = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     padding: 28,
-    paddingBottom: 40,
+    paddingBottom: 44,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: 'rgba(255,255,255,0.09)',
     alignItems: 'center',
   },
   closeBtn: {
     position: 'absolute',
     top: 18,
     right: 20,
-    width: 32,
-    height: 32,
+    width: 34,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 17,
   },
   badge: {
     width: 90,
@@ -747,6 +829,6 @@ const modal = StyleSheet.create({
   },
   insufficientText: { fontFamily: 'Inter_700Bold', fontSize: 15, color: '#FF5050' },
   insufficientSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, textAlign: 'center' },
-  cancelBtn: { paddingVertical: 8 },
+  cancelBtn: { paddingVertical: 10 },
   cancelText: { fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.textMuted },
 });
