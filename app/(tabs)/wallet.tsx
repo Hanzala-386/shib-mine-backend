@@ -10,6 +10,8 @@ import { useWallet, type WithdrawalRecord } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import Colors from '@/constants/colors';
 
+const BEP20_FEE = 3680; // fixed SHIB fee for BEP-20 network withdrawals
+
 function formatShib(val: number) {
   if (val >= 1_000_000_000) return `${(val / 1_000_000_000).toFixed(2)}B`;
   if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(2)}M`;
@@ -39,9 +41,7 @@ function WithdrawalItem({ w }: { w: WithdrawalRecord }) {
         <Text style={styles.txTime}>{formatDate(w.created)}</Text>
       </View>
       <View style={styles.txAmountWrap}>
-        <Text style={[styles.txAmount, { color }]}>
-          -{formatShib(w.amount)}
-        </Text>
+        <Text style={[styles.txAmount, { color }]}>-{formatShib(w.amount)}</Text>
         <Text style={[styles.txCurrency, { color }]}>{w.status.toUpperCase()}</Text>
       </View>
     </View>
@@ -50,7 +50,7 @@ function WithdrawalItem({ w }: { w: WithdrawalRecord }) {
 
 export default function WalletScreen() {
   const insets = useSafeAreaInsets();
-  const { shibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal, isLoading } = useWallet();
+  const { shibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
   const { pbUser } = useAuth();
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>('Binance Email');
@@ -61,14 +61,30 @@ export default function WalletScreen() {
   const addressLabel = method === 'BEP-20' ? 'BEP-20 Wallet Address' : 'Binance Email';
   const addressPlaceholder = method === 'BEP-20' ? 'Enter your BEP-20 address (0x...)' : 'Enter your Binance email';
 
+  /* ── Fee calculations ── */
+  const grossAmt = parseFloat(amount) || 0;
+  const fee      = method === 'BEP-20' ? BEP20_FEE : 0;
+  const netAmt   = Math.max(0, grossAmt - fee);
+
+  const hasEnoughBalance    = grossAmt > 0 && grossAmt <= shibBalance;
+  const netMeetsMinimum     = netAmt >= minWithdrawalAmount;
+  const showInsufficientMsg = grossAmt > 0 && fee > 0 && !netMeetsMinimum;
+  const canSubmit           = grossAmt > 0 && hasEnoughBalance && netMeetsMinimum && !!address.trim() && !submitting;
+
   async function handleWithdraw() {
-    const amt = parseFloat(amount);
-    if (!amt || isNaN(amt) || amt <= 0) {
+    if (!grossAmt || isNaN(grossAmt) || grossAmt <= 0) {
       Alert.alert('Invalid Amount', 'Please enter a valid amount.');
       return;
     }
-    if (amt < minWithdrawalAmount) {
-      Alert.alert('Too Low', `Minimum withdrawal is ${formatShib(minWithdrawalAmount)} SHIB.`);
+    if (grossAmt > shibBalance) {
+      Alert.alert('Insufficient Balance', `You only have ${formatShib(shibBalance)} SHIB.`);
+      return;
+    }
+    if (!netMeetsMinimum) {
+      Alert.alert(
+        'Net Amount Too Low',
+        `After the ${formatShib(fee)} SHIB fee, you would receive ${formatShib(netAmt)} SHIB — below the minimum of ${formatShib(minWithdrawalAmount)} SHIB.`
+      );
       return;
     }
     if (!address.trim()) {
@@ -76,7 +92,7 @@ export default function WalletScreen() {
       return;
     }
     setSubmitting(true);
-    const res = await createWithdrawal(method, address.trim(), amt);
+    const res = await createWithdrawal(method, address.trim(), grossAmt);
     setSubmitting(false);
     if (res.success) {
       setShowWithdraw(false);
@@ -86,6 +102,11 @@ export default function WalletScreen() {
     } else {
       Alert.alert('Failed', res.error || 'Could not submit withdrawal.');
     }
+  }
+
+  function handleMethodChange(m: 'BEP-20' | 'Binance Email') {
+    setMethod(m);
+    setAddress('');
   }
 
   return (
@@ -104,6 +125,7 @@ export default function WalletScreen() {
           <Text style={styles.pageTitle}>Wallet</Text>
         </Animated.View>
 
+        {/* ── Main SHIB balance card ── */}
         <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.mainCard}>
           <LinearGradient
             colors={['rgba(244,196,48,0.2)', 'rgba(255,107,0,0.12)']}
@@ -127,6 +149,7 @@ export default function WalletScreen() {
           </LinearGradient>
         </Animated.View>
 
+        {/* ── Tier info ── */}
         <Animated.View entering={FadeInDown.delay(250).springify()} style={styles.tierCard}>
           <View style={styles.tierRow}>
             <Ionicons name="layers-outline" size={18} color={Colors.neonOrange} />
@@ -138,6 +161,7 @@ export default function WalletScreen() {
           </Text>
         </Animated.View>
 
+        {/* ── Power Tokens ── */}
         <Animated.View entering={FadeInDown.delay(300).springify()} style={styles.ptCard}>
           <LinearGradient
             colors={['rgba(255,107,0,0.15)', 'rgba(255,107,0,0.05)']}
@@ -156,6 +180,7 @@ export default function WalletScreen() {
           </LinearGradient>
         </Animated.View>
 
+        {/* ── Withdrawal History ── */}
         <Animated.View entering={FadeInDown.delay(500).springify()}>
           <Text style={styles.sectionTitle}>Withdrawal History</Text>
           {withdrawals.length === 0 ? (
@@ -174,31 +199,45 @@ export default function WalletScreen() {
         </Animated.View>
       </ScrollView>
 
+      {/* ══ WITHDRAWAL MODAL ════════════════════════════════════════════════ */}
       <Modal visible={showWithdraw} transparent animationType="slide" onRequestClose={() => setShowWithdraw(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalSheet, { paddingBottom: insets.bottom + 20 }]}>
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>Withdraw SHIB</Text>
-            <Text style={styles.modalSub}>Minimum: {formatShib(minWithdrawalAmount)} SHIB (Tier {withdrawalTier})</Text>
+            <Text style={styles.modalSub}>Tier {withdrawalTier} · Min {formatShib(minWithdrawalAmount)} SHIB (net)</Text>
 
+            {/* ── Method selector ── */}
             <Text style={styles.fieldLabel}>Withdrawal Method</Text>
             <View style={styles.methodRow}>
-              {(['Binance Email', 'BEP-20'] as const).map(m => (
-                <Pressable
-                  key={m}
-                  style={[styles.methodBtn, method === m && styles.methodBtnActive]}
-                  onPress={() => { setMethod(m); setAddress(''); }}
-                >
-                  <MaterialCommunityIcons
-                    name={m === 'BEP-20' ? 'ethereum' : 'email-outline'}
-                    size={14}
-                    color={method === m ? Colors.gold : Colors.textMuted}
-                  />
-                  <Text style={[styles.methodBtnText, method === m && styles.methodBtnTextActive]}>{m}</Text>
-                </Pressable>
-              ))}
+              {(['Binance Email', 'BEP-20'] as const).map(m => {
+                const isActive = method === m;
+                const isFree   = m === 'Binance Email';
+                return (
+                  <Pressable
+                    key={m}
+                    style={[styles.methodBtn, isActive && styles.methodBtnActive]}
+                    onPress={() => handleMethodChange(m)}
+                  >
+                    <View style={styles.methodBtnInner}>
+                      <MaterialCommunityIcons
+                        name={m === 'BEP-20' ? 'ethereum' : 'email-outline'}
+                        size={14}
+                        color={isActive ? Colors.gold : Colors.textMuted}
+                      />
+                      <Text style={[styles.methodBtnText, isActive && styles.methodBtnTextActive]}>{m}</Text>
+                    </View>
+                    <View style={[styles.feeBadge, isFree ? styles.feeBadgeFree : styles.feeBadgePaid]}>
+                      <Text style={[styles.feeBadgeText, isFree ? styles.feeBadgeTextFree : styles.feeBadgeTextPaid]}>
+                        {isFree ? 'FREE' : `${formatShib(BEP20_FEE)} SHIB`}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
             </View>
 
+            {/* ── Address / email input ── */}
             <Text style={styles.fieldLabel}>{addressLabel}</Text>
             <TextInput
               style={styles.input}
@@ -210,23 +249,65 @@ export default function WalletScreen() {
               keyboardType={method === 'Binance Email' ? 'email-address' : 'default'}
             />
 
-            <Text style={styles.fieldLabel}>Amount (SHIB)</Text>
+            {/* ── Amount input ── */}
+            <Text style={styles.fieldLabel}>Gross Amount (SHIB)</Text>
             <TextInput
               style={styles.input}
               value={amount}
               onChangeText={setAmount}
-              placeholder={`Min ${formatShib(minWithdrawalAmount)}`}
+              placeholder={`Enter SHIB amount (Balance: ${formatShib(shibBalance)})`}
               placeholderTextColor={Colors.textMuted}
               keyboardType="numeric"
             />
 
+            {/* ── Fee calculation table (shows when amount is entered) ── */}
+            {grossAmt > 0 && (
+              <View style={styles.calcBox}>
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabel}>Gross Amount</Text>
+                  <Text style={styles.calcVal}>{grossAmt.toLocaleString()} SHIB</Text>
+                </View>
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabel}>
+                    Fee {method === 'BEP-20' ? '(BEP-20 Network)' : '(Binance Email)'}
+                  </Text>
+                  <Text style={[styles.calcVal, fee === 0 && styles.calcValFree]}>
+                    {fee === 0 ? '— FREE' : `- ${formatShib(fee)} SHIB`}
+                  </Text>
+                </View>
+                <View style={[styles.calcDivider]} />
+                <View style={styles.calcRow}>
+                  <Text style={styles.calcLabelBold}>You Receive</Text>
+                  <Text style={[styles.calcValBold, netMeetsMinimum ? styles.calcValGold : styles.calcValRed]}>
+                    {netAmt.toLocaleString()} SHIB
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* ── Insufficient after fees message ── */}
+            {showInsufficientMsg && (
+              <View style={styles.insufficientBanner}>
+                <Ionicons name="warning-outline" size={14} color="#ff5252" />
+                <Text style={styles.insufficientText}>
+                  Insufficient balance after fees. Min net: {formatShib(minWithdrawalAmount)} SHIB
+                </Text>
+              </View>
+            )}
+
+            {/* ── Submit button ── */}
             <Pressable
-              style={({ pressed }) => [styles.submitBtn, { opacity: pressed || submitting ? 0.8 : 1 }]}
+              style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
               onPress={handleWithdraw}
-              disabled={submitting}
+              disabled={!canSubmit}
             >
-              <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.submitBtnGradient}>
-                <Text style={styles.submitBtnText}>{submitting ? 'Submitting...' : 'Submit Request'}</Text>
+              <LinearGradient
+                colors={canSubmit ? [Colors.gold, Colors.neonOrange] : ['#2a2a2a', '#1a1a1a']}
+                style={styles.submitBtnGradient}
+              >
+                <Text style={[styles.submitBtnText, !canSubmit && styles.submitBtnTextDim]}>
+                  {submitting ? 'Submitting…' : canSubmit ? `Submit — ${netAmt.toLocaleString()} SHIB` : 'Enter valid amount'}
+                </Text>
               </LinearGradient>
             </Pressable>
 
@@ -244,6 +325,7 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   scroll: { paddingHorizontal: 20 },
   pageTitle: { fontFamily: 'Inter_700Bold', fontSize: 28, color: Colors.textPrimary, marginBottom: 20 },
+
   mainCard: { borderRadius: 24, overflow: 'hidden', marginBottom: 14, borderWidth: 1, borderColor: 'rgba(244,196,48,0.3)' },
   mainCardGradient: { padding: 28, alignItems: 'center', gap: 8 },
   mainCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
@@ -253,11 +335,13 @@ const styles = StyleSheet.create({
   withdrawBtn: { marginTop: 8, width: '100%' },
   withdrawBtnGradient: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(244,196,48,0.3)' },
   withdrawBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: Colors.gold },
+
   tierCard: { backgroundColor: Colors.darkCard, borderRadius: 14, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: Colors.darkBorder },
   tierRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   tierLabel: { flex: 1, fontFamily: 'Inter_600SemiBold', fontSize: 14, color: Colors.neonOrange },
   tierMin: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.gold },
   tierDesc: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, lineHeight: 18 },
+
   ptCard: { borderRadius: 18, overflow: 'hidden', marginBottom: 24, borderWidth: 1, borderColor: 'rgba(255,107,0,0.25)' },
   ptCardInner: { padding: 18 },
   ptRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
@@ -266,10 +350,12 @@ const styles = StyleSheet.create({
   ptLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: Colors.textPrimary },
   ptSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, marginTop: 2 },
   ptValue: { fontFamily: 'Inter_700Bold', fontSize: 28, color: Colors.neonOrange },
+
   sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 },
   emptyState: { backgroundColor: Colors.darkCard, borderRadius: 18, padding: 40, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: Colors.darkBorder },
   emptyTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 16, color: Colors.textSecondary },
   emptyDesc: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted, textAlign: 'center' },
+
   txList: { gap: 2 },
   txItem: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: Colors.darkCard, borderRadius: 14, padding: 14, marginBottom: 6 },
   txIconWrap: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
@@ -279,21 +365,61 @@ const styles = StyleSheet.create({
   txAmountWrap: { alignItems: 'flex-end' },
   txAmount: { fontFamily: 'Inter_700Bold', fontSize: 15 },
   txCurrency: { fontFamily: 'Inter_400Regular', fontSize: 10, marginTop: 1 },
+
+  /* ── Modal ── */
   modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.6)' },
-  modalSheet: { backgroundColor: Colors.darkCard, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, gap: 12 },
-  modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.darkBorder, alignSelf: 'center', marginBottom: 8 },
-  modalTitle: { fontFamily: 'Inter_700Bold', fontSize: 20, color: Colors.textPrimary, textAlign: 'center' },
-  modalSub: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted, textAlign: 'center', marginBottom: 4 },
-  fieldLabel: { fontFamily: 'Inter_500Medium', fontSize: 12, color: Colors.textSecondary },
+  modalSheet:   { backgroundColor: Colors.darkCard, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, gap: 10 },
+  modalHandle:  { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.darkBorder, alignSelf: 'center', marginBottom: 4 },
+  modalTitle:   { fontFamily: 'Inter_700Bold', fontSize: 20, color: Colors.textPrimary, textAlign: 'center' },
+  modalSub:     { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted, textAlign: 'center' },
+  fieldLabel:   { fontFamily: 'Inter_500Medium', fontSize: 12, color: Colors.textSecondary, marginTop: 4 },
+
+  /* ── Method selector ── */
   methodRow: { flexDirection: 'row', gap: 8 },
-  methodBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: Colors.darkBorder, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 },
-  methodBtnActive: { borderColor: Colors.gold, backgroundColor: 'rgba(244,196,48,0.1)' },
-  methodBtnText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textMuted },
+  methodBtn: { flex: 1, borderRadius: 12, borderWidth: 1, borderColor: Colors.darkBorder,
+    paddingVertical: 10, paddingHorizontal: 10, gap: 6 },
+  methodBtnActive: { borderColor: Colors.gold, backgroundColor: 'rgba(244,196,48,0.08)' },
+  methodBtnInner:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  methodBtnText:       { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textMuted },
   methodBtnTextActive: { color: Colors.gold },
-  input: { backgroundColor: Colors.darkSurface, borderRadius: 12, height: 48, paddingHorizontal: 16, fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textPrimary, borderWidth: 1, borderColor: Colors.darkBorder },
-  submitBtn: { marginTop: 8 },
+  feeBadge:     { alignSelf: 'center', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, marginTop: 4 },
+  feeBadgeFree: { backgroundColor: 'rgba(76,175,80,0.15)', borderWidth: 1, borderColor: 'rgba(76,175,80,0.4)' },
+  feeBadgePaid: { backgroundColor: 'rgba(255,82,82,0.12)', borderWidth: 1, borderColor: 'rgba(255,82,82,0.3)' },
+  feeBadgeText:     { fontFamily: 'Inter_700Bold', fontSize: 10, textAlign: 'center' },
+  feeBadgeTextFree: { color: '#4CAF50' },
+  feeBadgeTextPaid: { color: '#ff5252' },
+
+  /* ── Inputs ── */
+  input: { backgroundColor: Colors.darkSurface, borderRadius: 12, height: 48, paddingHorizontal: 16,
+    fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textPrimary,
+    borderWidth: 1, borderColor: Colors.darkBorder },
+
+  /* ── Fee calculation table ── */
+  calcBox: { backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 14,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', gap: 8 },
+  calcRow:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  calcDivider:  { height: 1, backgroundColor: 'rgba(255,255,255,0.09)', marginVertical: 2 },
+  calcLabel:    { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted },
+  calcLabelBold:{ fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textPrimary },
+  calcVal:      { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textSecondary },
+  calcValFree:  { color: '#4CAF50' },
+  calcValBold:  { fontFamily: 'Inter_700Bold', fontSize: 15 },
+  calcValGold:  { color: Colors.gold },
+  calcValRed:   { color: '#ff5252' },
+
+  /* ── Insufficient banner ── */
+  insufficientBanner: { flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: 'rgba(255,82,82,0.1)', borderRadius: 10,
+    paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1, borderColor: 'rgba(255,82,82,0.25)' },
+  insufficientText: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 12, color: '#ff5252', lineHeight: 16 },
+
+  /* ── Submit button ── */
+  submitBtn:         { marginTop: 4 },
+  submitBtnDisabled: { opacity: 0.7 },
   submitBtnGradient: { height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  submitBtnText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
-  cancelBtn: { alignItems: 'center', paddingVertical: 8 },
+  submitBtnText:     { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
+  submitBtnTextDim:  { color: Colors.textMuted },
+
+  cancelBtn:  { alignItems: 'center', paddingVertical: 8 },
   cancelText: { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textMuted },
 });

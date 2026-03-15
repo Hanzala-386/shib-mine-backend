@@ -286,8 +286,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         display_name: displayName || email.split("@")[0],
         referral_code: code,
         referred_by: referrerPbId || "",
-        shib_balance: 0,
-        power_tokens: 10,
+        shib_balance: 100,   // welcome bonus: 100 SHIB
+        power_tokens: 500,   // welcome bonus: 500 Power Tokens
         total_claims: 0,
         total_wins: 0,
         is_verified: false,
@@ -371,8 +371,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         display_name: displayName || email.split("@")[0],
         referral_code: code,
         referred_by: referrerPbId || "",
-        shib_balance: 0,
-        power_tokens: 10,
+        shib_balance: 100,   // welcome bonus: 100 SHIB
+        power_tokens: 500,   // welcome bonus: 500 Power Tokens
         total_claims: 0,
         total_wins: 0,
         is_verified: true,

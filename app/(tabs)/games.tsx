@@ -28,7 +28,7 @@ const GAME_DATA   = (pbId: string) => new URL(`/api/app/game/data/${pbId}`, BASE
 const SYNC_SCORE  = new URL('/api/app/game/sync-score', BASE).href;
 const SETTINGS_URL = new URL('/api/app/settings', BASE).href;
 
-const SESSION_SECONDS = 120; // 2-minute session
+const SESSION_SECONDS = 180; // 3-minute session
 const SCORE_LIMIT     = 2000;
 const SCORE_WARNING   = 1900;
 
@@ -100,7 +100,8 @@ export default function GamesScreen() {
   const [sessionActive, setSessionActive] = useState(false);
   const [overReason,    setOverReason]    = useState<GameOverReason>('death');
 
-  const TOP = Platform.OS === 'web' ? 67 : insets.top;
+  const TOP    = Platform.OS === 'web' ? 10 : insets.top;
+  const HUDTOP = TOP + 4;
 
   /* ── Update pbId when auth resolves ── */
   useEffect(() => {
@@ -454,14 +455,14 @@ export default function GamesScreen() {
       {renderGame()}
 
       {/* ── PT badge (top-right, always visible) ── */}
-      <View style={[S.ptBadge, { top: TOP + 8 }]} pointerEvents="none">
+      <View style={[S.ptBadge, { top: HUDTOP }]} pointerEvents="none">
         <Ionicons name="flash" size={13} color={Colors.gold} />
         <Text style={S.badgeTxt}>{powerTokens} PT</Text>
       </View>
 
       {/* ── Session HUD: timer + live score (only during active session) ── */}
       {sessionActive && phase === 'game' && (
-        <View style={[S.hud, { top: TOP + 8 }]} pointerEvents="none">
+        <View style={[S.hud, { top: HUDTOP }]} pointerEvents="none">
           {/* Timer pill */}
           <View style={[S.hudPill, timeIsLow && S.hudPillRed]}>
             <Ionicons name="timer-outline" size={12} color={timeIsLow ? '#ff5252' : Colors.textSecondary} />
