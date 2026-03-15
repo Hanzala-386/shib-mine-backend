@@ -149,6 +149,11 @@ export default function ProfileScreen() {
           <View style={styles.menuGroup}>
             <MenuItem icon="mail-outline" label="Email" value={user?.email ?? ''} />
             <MenuItem icon="lightning-bolt" iconLib="material-community" label="Power Tokens" value={`${powerTokens} PT`} />
+            <MenuItem
+              icon="person-add-outline"
+              label="Invite & Earn"
+              onPress={() => router.push('/(tabs)/invite')}
+            />
           </View>
         </Animated.View>
 

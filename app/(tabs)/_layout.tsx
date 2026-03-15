@@ -20,9 +20,9 @@ function NativeTabLayout() {
         <Icon sf={{ default: "gamecontroller", selected: "gamecontroller.fill" }} />
         <Label>Games</Label>
       </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="invite">
-        <Icon sf={{ default: "person.2", selected: "person.2.fill" }} />
-        <Label>Invite</Label>
+      <NativeTabs.Trigger name="leaderboard">
+        <Icon sf={{ default: "trophy", selected: "trophy.fill" }} />
+        <Label>Top Players</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="wallet">
         <Icon sf={{ default: "wallet.pass", selected: "wallet.pass.fill" }} />
@@ -82,11 +82,15 @@ function ClassicTabLayout() {
           }}
         />
         <Tabs.Screen
-          name="invite"
+          name="leaderboard"
           options={{
-            title: "Invite",
-            tabBarIcon: ({ color, size }) => <Ionicons name="people" size={size} color={color} />,
+            title: "Top Players",
+            tabBarIcon: ({ color, size }) => <Ionicons name="trophy" size={size} color={color} />,
           }}
+        />
+        <Tabs.Screen
+          name="invite"
+          options={{ href: null }}
         />
         <Tabs.Screen
           name="wallet"

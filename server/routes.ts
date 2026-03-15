@@ -972,6 +972,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
     },
   );
 
+  // ── Leaderboard: Top 100 by shib_balance ─────────────────────────────────
+  app.get("/api/app/leaderboard", async (_req: Request, res: Response) => {
+    try {
+      const r = await pbGet(
+        `/api/collections/users/records?sort=-shib_balance&perPage=100&fields=id,display_name,shib_balance`,
+      );
+      res.json(
+        (r.items || []).map((u: any, i: number) => ({
+          rank: i + 1,
+          id: u.id,
+          displayName: u.display_name || "Anonymous",
+          shibBalance: u.shib_balance || 0,
+        })),
+      );
+    } catch (e: any) {
+      console.error("[/api/app/leaderboard]", e.message);
+      res.status(500).json({ error: "Failed to fetch leaderboard" });
+    }
+  });
+
+  // ── Leaderboard: User rank ────────────────────────────────────────────────
+  app.get("/api/app/leaderboard/rank/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,display_name,shib_balance`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      const balance = user.shib_balance || 0;
+      // Count users with strictly higher balance
+      const ahead = await pbGet(
+        `/api/collections/users/records?filter=${encodeURIComponent(`shib_balance>${balance}`)}&perPage=1&fields=id`,
+      );
+      const rank = (ahead.totalItems || 0) + 1;
+      res.json({
+        rank,
+        id: user.id,
+        displayName: user.display_name || "You",
+        shibBalance: balance,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/leaderboard/rank]", e.message);
+      res.status(500).json({ error: "Failed to fetch rank" });
+    }
+  });
+
+  // ── Withdrawal ticker: 10 most recent completed withdrawals ───────────────
+  app.get("/api/app/withdrawals/approved/recent", async (_req: Request, res: Response) => {
+    try {
+      const r = await pbGet(
+        `/api/collections/withdrawals/records?filter=${encodeURIComponent(`status="completed"`)}&sort=-created&perPage=10&expand=user`,
+      );
+      res.json(
+        (r.items || []).map((w: any) => {
+          const rawName: string = w.expand?.user?.display_name || "User";
+          const visibleLen = Math.min(5, Math.max(1, rawName.length - 2));
+          const maskedName = rawName.slice(0, visibleLen) + "***";
+          return {
+            id: w.id,
+            maskedName,
+            method: w.method,
+            amount: w.amount,
+          };
+        }),
+      );
+    } catch (e: any) {
+      console.error("[/api/app/withdrawals/approved/recent]", e.message);
+      res.status(500).json({ error: "Failed to fetch recent withdrawals" });
+    }
+  });
+
   // ── Admin: List all users ─────────────────────────────────────────────────
   app.get("/api/app/admin/users", async (req: Request, res: Response) => {
     try {
