@@ -110,8 +110,13 @@ function ClassicTabLayout() {
 }
 
 export default function TabLayout() {
-  if (isLiquidGlassAvailable()) {
-    return <NativeTabLayout />;
+  // NativeTabs is iOS-only — never attempt on web or it throws a ".Provider" crash
+  if (Platform.OS !== 'web') {
+    try {
+      if (isLiquidGlassAvailable()) {
+        return <NativeTabLayout />;
+      }
+    } catch { /* glass effect not available in this env */ }
   }
   return <ClassicTabLayout />;
 }
