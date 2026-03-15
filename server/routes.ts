@@ -1246,7 +1246,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   //                          rejected outright regardless of session length.
   //   MIN_SESSION_MS       – minimum realistic session duration for a non-zero score.
   const MAX_SCORE_PER_SECOND = 15;
-  const ABSOLUTE_MAX_SCORE   = 9999;
+  const ABSOLUTE_MAX_SCORE   = 2000; // 2000-point session cap (4000 for double-reward)
   const MIN_SESSION_MS       = 2000; // 2 s — anything faster is impossible
 
   app.post("/api/app/game/sync-score", async (req: Request, res: Response) => {

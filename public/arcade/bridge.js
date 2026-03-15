@@ -4,30 +4,16 @@
   /* =============================================================
    *  SHIB Mine — Construct 3 Bridge
    *
-   *  SCORE FIX (root cause):
-   *    readGlobal() was searching esm._globalVarsByName / esm._globalVars
-   *    → neither exists in this C3 build.
-   *    Correct path: esm._allGlobalVars[] — each item has ._name and ._value
-   *    Confirmed by reading c3runtime.js:
-   *      t.IsGlobal() ? this._allGlobalVars.push(t) : this._allLocalVars.push(t)
-   *
-   *  URL FIX:
-   *    Bridge posts GAME_OVER with the score. React Native side was hitting
-   *    a double-slash URL (BASE ends in '/') → Express returns HTML 404.
-   *    Fix: games.tsx now uses new URL(path, base) for all fetch calls.
-   *
-   *  Button mapping (confirmed from source images):
-   *    sprite14 (circle/refresh icon) → GoToLayoutByName → DOUBLE_REWARD → 2× PT
-   *    rstrt    (back-arrow icon)     → GoToLayout("main menu") → claim modal
-   *
    *  Messages OUT → React Native:
    *    BRIDGE_READY
-   *    GAME_OVER      { score, collected_tomatoes, pb_id }
-   *    DOUBLE_REWARD  { score, collected_tomatoes, pb_id }   ← was RETRY_REQUEST
+   *    SCORE_UPDATE   { score }                              ← NEW: live score tick
+   *    GAME_OVER      { score, collected_tomatoes, pb_id, elapsed_ms, reason }
+   *    DOUBLE_REWARD  { score, collected_tomatoes, pb_id, elapsed_ms }
    *    INJECT_DONE    { state }
    *
    *  Messages IN ← React Native:
    *    INJECT_VARS    { pbId, powerTokens, collectedTomatoes, lastSessionScore, totalScore }
+   *    TIME_UP                                               ← NEW: 2-min timer expired
    *    RESUME_NAVIGATION
    *    RELOAD_GAME
    * ============================================================= */
@@ -55,19 +41,16 @@
   var pendingNav  = null;
 
   /* ── Score integrity guards ──────────────────────────────────────────────
-   *  The C3 collision system can fire the score-add event multiple times for
-   *  the same knife hit before C3 sets the knife to "stuck", causing the score
-   *  to jump hundreds of points in a single 300 ms tick.
-   *
    *  MAX_DELTA_PER_TICK  – max points we allow per 300 ms polling tick.
-   *                        10 pts × 2 knives/tick = 20 is already generous;
-   *                        anything above this is a collision-debounce glitch.
-   *  ABSOLUTE_MAX_SCORE  – hard cap for a single session score (sent to server).
+   *  ABSOLUTE_MAX_SCORE  – hard cap for a single session (2000 pts rule).
+   *                        Any score above this triggers GAME_OVER automatically.
    * ──────────────────────────────────────────────────────────────────────── */
   var MAX_DELTA_PER_TICK = 20;
-  var ABSOLUTE_MAX_SCORE = 9999;
-  var lastTrackedScore   = 0;   // last verified score value
-  var sessionStartMs     = 0;   // set when bridge becomes ready
+  var ABSOLUTE_MAX_SCORE = 2000;   /* ← 2000-point session cap */
+  var lastTrackedScore   = 0;      /* last verified score value */
+  var lastPostedScore    = -1;     /* last score sent via SCORE_UPDATE */
+  var sessionStartMs     = 0;      /* set when bridge becomes ready */
+  var gameOverSent       = false;  /* prevents double GAME_OVER per session */
 
   /* ── Runtime accessor ────────────────────────────────────────────────── */
   function rt() {
@@ -96,32 +79,23 @@
     } catch (e) { return ''; }
   }
 
-  /* ── Read a C3 global variable ─────────────────────────────────────────
-   *  ROOT FIX: use _allGlobalVars (NOT _globalVarsByName or _globalVars).
-   *  Confirmed from c3runtime.js:
-   *    t.IsGlobal() ? this._allGlobalVars.push(t) : this._allLocalVars.push(t)
-   *  Each var object has ._name (string) and ._value (current value).
-   *  For global vars: _hasSingleValue = true → ._value holds the live value.
-   * ─────────────────────────────────────────────────────────────────────── */
+  /* ── Read a C3 global variable ──────────────────────────────────────── */
   function readGlobal(runtime, name) {
     try {
       var esm = runtime._eventSheetManager;
       if (!esm) { console.warn('[Bridge] readGlobal: no _eventSheetManager'); return 0; }
 
-      /* PRIMARY: global vars */
       var globals = esm._allGlobalVars;
       if (Array.isArray(globals)) {
         for (var i = 0; i < globals.length; i++) {
           var v = globals[i];
           if (v && v._name === name) {
             var val = typeof v.GetValue === 'function' ? v.GetValue() : v._value;
-            console.log('[Bridge] readGlobal (allGlobalVars) ' + name + ' = ' + val);
             return +val || 0;
           }
         }
       }
 
-      /* FALLBACK: local vars (vars inside event blocks — _hasSingleValue may be true for statics) */
       var locals = esm._allLocalVars;
       if (Array.isArray(locals)) {
         for (var i = 0; i < locals.length; i++) {
@@ -135,13 +109,12 @@
                 if (typeof v.GetValue === 'function') val2 = +v.GetValue() || 0;
               } catch (e2) {}
             }
-            console.log('[Bridge] readGlobal (allLocalVars) ' + name + ' = ' + val2);
             return val2;
           }
         }
       }
 
-      console.warn('[Bridge] [ERROR] Score sync failed - Value is 0. Var "' + name + '" not found in _allGlobalVars or _allLocalVars');
+      console.warn('[Bridge] [ERROR] Var "' + name + '" not found');
     } catch (e) { console.warn('[Bridge] readGlobal error:', e); }
     return 0;
   }
@@ -155,7 +128,6 @@
 
       var entry = null;
 
-      /* search _allGlobalVars */
       var globals = esm._allGlobalVars;
       if (Array.isArray(globals)) {
         for (var i = 0; i < globals.length; i++) {
@@ -163,7 +135,6 @@
         }
       }
 
-      /* fallback: _allLocalVars */
       if (!entry) {
         var locals = esm._allLocalVars;
         if (Array.isArray(locals)) {
@@ -180,7 +151,7 @@
       } else if (entry._hasSingleValue) {
         entry._value = num;
       } else {
-        console.warn('[Bridge] writeGlobal: cannot set var (no SetValue, not hasSingleValue):', name);
+        console.warn('[Bridge] writeGlobal: cannot set var:', name);
         return false;
       }
 
@@ -197,9 +168,6 @@
       var globals = esm._allGlobalVars || [];
       console.log('[Bridge] _allGlobalVars (' + globals.length + '):',
         globals.map(function(v) { return v._name + '=' + v._value; }).join(', '));
-      var locals = esm._allLocalVars || [];
-      console.log('[Bridge] _allLocalVars (' + locals.length + '):',
-        locals.map(function(v) { return v._name; }).join(', '));
     } catch (e) { console.warn('[Bridge] dumpAllVars error:', e); }
   }
 
@@ -214,9 +182,52 @@
     console.log('[Bridge] >>>OUT', json);
   }
 
+  /* ── Shared helper: build & send a GAME_OVER message ────────────────── */
+  function fireGameOver(runtime, reason) {
+    if (gameOverSent) return;
+    gameOverSent = true;
+
+    var score = Math.min(lastTrackedScore, ABSOLUTE_MAX_SCORE);
+
+    var elapsedMs = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
+
+    /* Time-based sanity: max 15 pts/sec */
+    if (elapsedMs > 0) {
+      var maxForTime = Math.ceil((elapsedMs / 1000) * 15);
+      if (score > maxForTime) {
+        console.warn('[Bridge] Score ' + score + ' exceeds time-based max ' + maxForTime + '. Capping.');
+        score = maxForTime;
+        if (runtime) writeGlobal(runtime, 'score', score);
+      }
+    }
+
+    var prevTomatoes = (window.__shibGameState && typeof window.__shibGameState.collectedTomatoes === 'number')
+      ? window.__shibGameState.collectedTomatoes : 0;
+    var newTomatoes = prevTomatoes + score;
+    if (window.__shibGameState) window.__shibGameState.collectedTomatoes = newTomatoes;
+
+    console.log('[Bridge] GAME_OVER reason=' + reason + ' score=' + score +
+      ' tomatoes=' + newTomatoes + ' elapsed=' + Math.round(elapsedMs / 1000) + 's');
+
+    navBlocked = true;
+
+    post('GAME_OVER', {
+      score:              score,
+      collected_tomatoes: newTomatoes,
+      pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || '',
+      elapsed_ms:         elapsedMs,
+      reason:             reason || 'death',
+    });
+
+    /* Reset session for next round */
+    sessionStartMs   = Date.now();
+    lastTrackedScore = 0;
+    lastPostedScore  = -1;
+  }
+
   /* ── Hook C3 navigation ──────────────────────────────────────────────
    *  sprite14 (circle/refresh icon) → GoToLayoutByName → DOUBLE_REWARD (2× PT)
-   *  rstrt    (back-arrow icon)     → GoToLayout       → claim modal (GAME_OVER sent first)
+   *  rstrt    (back-arrow icon)     → GoToLayout       → claim modal (GAME_OVER)
    * ─────────────────────────────────────────────────────────────────── */
   function hookNavigation(runtime) {
     var lm = runtime._layoutManager;
@@ -232,8 +243,7 @@
           console.log('[Bridge] Nav BLOCKED (' + method + ' → "' + dest + '") intent=' + intent);
           pendingNav = { fn: orig, args: Array.prototype.slice.call(arguments) };
           if (intent === 'double') {
-            /* sprite14 clicked: trigger 2× reward in React Native */
-            var score2x = Math.min(readGlobal(runtime, 'score'), ABSOLUTE_MAX_SCORE);
+            var score2x = Math.min(lastTrackedScore, ABSOLUTE_MAX_SCORE);
             var elapsed2x = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
             if (elapsed2x > 0) {
               var maxForTime2x = Math.ceil((elapsed2x / 1000) * 15);
@@ -248,7 +258,6 @@
               elapsed_ms:         elapsed2x,
             });
           }
-          /* rstrt: GAME_OVER already sent when death layout entered — no extra message needed */
           return;
         }
         return orig.apply(lm, arguments);
@@ -256,9 +265,7 @@
       console.log('[Bridge] Hooked', method);
     }
 
-    /* GoToLayoutByName → sprite14 (circle/refresh = 2× Reward) */
     makeHook('GoToLayoutByName', function () { return 'double'; });
-    /* GoToLayout → rstrt (back-arrow = Claim / exit to main menu) */
     makeHook('GoToLayout', function () { return 'claim'; });
   }
 
@@ -267,7 +274,6 @@
 
   function applyInject(runtime, vars) {
     var ok = 0;
-    /* Write hscore ← total_accumulated_score (all-time high score display in C3) */
     var hsVal = vars.totalScore !== undefined ? vars.totalScore
               : vars.lastSessionScore !== undefined ? vars.lastSessionScore : 0;
     if (writeGlobal(runtime, 'hscore', hsVal)) ok++;
@@ -299,6 +305,12 @@
       else         injectQueue = msg;
     }
 
+    /* TIME_UP — 2-minute timer from React Native expired */
+    if (msg.type === 'TIME_UP') {
+      console.log('[Bridge] TIME_UP received — forcing GAME_OVER');
+      fireGameOver(runtime, 'time_limit');
+    }
+
     if (msg.type === 'RESUME_NAVIGATION') {
       navBlocked = false;
       if (pendingNav) { var nav = pendingNav; pendingNav = null; nav.fn.apply(null, nav.args); }
@@ -316,66 +328,79 @@
     if (!runtime) { setTimeout(tick, 300); return; }
 
     if (!bridgeReady) {
-      bridgeReady = true;
-      sessionStartMs   = Date.now();
+      bridgeReady    = true;
+      sessionStartMs = Date.now();
       lastTrackedScore = 0;
+      lastPostedScore  = -1;
+      gameOverSent     = false;
       hookNavigation(runtime);
       if (injectQueue) { applyInject(runtime, injectQueue); injectQueue = null; }
       post('BRIDGE_READY', {});
-      console.log('[Bridge] Ready — runtime obtained via _GetLocalRuntime()');
+      console.log('[Bridge] Ready');
       dumpAllVars(runtime);
     }
 
-    /* ── Per-tick score integrity check ─────────────────────────────────────
-     *  Read the live C3 score. If it jumped by more than MAX_DELTA_PER_TICK
-     *  (20 pts per 300 ms) in this tick, the collision event fired multiple
-     *  times for the same knife (C3 debounce failure). Write the capped value
-     *  back into C3 immediately so the in-game display stays correct too.
-     * ─────────────────────────────────────────────────────────────────────── */
+    /* ── Per-tick score integrity check ───────────────────────────────── */
     var currentScore = readGlobal(runtime, 'score');
     if (currentScore > lastTrackedScore) {
       var delta = currentScore - lastTrackedScore;
       if (delta > MAX_DELTA_PER_TICK) {
         var cappedScore = lastTrackedScore + MAX_DELTA_PER_TICK;
-        console.warn('[Bridge] Score spike detected: ' + lastTrackedScore +
+        console.warn('[Bridge] Score spike: ' + lastTrackedScore +
           ' → ' + currentScore + ' (delta=' + delta + '). Capping to ' + cappedScore);
         writeGlobal(runtime, 'score', cappedScore);
         currentScore = cappedScore;
       }
       lastTrackedScore = currentScore;
     } else if (currentScore < lastTrackedScore) {
-      /* Game restarted or layout changed — reset tracker */
       lastTrackedScore = currentScore;
+      lastPostedScore  = -1;
+      /* Score dropped (game restarted in C3) — reset gameOverSent for new round */
+      if (currentScore === 0) gameOverSent = false;
     }
 
+    /* ── Score-limit check (2000 cap): force GAME_OVER ───────────────── */
+    if (!gameOverSent && currentScore >= ABSOLUTE_MAX_SCORE) {
+      console.log('[Bridge] Score cap reached (' + currentScore + ') — firing GAME_OVER');
+      /* Write the capped score back into C3 first */
+      writeGlobal(runtime, 'score', ABSOLUTE_MAX_SCORE);
+      lastTrackedScore = ABSOLUTE_MAX_SCORE;
+      fireGameOver(runtime, 'score_limit');
+      setTimeout(tick, 300);
+      return;
+    }
+
+    /* ── Broadcast SCORE_UPDATE when score changes ────────────────────── */
+    if (!gameOverSent && currentScore !== lastPostedScore) {
+      post('SCORE_UPDATE', { score: currentScore });
+      lastPostedScore = currentScore;
+    }
+
+    /* ── Layout change detection ──────────────────────────────────────── */
     var name = layoutName(runtime);
     if (name !== lastLayout) {
       console.log('[Bridge] Layout: "' + lastLayout + '" → "' + name + '"');
       lastLayout = name;
 
       if (name.toLowerCase() === 'death') {
-        /* Re-read after any per-tick correction, then apply the absolute cap */
+        /* Re-read after per-tick correction, then apply absolute cap */
         var score = Math.min(readGlobal(runtime, 'score'), ABSOLUTE_MAX_SCORE);
         var elapsedMs = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
 
-        /* Additional time-based sanity: clamp to max possible for elapsed time.
-         * Allow 15 pts/sec absolute maximum (generous: 3 knives/sec × 5 pts). */
         if (elapsedMs > 0) {
           var maxForTime = Math.ceil((elapsedMs / 1000) * 15);
           if (score > maxForTime) {
-            console.warn('[Bridge] Score ' + score + ' exceeds time-based max ' + maxForTime +
-              ' for ' + Math.round(elapsedMs / 1000) + 's session. Capping.');
+            console.warn('[Bridge] Score ' + score + ' exceeds time-based max ' + maxForTime + '. Capping.');
             score = maxForTime;
             writeGlobal(runtime, 'score', score);
           }
         }
 
         if (score === 0) {
-          console.error('[Bridge] [ERROR] Score sync failed - Value is 0. Dumping all vars:');
+          console.error('[Bridge] [ERROR] Score is 0 on death. Dumping vars:');
           dumpAllVars(runtime);
         }
 
-        /* Compute collected_tomatoes = server baseline + this session's score */
         var prevTomatoes = (window.__shibGameState &&
           typeof window.__shibGameState.collectedTomatoes === 'number')
           ? window.__shibGameState.collectedTomatoes : 0;
@@ -383,25 +408,30 @@
         if (window.__shibGameState) window.__shibGameState.collectedTomatoes = newTomatoes;
 
         console.log('[Bridge] DEATH — score=' + score +
-          ' collected_tomatoes=' + newTomatoes + ' (prev=' + prevTomatoes + ')' +
-          ' elapsed=' + Math.round(elapsedMs / 1000) + 's');
+          ' tomatoes=' + newTomatoes + ' elapsed=' + Math.round(elapsedMs / 1000) + 's');
 
-        navBlocked = true;
+        if (!gameOverSent) {
+          gameOverSent = true;
+          navBlocked   = true;
 
-        /* Send GAME_OVER — all values as numbers, plus elapsed for server validation */
-        post('GAME_OVER', {
-          score:              score,
-          collected_tomatoes: newTomatoes,
-          pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || '',
-          elapsed_ms:         elapsedMs,
-        });
+          post('GAME_OVER', {
+            score:              score,
+            collected_tomatoes: newTomatoes,
+            pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || '',
+            elapsed_ms:         elapsedMs,
+            reason:             'death',
+          });
 
-        /* Reset session timer for the next game */
-        sessionStartMs   = Date.now();
-        lastTrackedScore = 0;
+          sessionStartMs   = Date.now();
+          lastTrackedScore = 0;
+          lastPostedScore  = -1;
+        }
 
       } else if (navBlocked && name.toLowerCase() !== 'death') {
         navBlocked = false;
+        /* If game re-entered from menu, reset for new session */
+        gameOverSent = false;
+        lastPostedScore = -1;
       }
     }
 
@@ -416,5 +446,5 @@
   }
 
   window.__shibBridge = { post: post, writeGlobal: writeGlobal, readGlobal: readGlobal, rt: rt };
-  console.log('[Bridge] Script loaded — waiting for C3 runtime (_GetLocalRuntime)…');
+  console.log('[Bridge] Script loaded — waiting for C3 runtime…');
 })();

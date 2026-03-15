@@ -1,7 +1,7 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Dimensions, Modal, Pressable,
-  ActivityIndicator, Platform, BackHandler,
+  ActivityIndicator, Platform, BackHandler, Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,10 +10,8 @@ import { useWallet } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
-import { showInterstitialAd, showRewardedAd } from '@/lib/nativeAds';
+import { showRewardedAd } from '@/lib/nativeAds';
 
-// ─── pbId request header helper ───────────────────────────────────────────────
-// Every server call includes X-PB-ID so the server always knows which user
 function pbHeaders(pbId: string): HeadersInit {
   return { 'Content-Type': 'application/json', 'X-PB-ID': pbId };
 }
@@ -24,16 +22,16 @@ if (Platform.OS !== 'web') {
 }
 
 const { width: SW, height: SH } = Dimensions.get('window');
-/* Fix: getApiUrl() returns a URL with trailing slash (e.g. "https://domain:5000/").
- * Using `${BASE}/path` would produce double-slash "…:5000//path" → Express 404 HTML.
- * new URL(path, base) correctly resolves to single-slash "…:5000/path". */
 const BASE        = getApiUrl();
 const GAME_URL    = new URL('/arcade/index.html', BASE).href;
 const GAME_DATA   = (pbId: string) => new URL(`/api/app/game/data/${pbId}`, BASE).href;
 const SYNC_SCORE  = new URL('/api/app/game/sync-score', BASE).href;
 const SETTINGS_URL = new URL('/api/app/settings', BASE).href;
 
-/* ─── Ad types ────────────────────────────────────────────────────────────── */
+const SESSION_SECONDS = 120; // 2-minute session
+const SCORE_LIMIT     = 2000;
+const SCORE_WARNING   = 1900;
+
 type AdNetwork = 'admob' | 'unity' | 'applovin';
 interface AdSettings {
   showAds: boolean; activeAdNetwork: string;
@@ -56,8 +54,6 @@ function networkOrder(active: string): AdNetwork[] {
   return prio ? [prio, ...all.filter(n => n !== prio)] : all;
 }
 
-
-/* ─── Game data from server ───────────────────────────────────────────────── */
 interface GameData {
   power_tokens: number;
   collected_tomatoes: number;
@@ -65,39 +61,51 @@ interface GameData {
   total_accumulated_score: number;
 }
 
-/* ─── Phase state machine ─────────────────────────────────────────────────── */
-type Phase = 'game' | 'exit_modal' | 'retry_ad' | 'claim_ad' | 'double_ad' | 'saving' | 'reward';
+type Phase = 'game' | 'summary' | 'double_ad' | 'saving' | 'reward';
+type GameOverReason = 'time' | 'score' | 'death';
 const NET_LABEL: Record<AdNetwork, string> = { admob: 'AdMob', unity: 'Unity Ads', applovin: 'AppLovin MAX' };
 
-/* ─── Component ───────────────────────────────────────────────────────────── */
+function formatTime(s: number): string {
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+}
+
 export default function GamesScreen() {
   const insets = useSafeAreaInsets();
   const { addPowerTokens, powerTokens } = useWallet();
   const { pbUser, refreshBalance } = useAuth();
 
-  const wvRef     = useRef<any>(null);
-  const adCfg     = useRef<AdSettings>(AD_DEFAULT);
-  const netQueue  = useRef<AdNetwork[]>(['admob', 'unity', 'applovin']);
-  const netIdx    = useRef(0);
-  const scoreRef  = useRef(0);
-  const pbIdRef   = useRef<string>('');
-  const gameDataRef = useRef<GameData | null>(null);
+  const wvRef           = useRef<any>(null);
+  const adCfg           = useRef<AdSettings>(AD_DEFAULT);
+  const netQueue        = useRef<AdNetwork[]>(['admob', 'unity', 'applovin']);
+  const netIdx          = useRef(0);
+  const scoreRef        = useRef(0);           // final score at game-over
+  const liveScoreRef    = useRef(0);           // live score during play (from SCORE_UPDATE)
+  const pbIdRef         = useRef<string>('');
+  const gameDataRef     = useRef<GameData | null>(null);
+  const sessionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const adTimerRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const gameOverFiredRef = useRef(false);      // guard against double GAME_OVER
+  const warningPulse    = useRef(new Animated.Value(1)).current;
 
-  const [phase,      setPhase]      = useState<Phase>('game');
-  const [score,      setScore]      = useState(0);
-  const [earned,     setEarned]     = useState(0);
-  const [adNet,      setAdNet]      = useState<AdNetwork>('admob');
-  const [adTimer,    setAdTimer]    = useState(0);
-  const [gameStats,  setGameStats]  = useState<GameData | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [phase,         setPhase]         = useState<Phase>('game');
+  const [score,         setScore]         = useState(0);
+  const [liveScore,     setLiveScore]     = useState(0);
+  const [earned,        setEarned]        = useState(0);
+  const [adNet,         setAdNet]         = useState<AdNetwork>('admob');
+  const [adTimer,       setAdTimer]       = useState(0);
+  const [gameStats,     setGameStats]     = useState<GameData | null>(null);
+  const [sessionTime,   setSessionTime]   = useState(SESSION_SECONDS);
+  const [sessionActive, setSessionActive] = useState(false);
+  const [overReason,    setOverReason]    = useState<GameOverReason>('death');
 
   const TOP = Platform.OS === 'web' ? 67 : insets.top;
 
-  /* ── Store pbId when auth resolves ── */
+  /* ── Update pbId when auth resolves ── */
   useEffect(() => {
     if (pbUser?.pbId) {
       pbIdRef.current = pbUser.pbId;
-      console.log('[Games] pbId set:', pbUser.pbId);
     }
   }, [pbUser]);
 
@@ -108,61 +116,71 @@ export default function GamesScreen() {
       .then(s => {
         adCfg.current = { ...AD_DEFAULT, ...s };
         netQueue.current = networkOrder(s.activeAdNetwork || '');
-        console.log('[Games] Settings loaded:', JSON.stringify(adCfg.current));
-        console.log('[Games] Ad network order:', netQueue.current);
       })
-      .catch(err => console.warn('[Games] Settings fetch failed:', err));
+      .catch(() => {});
   }, []);
 
-  /* ── Fetch game data from server for this user ── */
+  /* ── Fetch game data ── */
   const fetchGameData = useCallback(async (pbId: string) => {
     if (!pbId) return;
     try {
-      console.log('[Games] Fetching game data for pbId:', pbId);
       const res = await fetch(GAME_DATA(pbId), { headers: { 'X-PB-ID': pbId } });
       const data: GameData = await res.json();
-      console.log('[Games] Game data received:', JSON.stringify(data));
       gameDataRef.current = data;
       setGameStats(data);
       return data;
-    } catch (err) {
-      console.warn('[Games] fetchGameData failed:', err);
-      return null;
-    }
+    } catch { return null; }
   }, []);
 
-  /* ── Load game data on mount / when pbId available ── */
   useEffect(() => {
     const pbId = pbUser?.pbId;
     if (pbId) fetchGameData(pbId);
   }, [pbUser, fetchGameData]);
 
-  /* ── Helpers ── */
+  /* ── Ad network picker ── */
   const nextNet = () => {
     const n = netQueue.current[netIdx.current % netQueue.current.length] as AdNetwork;
     netIdx.current += 1;
     return n;
   };
 
-  const startTimer = (s: number) => {
+  /* ── Ad countdown timer ── */
+  const startAdTimer = (s: number) => {
     setAdTimer(s);
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setAdTimer(t => { if (t <= 1) { clearInterval(timerRef.current!); return 0; } return t - 1; });
+    if (adTimerRef.current) clearInterval(adTimerRef.current);
+    adTimerRef.current = setInterval(() => {
+      setAdTimer(t => { if (t <= 1) { clearInterval(adTimerRef.current!); return 0; } return t - 1; });
     }, 1000);
   };
-
-  const stopTimer = () => {
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+  const stopAdTimer = () => {
+    if (adTimerRef.current) { clearInterval(adTimerRef.current); adTimerRef.current = null; }
     setAdTimer(0);
   };
+  useEffect(() => () => {
+    if (adTimerRef.current) clearInterval(adTimerRef.current);
+    if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+  }, []);
 
-  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+  /* ── Session countdown (2 minutes) ───────────────────────────────────────
+   *  Starts when BRIDGE_READY fires. On reaching 0, forces game over.
+   * ─────────────────────────────────────────────────────────────────────── */
+  const stopSessionTimer = useCallback(() => {
+    if (sessionTimerRef.current) { clearInterval(sessionTimerRef.current); sessionTimerRef.current = null; }
+  }, []);
+
+  /* ── Warning pulse animation ── */
+  const startWarningPulse = useCallback(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(warningPulse, { toValue: 0.4, duration: 400, useNativeDriver: true }),
+        Animated.timing(warningPulse, { toValue: 1,   duration: 400, useNativeDriver: true }),
+      ])
+    ).start();
+  }, [warningPulse]);
 
   /* ── Send message into WebView / iframe ── */
   const sendToGame = useCallback((msg: object) => {
     const json = JSON.stringify(msg);
-    console.log('[Games] →game:', json);
     if (Platform.OS !== 'web') {
       wvRef.current?.injectJavaScript(
         `window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(json)}}));true;`
@@ -173,232 +191,218 @@ export default function GamesScreen() {
     }
   }, []);
 
-  /* ── Reload the game ── */
+  /* ── Reload / reset game ── */
   const reloadGame = useCallback(() => {
-    console.log('[Games] Reloading game');
-    scoreRef.current = 0; setScore(0); setEarned(0); setPhase('game');
-    if (Platform.OS !== 'web') { wvRef.current?.reload(); }
-    else {
+    stopSessionTimer();
+    gameOverFiredRef.current = false;
+    liveScoreRef.current = 0;
+    scoreRef.current = 0;
+    setScore(0);
+    setLiveScore(0);
+    setEarned(0);
+    setSessionTime(SESSION_SECONDS);
+    setSessionActive(false);
+    setPhase('game');
+    warningPulse.stopAnimation();
+    warningPulse.setValue(1);
+    if (Platform.OS !== 'web') {
+      wvRef.current?.reload();
+    } else {
       const f = document.querySelector<HTMLIFrameElement>('iframe[title="WeaponMaster"]');
       if (f) { const s = f.src; f.src = ''; f.src = s; }
     }
-  }, []);
+  }, [stopSessionTimer, warningPulse]);
 
-  /* ── Bridge ready → inject server data into C3 ── */
+  /* ── GAME OVER — unified handler ─────────────────────────────────────────
+   *  Called from: timer expiry, score limit (bridge), player death (bridge)
+   * ─────────────────────────────────────────────────────────────────────── */
+  const handleGameOver = useCallback((rawScore: number, rawTomatoes?: number, reason: GameOverReason = 'death') => {
+    if (gameOverFiredRef.current) return;
+    gameOverFiredRef.current = true;
+
+    stopSessionTimer();
+    setSessionActive(false);
+
+    const s = Math.min(Math.max(0, Math.round(Number(rawScore) || 0)), SCORE_LIMIT);
+    const t = rawTomatoes !== undefined ? Math.max(0, Math.round(Number(rawTomatoes) || 0)) : undefined;
+
+    scoreRef.current = s;
+    setScore(s);
+    setOverReason(reason);
+    setPhase('summary');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // Sync score to server in background
+    const pbId = pbIdRef.current;
+    if (pbId) {
+      const body: Record<string, number | string> = { pbId, score: s };
+      if (t !== undefined) body.collected_tomatoes = t;
+      fetch(SYNC_SCORE, {
+        method: 'POST',
+        headers: pbHeaders(pbId),
+        body: JSON.stringify(body),
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.success) {
+            setGameStats(prev => prev ? {
+              ...prev,
+              last_session_score: Number(data.last_session_score),
+              collected_tomatoes: Number(data.collected_tomatoes),
+            } : prev);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [stopSessionTimer]);
+
+  /* ── Start 2-minute session countdown ─────────────────────────────────── */
+  const startSessionTimer = useCallback(() => {
+    stopSessionTimer();
+    gameOverFiredRef.current = false;
+    liveScoreRef.current = 0;
+    setLiveScore(0);
+    setSessionTime(SESSION_SECONDS);
+    setSessionActive(true);
+    warningPulse.setValue(1);
+    warningPulse.stopAnimation();
+
+    let remaining = SESSION_SECONDS;
+    sessionTimerRef.current = setInterval(() => {
+      remaining -= 1;
+      setSessionTime(remaining);
+      if (remaining <= 0) {
+        clearInterval(sessionTimerRef.current!);
+        sessionTimerRef.current = null;
+        // Notify bridge that time is up (bridge may freeze the C3 game)
+        sendToGame({ type: 'TIME_UP' });
+        // Force game over on RN side with last known live score
+        handleGameOver(liveScoreRef.current, undefined, 'time');
+      }
+    }, 1000);
+  }, [stopSessionTimer, sendToGame, handleGameOver, warningPulse]);
+
+  /* ── Live score update from bridge ── */
+  const handleScoreUpdate = useCallback((rawScore: number) => {
+    const s = Math.min(Math.max(0, Math.round(Number(rawScore) || 0)), SCORE_LIMIT);
+    liveScoreRef.current = s;
+    setLiveScore(s);
+
+    // Start pulsing warning near limit
+    if (s >= SCORE_WARNING) {
+      startWarningPulse();
+    }
+
+    // Force game over if score cap reached in RN (bridge also does this, but belt-and-suspenders)
+    if (s >= SCORE_LIMIT && !gameOverFiredRef.current) {
+      sendToGame({ type: 'TIME_UP' }); // tell bridge to freeze
+      handleGameOver(s, undefined, 'score');
+    }
+  }, [startWarningPulse, sendToGame, handleGameOver]);
+
+  /* ── Bridge ready → inject server data + start session timer ── */
   const handleBridgeReady = useCallback(() => {
-    console.log('[Games] Bridge ready — injecting game state');
     const pbId = pbIdRef.current;
     const buildInject = (data: GameData) => ({
       type:              'INJECT_VARS',
-      pbId,                                              // stored in window.__shibGameState.pbId
+      pbId,
       powerTokens:       data.power_tokens,
-      collectedTomatoes: data.collected_tomatoes,        // number — from PocketBase number field
+      collectedTomatoes: data.collected_tomatoes,
       lastSessionScore:  data.last_session_score,
       totalScore:        data.total_accumulated_score,
     });
     const data = gameDataRef.current;
     if (data) {
       sendToGame(buildInject(data));
-    } else {
-      if (pbId) {
-        fetchGameData(pbId).then(d => {
-          if (d) sendToGame(buildInject(d));
-        });
-      }
+    } else if (pbId) {
+      fetchGameData(pbId).then(d => { if (d) sendToGame(buildInject(d)); });
     }
-  }, [sendToGame, fetchGameData]);
+    // Start the 2-minute session timer
+    startSessionTimer();
+  }, [sendToGame, fetchGameData, startSessionTimer]);
 
-  /* ── Sync score to server on game-over ──────────────────────────────────────
-   *  score              : C3 score global (read by bridge)
-   *  clientTomatoes     : accumulated tomatoes value sent by the bridge's GAME_OVER
-   *                       postMessage — always a NUMBER, never a string.
-   *                       Server uses it directly; no string coercion on either end.
-   * ────────────────────────────────────────────────────────────────────────── */
-  const syncScore = useCallback(async (score: number, clientTomatoes?: number) => {
-    const pbId = pbIdRef.current;
-    if (!pbId) { console.warn('[Games] syncScore: no pbId'); return; }
-    try {
-      // Guarantee numbers — parseInt to strip any accidental floats/strings
-      const safeScore    = Math.max(0, Math.round(Number(score) || 0));
-      const safeTomatoes = typeof clientTomatoes === 'number'
-                         ? Math.max(0, Math.round(clientTomatoes))
-                         : undefined;
-      const body: Record<string, number | string> = { pbId, score: safeScore };
-      if (safeTomatoes !== undefined) body.collected_tomatoes = safeTomatoes;
-
-      console.log(`[Games] syncScore → pbId=${pbId} score=${safeScore} collected_tomatoes=${safeTomatoes ?? 'server-computed'}`);
-      const res = await fetch(SYNC_SCORE, {
-        method: 'POST',
-        headers: pbHeaders(pbId),
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      console.log('[Games] sync-score response:', JSON.stringify(data));
-      if (data.success) {
-        // Both values come back as numbers from the server
-        setGameStats(prev => prev ? {
-          ...prev,
-          last_session_score: Number(data.last_session_score),
-          collected_tomatoes: Number(data.collected_tomatoes),
-        } : prev);
-      }
-    } catch (err) {
-      console.error('[Games] syncScore FAILED:', err);
-    }
-  }, []);
-
-  /* ── GAME OVER — called by both native WebView onMessage and web iframe ── */
-  const handleGameOver = useCallback((rawScore: number, rawTomatoes?: number) => {
-    const s = Math.max(0, Math.round(Number(rawScore) || 0));
-    const t = rawTomatoes !== undefined ? Math.max(0, Math.round(Number(rawTomatoes) || 0)) : undefined;
-    console.log(`[Games] GAME_OVER — score=${s} collected_tomatoes=${t ?? 'N/A (server will compute)'}`);
-    scoreRef.current = s;
-    setScore(s);
-    setPhase('exit_modal');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    // Immediately POST to sync-score with BOTH values as numbers
-    syncScore(s, t);
-  }, [syncScore]);
-
-  /* ── RETRY (Circle) → interstitial → reload ── */
-  const handleRetry = useCallback(() => {
-    const net = nextNet();
-    setAdNet(net); setPhase('retry_ad'); startTimer(3);
-    console.log('[Games] RETRY — interstitial via', net);
-    showInterstitialAd(net, adCfg.current, () => {
-      stopTimer();
-      console.log('[Games] Retry ad done — reloading');
-      reloadGame();
-    });
-  }, [reloadGame]);
-
-  /* ── CLAIM → interstitial → add score PT → reset last_session_score ── */
-  const handleClaim = useCallback(async () => {
-    const net = nextNet();
-    setAdNet(net); setPhase('claim_ad'); startTimer(3);
-    console.log('[Games] CLAIM — interstitial via', net, 'score=', scoreRef.current);
-    showInterstitialAd(net, adCfg.current, async () => {
-      stopTimer();
-      setPhase('saving');
-      const pts = scoreRef.current;
-      try {
-        console.log(`[Games] Adding ${pts} PT to PocketBase…`);
-        await addPowerTokens(pts, 'knife_hit');
-        console.log(`[Games] Claimed ${pts} PT — PocketBase updated`);
-        // Force PT badge to refresh immediately
-        await refreshBalance();
-        console.log('[Games] refreshBalance() done after claim');
-        setEarned(pts);
-        setPhase('reward');
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        // Refresh game stats to reflect reset last_session_score
-        if (pbIdRef.current) fetchGameData(pbIdRef.current);
-      } catch (err) {
-        console.error('[Games] addPowerTokens FAILED:', err);
-        await refreshBalance().catch(() => {});
-        setEarned(pts); setPhase('reward');
-      }
-    });
-  }, [addPowerTokens, fetchGameData, refreshBalance]);
-
-  /* ── DOUBLE (2×) → rewarded → add score×2 PT ── */
+  /* ── DOUBLE (2×) → rewarded ad → add score × 2 PT ── */
   const handleDouble = useCallback(async () => {
     const net = nextNet();
-    setAdNet(net); setPhase('double_ad'); startTimer(5);
-    console.log('[Games] DOUBLE — rewarded via', net, 'score=', scoreRef.current);
-    // showRewardedAd: Expo Go → simulated; custom build → native AdMob/Unity/AppLovin SDK
-    showRewardedAd(net, adCfg.current, async (watched) => {
-      stopTimer();
-      if (!watched) { setPhase('exit_modal'); return; }
+    setAdNet(net); setPhase('double_ad'); startAdTimer(5);
+    showRewardedAd(net, adCfg.current as any, async (watched) => {
+      stopAdTimer();
+      if (!watched) { setPhase('summary'); return; }
       setPhase('saving');
-      const pts = scoreRef.current * 2;
+      const pts = Math.min(scoreRef.current * 2, SCORE_LIMIT * 2);
       try {
-        console.log(`[Games] Adding ${pts} PT (2×) to PocketBase…`);
         await addPowerTokens(pts, 'knife_hit');
-        console.log(`[Games] Double claimed ${pts} PT — PocketBase updated`);
-        // Force PT badge to refresh immediately
         await refreshBalance();
-        console.log('[Games] refreshBalance() done after double');
         setEarned(pts);
         setPhase('reward');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         if (pbIdRef.current) fetchGameData(pbIdRef.current);
-      } catch (err) {
-        console.error('[Games] addPowerTokens FAILED:', err);
+      } catch {
         await refreshBalance().catch(() => {});
         setEarned(pts); setPhase('reward');
       }
     });
   }, [addPowerTokens, fetchGameData, refreshBalance]);
 
-  /* ── Handle native WebView messages ─────────────────────────────────────────
-   *  GAME_OVER payload from bridge.js:
-   *    { type: 'GAME_OVER', score: <number>, collected_tomatoes: <number>, pb_id: <string> }
-   *  Both score and collected_tomatoes are JavaScript numbers — not strings.
-   * ────────────────────────────────────────────────────────────────────────── */
+  /* ── CLAIM → directly add score PT (no interstitial) ── */
+  const handleClaim = useCallback(async () => {
+    setPhase('saving');
+    const pts = scoreRef.current;
+    try {
+      await addPowerTokens(pts, 'knife_hit');
+      await refreshBalance();
+      setEarned(pts);
+      setPhase('reward');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if (pbIdRef.current) fetchGameData(pbIdRef.current);
+    } catch {
+      await refreshBalance().catch(() => {});
+      setEarned(pts); setPhase('reward');
+    }
+  }, [addPowerTokens, fetchGameData, refreshBalance]);
+
+  /* ── Native WebView message handler ── */
   const onNativeMessage = useCallback((e: { nativeEvent: { data: string } }) => {
     try {
       const msg = JSON.parse(e.nativeEvent.data);
-      console.log('[Games] native msg:', JSON.stringify(msg));
       if (msg.type === 'BRIDGE_READY') {
         handleBridgeReady();
       }
-      if (msg.type === 'GAME_OVER') {
-        // Extract score and collected_tomatoes as numbers — bridge sends both
-        const score    = Number(msg.score)              || 0;
-        const tomatoes = Number(msg.collected_tomatoes) || 0;
-        console.log(`[Games][onMessage] GAME_OVER score=${score} collected_tomatoes=${tomatoes}`);
-        handleGameOver(score, tomatoes);
+      if (msg.type === 'SCORE_UPDATE') {
+        handleScoreUpdate(Number(msg.score) || 0);
       }
-      // DOUBLE_REWARD = sprite14 (circle/refresh icon) clicked in C3 death screen → 2× rewarded ad
-      if (msg.type === 'DOUBLE_REWARD') {
+      if (msg.type === 'GAME_OVER' || msg.type === 'DOUBLE_REWARD') {
         const s = Number(msg.score) || 0;
         const t = Number(msg.collected_tomatoes) || 0;
-        console.log(`[Games][onMessage] DOUBLE_REWARD score=${s} — triggering 2× rewarded ad`);
-        handleGameOver(s, t);   // show exit modal first, then user can pick "Watch Ad" for 2×
+        const reason: GameOverReason = msg.reason === 'score_limit' ? 'score'
+                                     : msg.reason === 'time_limit'  ? 'time' : 'death';
+        handleGameOver(s, t, reason);
       }
-      // Legacy RETRY_REQUEST → treat as no-token retry
-      if (msg.type === 'RETRY_REQUEST' || msg.type === 'RETRY_GAME') {
-        console.log('[Games][onMessage] RETRY_REQUEST — showing interstitial then reload');
-        handleRetry();
-      }
-      if (msg.type === 'INJECT_DONE') console.log('[Games] C3 inject confirmed:', JSON.stringify(msg));
+      if (msg.type === 'INJECT_DONE') { /* no-op */ }
     } catch { /* ignore non-JSON */ }
-  }, [handleBridgeReady, handleGameOver, handleRetry]);
+  }, [handleBridgeReady, handleScoreUpdate, handleGameOver]);
 
-  /* ── Handle web iframe messages ── */
+  /* ── Web iframe message handler ── */
   useEffect(() => {
     if (Platform.OS !== 'web') return;
     const h = (e: MessageEvent) => {
       try {
         const msg = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
         if (!msg?.type) return;
-        console.log('[Games][web] iframe msg:', JSON.stringify(msg));
         if (msg.type === 'BRIDGE_READY') handleBridgeReady();
-        if (msg.type === 'GAME_OVER') {
-          const score    = Number(msg.score)              || 0;
-          const tomatoes = Number(msg.collected_tomatoes) || 0;
-          console.log(`[Games][web][onMessage] GAME_OVER score=${score} collected_tomatoes=${tomatoes}`);
-          handleGameOver(score, tomatoes);
-        }
-        // DOUBLE_REWARD = sprite14 (circle/refresh) clicked → 2× rewarded ad
-        if (msg.type === 'DOUBLE_REWARD') {
+        if (msg.type === 'SCORE_UPDATE') handleScoreUpdate(Number(msg.score) || 0);
+        if (msg.type === 'GAME_OVER' || msg.type === 'DOUBLE_REWARD') {
           const s = Number(msg.score) || 0;
           const t = Number(msg.collected_tomatoes) || 0;
-          console.log(`[Games][web][onMessage] DOUBLE_REWARD score=${s}`);
-          handleGameOver(s, t);
+          const reason: GameOverReason = msg.reason === 'score_limit' ? 'score'
+                                       : msg.reason === 'time_limit'  ? 'time' : 'death';
+          handleGameOver(s, t, reason);
         }
-        // Legacy RETRY_REQUEST
-        if (msg.type === 'RETRY_REQUEST' || msg.type === 'RETRY_GAME') {
-          console.log('[Games][web][onMessage] RETRY_REQUEST — showing interstitial then reload');
-          handleRetry();
-        }
-        if (msg.type === 'INJECT_DONE')  console.log('[Games][web] C3 inject confirmed:', JSON.stringify(msg));
       } catch { /* ignore non-JSON */ }
     };
     window.addEventListener('message', h);
     return () => window.removeEventListener('message', h);
-  }, [handleBridgeReady, handleGameOver, handleRetry]);
+  }, [handleBridgeReady, handleScoreUpdate, handleGameOver]);
 
   /* ── Android back button ── */
   useEffect(() => {
@@ -410,7 +414,7 @@ export default function GamesScreen() {
     return () => sub.remove();
   }, [phase]);
 
-  /* ── Render game view ── */
+  /* ── Render game WebView / iframe ── */
   const renderGame = () => {
     if (Platform.OS === 'web') {
       return (
@@ -435,62 +439,115 @@ export default function GamesScreen() {
     );
   };
 
-  const adPlaying = phase === 'retry_ad' || phase === 'claim_ad' || phase === 'double_ad';
+  const adPlaying = phase === 'double_ad';
+  const isWarning = liveScore >= SCORE_WARNING && sessionActive;
+  const timeIsLow = sessionTime <= 30 && sessionActive;
+
+  /* ── Summary screen reason helpers ── */
+  const reasonTitle = overReason === 'time' ? "Time's Up!" : overReason === 'score' ? '2000 Points!' : 'Game Over';
+  const reasonSub   = overReason === 'time' ? '2-minute session ended'
+                    : overReason === 'score' ? 'You hit the session score limit'
+                    : 'Keep playing to earn more tokens';
 
   return (
     <View style={S.root}>
       {renderGame()}
 
-      {/* ── PT badge ── */}
-      <View style={[S.badge, { top: TOP + 8 }]} pointerEvents="none">
+      {/* ── PT badge (top-right, always visible) ── */}
+      <View style={[S.ptBadge, { top: TOP + 8 }]} pointerEvents="none">
         <Ionicons name="flash" size={13} color={Colors.gold} />
         <Text style={S.badgeTxt}>{powerTokens} PT</Text>
       </View>
 
-      {/* ══ EXIT MODAL ══════════════════════════════════ */}
-      <Modal visible={phase === 'exit_modal'} transparent animationType="slide">
+      {/* ── Session HUD: timer + live score (only during active session) ── */}
+      {sessionActive && phase === 'game' && (
+        <View style={[S.hud, { top: TOP + 8 }]} pointerEvents="none">
+          {/* Timer pill */}
+          <View style={[S.hudPill, timeIsLow && S.hudPillRed]}>
+            <Ionicons name="timer-outline" size={12} color={timeIsLow ? '#ff5252' : Colors.textSecondary} />
+            <Text style={[S.hudText, timeIsLow && S.hudTextRed]}>{formatTime(sessionTime)}</Text>
+          </View>
+
+          {/* Score pill */}
+          <View style={[S.hudPill, isWarning && S.hudPillOrange]}>
+            <Ionicons name="star" size={11} color={isWarning ? Colors.neonOrange : Colors.textSecondary} />
+            <Text style={[S.hudText, isWarning && S.hudTextOrange]}>
+              {liveScore}<Text style={S.hudTextMuted}>/2000</Text>
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {/* ── Warning strip at 1900+ points ── */}
+      {isWarning && phase === 'game' && (
+        <Animated.View style={[S.warningStrip, { opacity: warningPulse }]} pointerEvents="none">
+          <Ionicons name="warning" size={13} color="#ff9800" />
+          <Text style={S.warningTxt}>
+            {SCORE_LIMIT - liveScore} pts to limit — finish strong!
+          </Text>
+        </Animated.View>
+      )}
+
+      {/* ══ SUMMARY / GAME OVER SCREEN ══════════════════════════════════ */}
+      <Modal visible={phase === 'summary'} transparent animationType="slide">
         <View style={S.overlay}>
           <View style={S.card}>
-            <Text style={S.title}>GAME OVER</Text>
 
-            <View style={S.row}>
-              <Text style={S.muted}>Score</Text>
-              <Text style={S.bigNum}>{score}</Text>
+            {/* Header row: reason icon + title */}
+            <View style={S.summaryHeader}>
+              <Text style={S.summaryIcon}>
+                {overReason === 'time' ? '⏰' : overReason === 'score' ? '🏆' : '💀'}
+              </Text>
+              <View>
+                <Text style={S.title}>{reasonTitle}</Text>
+                <Text style={S.reasonSub}>{reasonSub}</Text>
+              </View>
             </View>
 
+            {/* Score display */}
+            <View style={S.scoreBanner}>
+              <Text style={S.scoreBannerLabel}>SCORE</Text>
+              <Text style={S.scoreBannerNum}>{score}</Text>
+              <Text style={S.scoreBannerSub}>= {score} Power Tokens</Text>
+            </View>
+
+            {/* All-time stats */}
             {gameStats && (
               <View style={S.statsBox}>
-                <StatRow label="High Score (All-time)" value={gameStats.total_accumulated_score} gold />
-                <StatRow label="Total Tomatoes" value={gameStats.collected_tomatoes} />
-                <StatRow label="Wallet PT" value={powerTokens} />
+                <StatRow label="All-time High Score" value={gameStats.total_accumulated_score} gold />
+                <StatRow label="Total Tomatoes"       value={gameStats.collected_tomatoes} />
+                <StatRow label="Your PT Wallet"       value={powerTokens} />
               </View>
             )}
 
             <View style={S.sep} />
 
-            {/* Retry — no tokens */}
-            <Pressable style={S.retryBtn} onPress={handleRetry}>
-              <Ionicons name="refresh-circle-outline" size={18} color={Colors.textMuted} />
-              <Text style={S.retryTxt}>Retry (no tokens)</Text>
-            </Pressable>
-
-            {/* Double — rewarded ad */}
+            {/* Double Tokens — rewarded ad (primary action when score > 0) */}
             {score > 0 && (
               <Pressable style={S.doubleBtn} onPress={handleDouble}>
                 <Ionicons name="play-circle" size={18} color="#fff" />
-                <Text style={S.doubleTxt}>Watch Ad  →  {score * 2} PT (2×)</Text>
+                <Text style={S.doubleTxt}>Watch Ad  →  {score * 2} PT  (2×)</Text>
               </Pressable>
             )}
 
-            {/* Claim — interstitial */}
-            <Pressable style={S.claimBtn} onPress={handleClaim}>
-              <Text style={S.claimTxt}>Claim {score} PT</Text>
+            {/* Claim Tokens — direct, no ad */}
+            <Pressable style={[S.claimBtn, score === 0 && S.claimBtnDim]} onPress={handleClaim} disabled={score === 0}>
+              <Text style={S.claimTxt}>
+                {score > 0 ? `Claim  ${score} PT` : 'No tokens earned — Play Again'}
+              </Text>
             </Pressable>
+
+            {score === 0 && (
+              <Pressable style={S.retryLink} onPress={reloadGame}>
+                <Text style={S.retryLinkTxt}>Restart game</Text>
+              </Pressable>
+            )}
+
           </View>
         </View>
       </Modal>
 
-      {/* ══ AD MODAL ════════════════════════════════════ */}
+      {/* ══ AD OVERLAY (rewarded — double tokens) ═══════════════════════ */}
       <Modal visible={adPlaying} transparent animationType="fade">
         <View style={S.adFull}>
           <View style={S.adCard}>
@@ -499,47 +556,34 @@ export default function GamesScreen() {
               {adTimer > 0 && <View style={S.timerPill}><Text style={S.timerTxt}>{adTimer}s</Text></View>}
             </View>
             <View style={S.adBody}>
-              <Ionicons
-                name={phase === 'double_ad' ? 'gift-outline' : 'megaphone-outline'}
-                size={56}
-                color={phase === 'double_ad' ? Colors.gold : 'rgba(255,255,255,0.18)'}
-              />
-              <ActivityIndicator
-                size="large"
-                color={phase === 'double_ad' ? Colors.gold : 'rgba(255,255,255,0.5)'}
-                style={{ marginTop: 4 }}
-              />
-              <Text style={[S.adLabel, phase === 'double_ad' && { color: Colors.gold }]}>
-                {phase === 'double_ad' ? 'Rewarded Video' : 'Advertisement'}
-              </Text>
-              <Text style={S.adSub}>
-                {phase === 'retry_ad' ? 'Resuming game…' :
-                 phase === 'claim_ad' ? 'Preparing your reward…' :
-                 `Earn ${score * 2} PT for watching`}
-              </Text>
+              <Ionicons name="gift-outline" size={56} color={Colors.gold} />
+              <ActivityIndicator size="large" color={Colors.gold} style={{ marginTop: 4 }} />
+              <Text style={[S.adLabel, { color: Colors.gold }]}>Rewarded Video</Text>
+              <Text style={S.adSub}>Watch to earn {score * 2} PT (2×)</Text>
               <Text style={S.adHint}>Loading ad · {NET_LABEL[adNet]}</Text>
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* ══ SAVING ══════════════════════════════════════ */}
+      {/* ══ SAVING ══════════════════════════════════════════════════════ */}
       <Modal visible={phase === 'saving'} transparent animationType="fade">
         <View style={S.overlay}>
           <View style={S.card}>
             <ActivityIndicator size="large" color={Colors.gold} />
-            <Text style={S.muted}>Updating database…</Text>
+            <Text style={S.muted}>Saving tokens…</Text>
           </View>
         </View>
       </Modal>
 
-      {/* ══ REWARD ══════════════════════════════════════ */}
+      {/* ══ REWARD ══════════════════════════════════════════════════════ */}
       <Modal visible={phase === 'reward'} transparent animationType="fade">
         <View style={S.overlay}>
           <View style={S.card}>
             <Text style={{ fontSize: 48 }}>🎉</Text>
             <Text style={S.title}>+{earned} PT</Text>
-            <Text style={S.muted}>New balance: {powerTokens} PT</Text>
+            <Text style={S.muted}>Wallet: {powerTokens} PT</Text>
+            <View style={S.sep} />
             <Pressable style={S.claimBtn} onPress={reloadGame}>
               <Text style={S.claimTxt}>Play Again</Text>
             </Pressable>
@@ -562,49 +606,85 @@ function StatRow({ label, value, gold }: { label: string; value: number; gold?: 
 
 /* ─── Styles ──────────────────────────────────────────────────────────────── */
 const S = StyleSheet.create({
-  root:   { flex: 1, backgroundColor: '#000' },
-  loader: { ...StyleSheet.absoluteFillObject, backgroundColor: '#0a1f1c', alignItems: 'center', justifyContent: 'center', gap: 12 },
+  root:      { flex: 1, backgroundColor: '#000' },
+  loader:    { ...StyleSheet.absoluteFillObject, backgroundColor: '#0a1f1c', alignItems: 'center', justifyContent: 'center', gap: 12 },
   loaderTxt: { color: Colors.textMuted, fontFamily: 'Inter_500Medium', fontSize: 14 },
 
-  badge: { position: 'absolute', right: 14, flexDirection: 'row', alignItems: 'center', gap: 5,
+  /* PT badge — top-right */
+  ptBadge: { position: 'absolute', right: 14, flexDirection: 'row', alignItems: 'center', gap: 5,
     backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, zIndex: 99 },
   badgeTxt: { fontFamily: 'Inter_700Bold', fontSize: 13, color: Colors.gold },
 
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.86)', alignItems: 'center', justifyContent: 'center' },
-  card: { backgroundColor: '#0d1a17', borderRadius: 24, padding: 26, width: SW * 0.87,
-    alignItems: 'center', gap: 12, borderWidth: 1, borderColor: 'rgba(244,196,48,0.18)' },
-  title:  { fontFamily: 'Inter_700Bold', fontSize: 24, color: Colors.text, letterSpacing: 2 },
-  row:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' },
-  bigNum: { fontFamily: 'Inter_700Bold', fontSize: 36, color: Colors.text },
-  muted:  { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted },
-  sep:    { width: '100%', height: 1, backgroundColor: 'rgba(255,255,255,0.07)' },
+  /* Session HUD — timer + score — centered at top */
+  hud: { position: 'absolute', left: 0, right: 0, zIndex: 98,
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 10 },
+  hudPill: { flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: 'rgba(0,0,0,0.62)', paddingHorizontal: 12, paddingVertical: 6,
+    borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  hudPillRed:    { borderColor: '#ff5252', backgroundColor: 'rgba(255,82,82,0.15)' },
+  hudPillOrange: { borderColor: Colors.neonOrange, backgroundColor: 'rgba(255,152,0,0.15)' },
+  hudText:       { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#fff' },
+  hudTextRed:    { color: '#ff5252' },
+  hudTextOrange: { color: Colors.neonOrange },
+  hudTextMuted:  { fontFamily: 'Inter_400Regular', fontSize: 11, color: 'rgba(255,255,255,0.4)' },
 
-  statsBox: { width: '100%', backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 12, gap: 6 },
-  statRow:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  /* Warning strip */
+  warningStrip: { position: 'absolute', bottom: 90, left: 20, right: 20, zIndex: 97,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    backgroundColor: 'rgba(255,152,0,0.18)', borderWidth: 1, borderColor: 'rgba(255,152,0,0.5)',
+    paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20 },
+  warningTxt: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#ff9800' },
+
+  /* Modals */
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.88)', alignItems: 'center', justifyContent: 'center' },
+  card:    { backgroundColor: '#0d1a17', borderRadius: 24, padding: 24, width: SW * 0.88,
+    alignItems: 'center', gap: 14, borderWidth: 1, borderColor: 'rgba(244,196,48,0.18)' },
+
+  /* Summary header */
+  summaryHeader: { flexDirection: 'row', alignItems: 'center', gap: 14, width: '100%' },
+  summaryIcon:   { fontSize: 36 },
+  title:  { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.textPrimary, letterSpacing: 0.5 },
+  reasonSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, marginTop: 2 },
+
+  /* Score banner */
+  scoreBanner: { width: '100%', backgroundColor: 'rgba(244,196,48,0.07)', borderRadius: 16,
+    padding: 16, alignItems: 'center', gap: 2, borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)' },
+  scoreBannerLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.textMuted,
+    textTransform: 'uppercase', letterSpacing: 1.5 },
+  scoreBannerNum:   { fontFamily: 'Inter_700Bold', fontSize: 52, color: Colors.gold, lineHeight: 60 },
+  scoreBannerSub:   { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary },
+
+  statsBox:  { width: '100%', backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 12, gap: 6 },
+  statRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   statLabel: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted },
-  statVal:   { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.text },
+  statVal:   { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textPrimary },
 
-  retryBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', paddingVertical: 12, borderRadius: 28, width: '100%' },
-  retryTxt: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textMuted },
+  sep: { width: '100%', height: 1, backgroundColor: 'rgba(255,255,255,0.07)' },
+  muted: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted },
 
+  /* Buttons */
   doubleBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center',
     backgroundColor: '#7c3aed', paddingVertical: 14, borderRadius: 28, width: '100%' },
-  doubleTxt: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#fff', letterSpacing: 0.4 },
+  doubleTxt: { fontFamily: 'Inter_700Bold', fontSize: 15, color: '#fff', letterSpacing: 0.4 },
 
-  claimBtn: { backgroundColor: Colors.gold, paddingVertical: 14, borderRadius: 28, width: '100%', alignItems: 'center' },
-  claimTxt: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000', letterSpacing: 0.5 },
+  claimBtn:    { backgroundColor: Colors.gold, paddingVertical: 14, borderRadius: 28, width: '100%', alignItems: 'center' },
+  claimBtnDim: { opacity: 0.55 },
+  claimTxt:    { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000', letterSpacing: 0.5 },
 
+  retryLink:    { paddingVertical: 4 },
+  retryLinkTxt: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textMuted, textDecorationLine: 'underline' },
+
+  /* Ad overlay */
   adFull: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
   adCard: { width: SW * 0.92, backgroundColor: '#111', borderRadius: 16, overflow: 'hidden',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
-  adBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  adBar:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 14, paddingVertical: 10, backgroundColor: 'rgba(255,255,255,0.04)' },
   adNetTxt: { fontFamily: 'Inter_500Medium', fontSize: 11, color: 'rgba(255,255,255,0.35)', letterSpacing: 1 },
   timerPill: { backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 3 },
   timerTxt:  { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#fff' },
-  adBody: { height: SH * 0.42, alignItems: 'center', justifyContent: 'center', gap: 14, paddingHorizontal: 24 },
-  adLabel: { fontFamily: 'Inter_700Bold', fontSize: 18, color: 'rgba(255,255,255,0.5)', letterSpacing: 1 },
-  adSub:   { fontFamily: 'Inter_500Medium', fontSize: 14, color: 'rgba(255,255,255,0.32)', textAlign: 'center' },
-  adHint:  { fontFamily: 'Inter_400Regular', fontSize: 11, color: 'rgba(255,255,255,0.18)', textAlign: 'center' },
+  adBody:   { height: SH * 0.42, alignItems: 'center', justifyContent: 'center', gap: 14, paddingHorizontal: 24 },
+  adLabel:  { fontFamily: 'Inter_700Bold', fontSize: 18, color: 'rgba(255,255,255,0.5)', letterSpacing: 1 },
+  adSub:    { fontFamily: 'Inter_500Medium', fontSize: 14, color: 'rgba(255,255,255,0.32)', textAlign: 'center' },
+  adHint:   { fontFamily: 'Inter_400Regular', fontSize: 11, color: 'rgba(255,255,255,0.18)', textAlign: 'center' },
 });
