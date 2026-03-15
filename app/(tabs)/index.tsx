@@ -274,6 +274,11 @@ export default function HomeScreen() {
   // Booster modal state — simple local flag, does NOT cause mining to reset
   const [selectedBooster, setSelectedBooster] = useState<BoosterItem | null>(null);
 
+  // Toast state for "mining active" message
+  const [toastMsg, setToastMsg] = useState('');
+  const toastAnim = useRef(new RNAnimated.Value(0)).current;
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // 1-second clock for booster countdown display only
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -290,13 +295,11 @@ export default function HomeScreen() {
   const safeShibReward    = (typeof shibReward === 'number' && isFinite(shibReward)) ? shibReward : 0;
   const safeTimeRemaining = (typeof timeRemaining === 'number' && isFinite(timeRemaining)) ? Math.max(0, timeRemaining) : 0;
 
-  // Live mining counter (top card only): wallet balance + mined so far this session
-  const liveBalance = status === 'mining' ? safeShib + safeDisplayed : safeShib;
-
   const displayedPT        = useRollingNumber(safePT, 400);
-  // Top card: smooth rolling live counter
-  const displayedLiveShib  = useRollingNumber(liveBalance, status === 'mining' ? 100 : 800);
-  // Bottom stat card: static wallet balance — only animates on claim
+  // Top card: ONLY the coins mined in the current session (starts from 0.000 each session)
+  // Visual logic: (CurrentTime - StartTime) * MiningRate — driven by MiningContext's setInterval
+  const displayedLiveShib  = useRollingNumber(safeDisplayed, 100);
+  // Bottom stat card: static wallet balance from DB — only updates after a successful Claim
   const displayedStatShib  = useRollingNumber(safeShib, 800);
 
   // Animations
@@ -342,6 +345,20 @@ export default function HomeScreen() {
   const coreStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
   const glowStyle = useAnimatedStyle(() => ({ opacity: glowOpacity.value }));
 
+  // ── Toast helper ─────────────────────────────────────────────────────────
+
+  const showToast = useCallback((msg: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToastMsg(msg);
+    toastAnim.setValue(0);
+    RNAnimated.sequence([
+      RNAnimated.timing(toastAnim, { toValue: 1, duration: 240, useNativeDriver: true }),
+      RNAnimated.delay(2200),
+      RNAnimated.timing(toastAnim, { toValue: 0, duration: 240, useNativeDriver: true }),
+    ]).start();
+    toastTimer.current = setTimeout(() => setToastMsg(''), 2700);
+  }, [toastAnim]);
+
   // ── Helpers (memoized to avoid passing new refs to BoosterModal) ──────────
 
   const withAd = useCallback(async (action: () => Promise<{ success: boolean; error?: string }>) => {
@@ -374,10 +391,14 @@ export default function HomeScreen() {
     if (reward > 0) Alert.alert('Reward Claimed! 🎉', `You earned ${formatShib(reward)} SHIB!`);
   }, [isClaiming, claimReward]);
 
-  // Opens the booster modal — does NOT affect the mining timer/animation
+  // Opens the booster modal — blocked during active mining to prevent double-spend
   const handleBoosterTap = useCallback((b: BoosterItem) => {
+    if (status === 'mining') {
+      showToast('Mining already in progress. Wait for the timer to finish.');
+      return;
+    }
     setSelectedBooster(b);
-  }, []);
+  }, [status, showToast]);
 
   // Called from modal when user confirms
   const handleBoosterConfirm = useCallback(async (b: BoosterItem) => {
@@ -405,6 +426,24 @@ export default function HomeScreen() {
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 0.5 }}
       />
+
+      {/* Toast notification — floats above everything, auto-dismisses */}
+      {!!toastMsg && (
+        <RNAnimated.View
+          style={[
+            styles.toast,
+            {
+              opacity: toastAnim,
+              transform: [{ translateY: toastAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }],
+              bottom: insets.bottom + 100,
+            },
+          ]}
+          pointerEvents="none"
+        >
+          <Ionicons name="lock-closed" size={15} color={Colors.gold} />
+          <Text style={styles.toastText}>{toastMsg}</Text>
+        </RNAnimated.View>
+      )}
 
       {/* BoosterModal lives OUTSIDE the ScrollView — never causes a scroll reset */}
       <BoosterModal
@@ -443,7 +482,7 @@ export default function HomeScreen() {
               colors={['rgba(244,196,48,0.1)', 'rgba(255,107,0,0.05)']}
               style={styles.liveBalanceInner}
             >
-              <Text style={styles.liveLabel}>Mining in progress — Live Counter</Text>
+              <Text style={styles.liveLabel}>Mined This Session (starts from 0.000)</Text>
               <Text style={styles.liveValue}>{formatShib(displayedLiveShib)} SHIB</Text>
               {activeBooster && activeBooster.expiresAt > now && (
                 <Text style={styles.liveBoostLabel}>
@@ -589,14 +628,24 @@ export default function HomeScreen() {
         {/* ── Speed Boosters (idle or mining, NOT ready_to_claim) ───────── */}
         {status !== 'ready_to_claim' && (
           <Animated.View entering={FadeInDown.delay(350).springify()} style={styles.boostersSection}>
-            <Text style={styles.sectionTitle}>
-              {status === 'idle' ? 'Activate a Booster to Start Mining' : 'Speed Boosters'}
-            </Text>
+            <View style={styles.boostersTitleRow}>
+              <Text style={styles.sectionTitle}>
+                {status === 'idle' ? 'Activate a Booster to Start Mining' : 'Speed Boosters'}
+              </Text>
+              {status === 'mining' && (
+                <View style={styles.lockedBadge}>
+                  <Ionicons name="lock-closed" size={11} color={Colors.textMuted} />
+                  <Text style={styles.lockedBadgeText}>Locked</Text>
+                </View>
+              )}
+            </View>
             <View style={styles.boostersGrid}>
               {BOOSTERS.map((b) => {
                 const isActive = !!(activeBooster && activeBooster.multiplier === b.multiplier && activeBooster.expiresAt > now);
                 const anyActive = !!(activeBooster && activeBooster.expiresAt > now);
                 const timeLeft = isActive ? Math.max(0, activeBooster!.expiresAt - now) : 0;
+                // Cards are visually dimmed and locked while a session is running
+                const isMiningLocked = status === 'mining';
 
                 return (
                   <Pressable
@@ -604,16 +653,25 @@ export default function HomeScreen() {
                     style={({ pressed }) => [
                       styles.boosterCard,
                       {
-                        opacity: pressed ? 0.7 : 1,
-                        borderColor: isActive ? b.color : anyActive ? Colors.darkBorder : b.color + '35',
-                        backgroundColor: isActive ? b.color + '15' : Colors.darkCard,
+                        opacity: isMiningLocked ? 0.42 : pressed ? 0.7 : 1,
+                        borderColor: isMiningLocked
+                          ? Colors.darkBorder
+                          : isActive ? b.color : anyActive ? Colors.darkBorder : b.color + '35',
+                        backgroundColor: isMiningLocked
+                          ? Colors.darkCard
+                          : isActive ? b.color + '15' : Colors.darkCard,
                       },
                     ]}
                     onPress={() => handleBoosterTap(b)}
                     disabled={showAdLoader}
                   >
-                    <Text style={[styles.boosterLabel, { color: b.color }]}>{b.label}</Text>
-                    {isActive ? (
+                    {isMiningLocked
+                      ? <Ionicons name="lock-closed" size={16} color={Colors.textMuted} />
+                      : <Text style={[styles.boosterLabel, { color: b.color }]}>{b.label}</Text>
+                    }
+                    {isMiningLocked ? (
+                      <Text style={styles.boosterCost}>{b.label}</Text>
+                    ) : isActive ? (
                       <Text style={[styles.boosterTimer, { color: b.color }]}>
                         {formatTime(timeLeft).substring(3)}
                       </Text>
@@ -629,6 +687,9 @@ export default function HomeScreen() {
             </View>
             {status === 'idle' && (
               <Text style={styles.boosterHint}>Tap a booster to open its activation panel</Text>
+            )}
+            {status === 'mining' && (
+              <Text style={styles.boosterHint}>Boosters unlock after mining session ends</Text>
             )}
           </Animated.View>
         )}
@@ -716,13 +777,42 @@ const styles = StyleSheet.create({
   warningBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#000' },
   rewardPreview: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, marginTop: 8, textAlign: 'center' },
   boostersSection: { marginBottom: 22 },
-  sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 },
+  sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 1 },
   boostersGrid: { flexDirection: 'row', gap: 10 },
   boosterCard: { flex: 1, backgroundColor: Colors.darkCard, borderRadius: 14, padding: 12, alignItems: 'center', gap: 4, borderWidth: 1 },
   boosterLabel: { fontFamily: 'Inter_700Bold', fontSize: 17 },
   boosterCost: { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted },
   boosterTimer: { fontFamily: 'Inter_700Bold', fontSize: 14 },
   boosterHint: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, textAlign: 'center', marginTop: 8 },
+  boostersTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  lockedBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 10,
+    paddingHorizontal: 9, paddingVertical: 4,
+    borderWidth: 1, borderColor: Colors.darkBorder,
+  },
+  lockedBadgeText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: Colors.textMuted },
+  toast: {
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(20,20,32,0.96)',
+    borderRadius: 24,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.3)',
+    zIndex: 999,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 10,
+    maxWidth: '88%',
+  },
+  toastText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textPrimary, flexShrink: 1 },
   statsRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
   statCard: { flex: 1, backgroundColor: Colors.darkCard, borderRadius: 16, padding: 16, alignItems: 'center', gap: 6, borderWidth: 1, borderColor: Colors.darkBorder },
   statValue: { fontFamily: 'Inter_700Bold', fontSize: 18, color: Colors.textPrimary },
