@@ -21,31 +21,40 @@ export const UNITY_TEST_IDS = {
 type AdCallback = () => void;
 type RewardCallback = (rewarded: boolean) => void;
 
-let customAdmobBannerId = '';
-let customAdmobInterstitialId = '';
-let customAdmobRewardedId = '';
-let customUnityGameId = '';
-let customUnityInterstitialId = '';
+/* Dynamic config — set by AdContext once PocketBase settings are loaded */
+let cfg = {
+  admobBannerId:          '',
+  admobInterstitialId:    '',
+  admobRewardedId:        '',
+  unityGameId:            '',
+  unityInterstitialId:    '',
+  unityRewardedId:        '',
+  applovinSdkKey:         '',
+  applovinInterstitialId: '',
+  applovinBannerId:       '',
+  applovinRewardedId:     '',
+};
 
-export function configureAds(config: {
-  admobBannerId?: string;
-  admobInterstitialId?: string;
-  admobRewardedId?: string;
-  unityGameId?: string;
-  unityInterstitialPlacementId?: string;
-}) {
-  if (config.admobBannerId) customAdmobBannerId = config.admobBannerId;
-  if (config.admobInterstitialId) customAdmobInterstitialId = config.admobInterstitialId;
-  if (config.admobRewardedId) customAdmobRewardedId = config.admobRewardedId;
-  if (config.unityGameId) customUnityGameId = config.unityGameId;
-  if (config.unityInterstitialPlacementId) customUnityInterstitialId = config.unityInterstitialPlacementId;
+/** Called by AdContext once PocketBase settings are fetched at launch */
+export function configureAds(config: Partial<typeof cfg>) {
+  cfg = { ...cfg, ...config };
+  console.log('[AdService] configureAds: IDs updated from PocketBase ✓');
 }
 
-function getBannerId() { return customAdmobBannerId || ADMOB_TEST_IDS.banner; }
-function getInterstitialId() { return customAdmobInterstitialId || ADMOB_TEST_IDS.interstitial; }
-function getRewardedId() { return customAdmobRewardedId || ADMOB_TEST_IDS.rewarded; }
-function getUnityGameId() { return customUnityGameId || UNITY_TEST_IDS.gameId; }
-function getUnityInterstitialId() { return customUnityInterstitialId || UNITY_TEST_IDS.interstitialPlacementId; }
+function getBannerId()      { return cfg.admobBannerId       || ADMOB_TEST_IDS.banner; }
+function getInterstitialId(){ return cfg.admobInterstitialId || ADMOB_TEST_IDS.interstitial; }
+function getRewardedId()    { return cfg.admobRewardedId     || ADMOB_TEST_IDS.rewarded; }
+function getUnityGameId()   { return cfg.unityGameId         || UNITY_TEST_IDS.gameId; }
+function getUnityInterstitialId() { return cfg.unityInterstitialId || UNITY_TEST_IDS.interstitialPlacementId; }
+function getApplovinIntId() { return cfg.applovinInterstitialId; }
+
+/*
+ * SDK stubs — install via EAS Build:
+ *   Unity:    'react-native-unity-ads'
+ *   AppLovin: 'applovin-max-react-native-plugin'
+ */
+let UnityAds: any    = null;
+let AppLovinMAX: any = null;
 
 class AdService {
   private admobLoaded = false;
@@ -62,13 +71,53 @@ class AdService {
     this.rewardedLoaded = true;
   }
 
-  async showUnityInterstitial(onComplete: AdCallback, onSkip?: AdCallback): Promise<void> {
-    console.log(`[AdService] Showing Unity Interstitial (placement: ${getUnityInterstitialId()})`);
-    console.log(`[AdService] Unity Game ID: ${getUnityGameId()}`);
+  /**
+   * Mining & Withdraw button interstitial.
+   * Waterfall: Unity Ads → AppLovin MAX → AdMob fallback.
+   * All IDs fetched dynamically from PocketBase via configureAds().
+   */
+  async showMiningInterstitial(onComplete: AdCallback, onSkip?: AdCallback): Promise<void> {
+    console.log('[AdService] Mining interstitial — waterfall: Unity → AppLovin → AdMob');
 
+    /* ── Unity Ads (uncomment real SDK calls when installed) ── */
+    if (UnityAds && cfg.unityInterstitialId) {
+      console.log('[AdService] Trying Unity interstitial id:', getUnityInterstitialId());
+      /*
+       * UnityAds.show(getUnityInterstitialId(), {
+       *   onStart:  () => {},
+       *   onFinish: () => { onComplete(); },
+       *   onError:  () => this._tryApplovin(onComplete, onSkip),
+       * });
+       * return;
+       */
+    }
+
+    /* ── AppLovin MAX (uncomment real SDK calls when installed) ── */
+    if (AppLovinMAX && cfg.applovinInterstitialId) {
+      console.log('[AdService] Trying AppLovin interstitial id:', getApplovinIntId());
+      /*
+       * AppLovinMAX.showInterstitial(getApplovinIntId());
+       * AppLovinMAX.setInterstitialListener({
+       *   onAdHidden:     () => onComplete(),
+       *   onAdLoadFailed: () => this._admobFallback(onComplete),
+       * });
+       * return;
+       */
+    }
+
+    /* ── AdMob fallback ── */
+    return this._admobFallback(onComplete);
+  }
+
+  /** @deprecated Calls showMiningInterstitial — kept for backwards compat */
+  async showUnityInterstitial(onComplete: AdCallback, onSkip?: AdCallback): Promise<void> {
+    return this.showMiningInterstitial(onComplete, onSkip);
+  }
+
+  private async _admobFallback(onComplete: AdCallback): Promise<void> {
+    console.log('[AdService] AdMob fallback interstitial id:', getInterstitialId());
     return new Promise((resolve) => {
       setTimeout(() => {
-        console.log('[AdService] Unity Interstitial completed');
         onComplete();
         resolve();
       }, 800);

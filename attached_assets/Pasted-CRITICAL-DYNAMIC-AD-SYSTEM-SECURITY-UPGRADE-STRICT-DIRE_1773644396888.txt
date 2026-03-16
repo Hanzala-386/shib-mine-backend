@@ -1,0 +1,41 @@
+CRITICAL: DYNAMIC AD SYSTEM & SECURITY UPGRADE
+STRICT DIRECTIVE: You must implement a dynamic ad system where all Ad Unit IDs and Game IDs are fetched directly from the PocketBase settings collection. Do NOT hardcode any IDs.
+
+1. SDK Installation & Dynamic Ads:
+Task: Install Unity Ads SDK and AppLovin (MAX) SDK.
+
+Dynamic IDs: Fetch unity_game_id, applovin_sdk_key, and all Ad Unit IDs (Banner, Interstitial, Rewarded) from the database at app launch.
+
+Question for Agent: Confirm if you can implement a central AdManager that pulls these IDs from PocketBase and initializes the SDKs dynamically.
+
+2. Button-Triggered Interstitial Ads (Non-AdMob):
+Trigger: When a user clicks any 'Mining' or 'Withdraw' button.
+
+Network: Use ONLY Unity Ads or AppLovin for these buttons. DO NOT use AdMob here.
+
+Logic: Implement a fallback: Try Unity Interstitial → if fails, try AppLovin Interstitial.
+
+3. Smart Banner Ads (Triple Network):
+Layout: Place a banner at the bottom (refer to the sample screenshot provided).
+
+Refresh Logic: The banner must refresh every 30 seconds without refreshing the entire app.
+
+Rotation: Rotate between AdMob, Unity, and AppLovin banners every 30 seconds to maximize revenue.
+
+4. Top Players: Withdrawal Loop:
+Issue: The withdrawal ticker stops after the list ends.
+
+Fix: Implement an Infinite Loop for the approved withdrawals (Right-to-Left). If there are only 5 approved requests, they should keep scrolling repeatedly until new data is added.
+
+5. Mandatory Terms & Conditions (New Users):
+Flow: For first-time login/signup, show a full-screen "Terms & Conditions" page.
+
+Constraint: The user must scroll to the bottom and check a Mandatory Checkbox ("I agree") before the "Continue" button becomes active.
+
+6. High-Security Password System:
+Constraint: Enforce a strong password policy (Min 8 characters, 1 Uppercase, 1 Lowercase, 1 Number, 1 Special Character).
+
+UI: Show a real-time Password Strength Meter with animation (Red for weak, Green for strong).
+
+7. Publishing Costs Question:
+Question for Agent: "Since I am using an external PocketBase database and not Replit’s internal DB, will I be charged a monthly fee just to keep the app published? Or is it free to host the frontend on Replit?"

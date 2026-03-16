@@ -171,6 +171,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         applovinRewardedId: s.applovin_rewarded_id,
         unityGameId: s.unity_game_id,
         unityRewardedId: s.unity_rewarded_id,
+        unityInterstitialId: s.unity_interstitial_id,
+        applovinBannerId: s.applovin_banner_id,
+        applovinInterstitialId: s.applovin_interstitial_id,
       });
     } catch (e: any) {
       console.error("[/api/app/settings]", e.message);
@@ -1173,6 +1176,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           pbUpdate.unity_game_id = body.unityGameId;
         if (body.unityRewardedId !== undefined)
           pbUpdate.unity_rewarded_id = body.unityRewardedId;
+        if (body.unityInterstitialId !== undefined)
+          pbUpdate.unity_interstitial_id = body.unityInterstitialId;
+        if (body.applovinBannerId !== undefined)
+          pbUpdate.applovin_banner_id = body.applovinBannerId;
+        if (body.applovinInterstitialId !== undefined)
+          pbUpdate.applovin_interstitial_id = body.applovinInterstitialId;
 
         const updated = await pbPatch(
           `/api/collections/settings/records/${id}`,

@@ -51,22 +51,29 @@ const TICKER_H = 46;
 
 function WithdrawalTicker({ items }: { items: TickerItem[] }) {
   const translateX = useRef(new Animated.Value(0)).current;
-  const doubled = [...items, ...items]; // seamless loop
+  // Quadruple for generous buffer — prevents any perceived gap on reset
+  const quadrupled = [...items, ...items, ...items, ...items];
+  const stopped = useRef(false);
 
   useEffect(() => {
     if (!items.length) return;
-    const totalW = items.length * ITEM_W;
-    translateX.setValue(0);
-    const anim = Animated.loop(
+    stopped.current = false;
+    const totalW = items.length * ITEM_W; // animate one full copy length
+
+    function runCycle() {
+      if (stopped.current) return;
+      translateX.setValue(0);
       Animated.timing(translateX, {
         toValue: -totalW,
-        duration: totalW * 28,      // ~28ms per pixel = moderate scroll speed
+        duration: totalW * 30,   // 30ms per pixel → smooth moderate speed
         easing: Easing.linear,
-        useNativeDriver: true,
-      }),
-    );
-    anim.start();
-    return () => anim.stop();
+        useNativeDriver: false,  // false = works on both web and native
+      }).start(({ finished }) => {
+        if (finished && !stopped.current) runCycle();
+      });
+    }
+    runCycle();
+    return () => { stopped.current = true; translateX.stopAnimation(); };
   }, [items.length]);
 
   if (!items.length) {
@@ -85,7 +92,7 @@ function WithdrawalTicker({ items }: { items: TickerItem[] }) {
       </View>
       <View style={tickerStyles.track}>
         <Animated.View style={[tickerStyles.row, { transform: [{ translateX }] }]}>
-          {doubled.map((item, i) => (
+          {quadrupled.map((item, i) => (
             <View key={`${item.id}-${i}`} style={[tickerStyles.chip]}>
               <Text style={tickerStyles.name}>{item.maskedName}</Text>
               <View style={tickerStyles.dot} />

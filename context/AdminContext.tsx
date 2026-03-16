@@ -26,10 +26,14 @@ const DEFAULT_SETTINGS: AppSettings = {
   activeAdNetwork: '',
   admobUnitId: '',
   admobBannerUnitId: '',
-  applovinSdkKey: '',
-  applovinRewardedId: '',
+  admobRewardedId: '',
   unityGameId: '',
   unityRewardedId: '',
+  unityInterstitialId: '',
+  applovinSdkKey: '',
+  applovinRewardedId: '',
+  applovinBannerId: '',
+  applovinInterstitialId: '',
 };
 
 const CACHE_KEY = 'shib_settings_cache_v2';
@@ -69,11 +73,13 @@ export function AdminProvider({ children }: { children: ReactNode }) {
 
   function applyAdsConfig(s: AppSettings) {
     configureAds({
-      admobBannerId: s.admobBannerUnitId,
-      admobInterstitialId: s.admobUnitId,
-      admobRewardedId: s.admobUnitId,
-      unityGameId: s.unityGameId,
-      unityInterstitialPlacementId: s.unityRewardedId,
+      admobBannerId:        s.admobBannerUnitId,
+      admobInterstitialId:  s.admobUnitId,
+      admobRewardedId:      s.admobRewardedId,
+      unityGameId:          s.unityGameId,
+      unityInterstitialId:  s.unityInterstitialId ?? '',
+      applovinSdkKey:       s.applovinSdkKey,
+      applovinInterstitialId: s.applovinInterstitialId ?? '',
     });
   }
 

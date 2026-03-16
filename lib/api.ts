@@ -216,10 +216,16 @@ export interface AppSettings {
   activeAdNetwork: string;
   admobUnitId: string;
   admobBannerUnitId: string;
-  applovinSdkKey: string;
-  applovinRewardedId: string;
+  admobRewardedId: string;
+  /* Unity Ads — IDs from PocketBase */
   unityGameId: string;
   unityRewardedId: string;
+  unityInterstitialId: string;
+  /* AppLovin MAX — IDs from PocketBase */
+  applovinSdkKey: string;
+  applovinRewardedId: string;
+  applovinBannerId: string;
+  applovinInterstitialId: string;
 }
 
 export interface MiningSessionResponse {
