@@ -32,7 +32,7 @@ const SECTIONS = [
   },
   {
     title: '7. Advertising',
-    body: `The App displays advertisements powered by Google AdMob and related ad networks. Rewarded video ads are integral to the reward model. Attempting to circumvent, block, or manipulate the ad delivery system may result in account suspension.`,
+    body: `The App displays advertisements powered by the following certified partners:\n\n• Google AdMob (Google LLC)\n• Unity Ads (Unity Technologies)\n• AppLovin MAX (AppLovin Corporation)\n\nRewarded video advertisements are integral to the in-app reward model. By using the App, you agree to receive ads from these networks. Attempting to circumvent, block, spoof, or manipulate the ad delivery system — including through VPNs, ad blockers, or tampered APKs — constitutes a material breach of these Terms and may result in immediate account suspension and forfeiture of all virtual balances.`,
   },
   {
     title: '8. Prohibited Conduct',
@@ -48,7 +48,7 @@ const SECTIONS = [
   },
   {
     title: '11. Contact',
-    body: `For questions regarding these Terms, contact us at:\n\nsupport@shibmine.app`,
+    body: `For questions regarding these Terms, contact us at:\n\n[ENTER_SUPPORT_EMAIL_HERE]`,
   },
 ];
 

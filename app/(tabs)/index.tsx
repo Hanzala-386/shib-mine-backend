@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, Alert, Platform,
-  Animated as RNAnimated, ActivityIndicator, Modal,
+  Animated as RNAnimated, ActivityIndicator, Modal, Linking,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -265,6 +265,7 @@ export default function HomeScreen() {
     status, timeRemaining, progress, startMining, claimReward,
     shibReward, session, displayedShibBalance,
     miningEntryCost, activeBooster, activateBooster, startMiningWithBooster, isClaiming,
+    showRateUs, dismissRateUs,
   } = useMining();
   const { settings } = useAdmin();
 
@@ -720,6 +721,34 @@ export default function HomeScreen() {
           </LinearGradient>
         </View>
       </ScrollView>
+
+      {/* ══ RATE US MODAL ══════════════════════════════════════════════════════ */}
+      <Modal visible={showRateUs} transparent animationType="fade" onRequestClose={dismissRateUs}>
+        <Pressable style={rateStyles.overlay} onPress={dismissRateUs}>
+          <Pressable style={rateStyles.card} onPress={(e) => e.stopPropagation()}>
+            <LinearGradient colors={['rgba(244,196,48,0.18)', 'rgba(20,14,8,0.98)']} style={rateStyles.gradient}>
+              <Text style={rateStyles.stars}>⭐⭐⭐⭐⭐</Text>
+              <Text style={rateStyles.title}>Loving SHIB Mine?</Text>
+              <Text style={rateStyles.subtitle}>Help us grow by leaving a quick rating on the store!</Text>
+              <Pressable
+                style={rateStyles.rateBtn}
+                onPress={() => {
+                  const link = settings?.appStoreLink;
+                  if (link) Linking.openURL(link).catch(() => {});
+                  dismissRateUs();
+                }}
+              >
+                <LinearGradient colors={[Colors.neonOrange, Colors.gold]} style={rateStyles.rateBtnGrad}>
+                  <Text style={rateStyles.rateBtnText}>Rate the App</Text>
+                </LinearGradient>
+              </Pressable>
+              <Pressable onPress={dismissRateUs} style={{ paddingVertical: 10 }}>
+                <Text style={{ color: Colors.textMuted, fontSize: 14, textAlign: 'center' }}>Maybe Later</Text>
+              </Pressable>
+            </LinearGradient>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -921,4 +950,16 @@ const modal = StyleSheet.create({
   insufficientSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, textAlign: 'center' },
   cancelBtn: { paddingVertical: 10 },
   cancelText: { fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.textMuted },
+});
+
+const rateStyles = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', alignItems: 'center', justifyContent: 'center', padding: 32 },
+  card: { width: '100%', maxWidth: 340, borderRadius: 24, overflow: 'hidden' },
+  gradient: { padding: 28, alignItems: 'center', gap: 12 },
+  stars: { fontSize: 32 },
+  title: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.gold, textAlign: 'center' },
+  subtitle: { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+  rateBtn: { width: '100%', borderRadius: 14, overflow: 'hidden', marginTop: 4 },
+  rateBtnGrad: { paddingVertical: 14, alignItems: 'center' },
+  rateBtnText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
 });

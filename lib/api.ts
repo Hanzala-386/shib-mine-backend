@@ -180,6 +180,9 @@ export const api = {
     request('PUT', `/api/app/admin/settings/${id}`, updates),
 
   adminGetStats: () => request<AdminStats>('GET', '/api/app/admin/stats'),
+
+  deleteAccount: (pbId: string) =>
+    request<{ success: boolean }>('DELETE', `/api/app/user/${pbId}/delete-account`),
 };
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -226,6 +229,7 @@ export interface AppSettings {
   applovinRewardedId: string;
   applovinBannerId: string;
   applovinInterstitialId: string;
+  appStoreLink: string;
 }
 
 export interface MiningSessionResponse {

@@ -17,7 +17,9 @@ import {
   EmailAuthProvider,
   reauthenticateWithCredential,
   updatePassword,
+  deleteUser,
 } from 'firebase/auth';
+import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useWallet } from '@/context/WalletContext';
 import { getApiUrl } from '@/lib/query-client';
@@ -92,6 +94,8 @@ export default function ProfileScreen() {
   const [newPw, setNewPw]          = useState('');
   const [confirmPw, setConfirmPw]  = useState('');
   const [pwLoading, setPwLoading]  = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const miningCount  = pbUser?.totalClaims ?? 0;
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
@@ -149,6 +153,26 @@ export default function ProfileScreen() {
   async function handleSignOut() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     await signOut();
+  }
+
+  async function handleDeleteAccount() {
+    if (!pbId || !firebaseUser) {
+      Alert.alert('Error', 'Account not ready. Please try again.');
+      return;
+    }
+    setIsDeleting(true);
+    try {
+      // 1. Delete from PocketBase via our server
+      await api.deleteAccount(pbId);
+      // 2. Delete Firebase account
+      await deleteUser(firebaseUser);
+      // 3. Sign out and navigate to auth
+      setShowDeleteModal(false);
+      await signOut();
+    } catch (e: any) {
+      setIsDeleting(false);
+      Alert.alert('Delete Failed', e?.message || 'Could not delete account. Please try again.');
+    }
   }
 
   async function handleChangePassword() {
@@ -389,10 +413,17 @@ export default function ProfileScreen() {
           </View>
         </Animated.View>
 
-        {/* ── Sign out ── */}
+        {/* ── Sign out & Delete ── */}
         <Animated.View entering={FadeInDown.delay(600).springify()}>
           <View style={styles.menuGroup}>
             <MenuItem icon="log-out-outline" label="Sign Out" danger onPress={handleSignOut} testID="btn-signout" />
+            <MenuItem
+              icon="trash-outline"
+              label="Delete Account"
+              danger
+              onPress={() => setShowDeleteModal(true)}
+              testID="btn-delete-account"
+            />
           </View>
         </Animated.View>
       </ScrollView>
@@ -479,6 +510,35 @@ export default function ProfileScreen() {
             </Pressable>
           </View>
         </View>
+      </Modal>
+
+      {/* ══ DELETE ACCOUNT MODAL ════════════════════════════════════════════════ */}
+      <Modal visible={showDeleteModal} transparent animationType="fade" onRequestClose={() => !isDeleting && setShowDeleteModal(false)}>
+        <Pressable style={styles.versionOverlay} onPress={() => !isDeleting && setShowDeleteModal(false)}>
+          <Pressable style={[styles.versionCard, { padding: 0 }]} onPress={(e) => e.stopPropagation()}>
+            <LinearGradient colors={['rgba(220,38,38,0.18)', 'rgba(30,20,20,0.98)']} style={[styles.versionGradient, { gap: 14 }]}>
+              <Ionicons name="warning-outline" size={44} color={Colors.error} />
+              <Text style={[styles.versionAppName, { color: Colors.error }]}>Delete Account</Text>
+              <Text style={[styles.versionAbout, { textAlign: 'center', marginTop: 0 }]}>
+                This will permanently delete your SHIB Mine account and all associated data.{'\n\n'}This action cannot be undone.
+              </Text>
+              <View style={styles.versionDivider} />
+              <Pressable
+                style={[styles.versionClose, { backgroundColor: Colors.error + '22', borderColor: Colors.error + '60', borderWidth: 1 }]}
+                onPress={handleDeleteAccount}
+                disabled={isDeleting}
+              >
+                {isDeleting
+                  ? <ActivityIndicator size="small" color={Colors.error} />
+                  : <Text style={[styles.versionCloseText, { color: Colors.error }]}>Yes, Delete My Account</Text>
+                }
+              </Pressable>
+              <Pressable onPress={() => setShowDeleteModal(false)} disabled={isDeleting} style={{ paddingVertical: 8 }}>
+                <Text style={{ color: Colors.textMuted, fontSize: 14, textAlign: 'center' }}>Cancel</Text>
+              </Pressable>
+            </LinearGradient>
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
   );

@@ -34,6 +34,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   applovinRewardedId: '',
   applovinBannerId: '',
   applovinInterstitialId: '',
+  appStoreLink: '',
 };
 
 const CACHE_KEY = 'shib_settings_cache_v2';

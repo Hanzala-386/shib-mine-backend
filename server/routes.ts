@@ -174,6 +174,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         unityInterstitialId: s.unity_interstitial_id,
         applovinBannerId: s.applovin_banner_id,
         applovinInterstitialId: s.applovin_interstitial_id,
+        appStoreLink: s.app_store_link || '',
       });
     } catch (e: any) {
       console.error("[/api/app/settings]", e.message);
@@ -215,6 +216,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error("[/api/app/user/referral-stats]", e.message);
       res.status(500).json({ error: "Failed to fetch referral stats" });
+    }
+  });
+
+  // ── Delete Account (GDPR / compliance) ────────────────────────────────────
+  app.delete("/api/app/user/:pbId/delete-account", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "Missing pbId" });
+
+      // Verify user exists first
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // Hard-delete from PocketBase
+      const deleteUrl = `${process.env.PB_URL || "https://api.webcod.in"}/api/collections/users/records/${pbId}`;
+      const token = await getAdminToken();
+      const delRes = await fetch(deleteUrl, {
+        method: "DELETE",
+        headers: { Authorization: token },
+      });
+
+      if (!delRes.ok && delRes.status !== 204) {
+        console.error("[delete-account] PB delete failed:", delRes.status);
+        return res.status(500).json({ error: "Failed to delete user record" });
+      }
+
+      console.log(`[delete-account] Deleted PB user ${pbId}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/app/user/:pbId/delete-account]", e.message);
+      res.status(500).json({ error: "Account deletion failed" });
     }
   });
 
@@ -1182,6 +1214,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           pbUpdate.applovin_banner_id = body.applovinBannerId;
         if (body.applovinInterstitialId !== undefined)
           pbUpdate.applovin_interstitial_id = body.applovinInterstitialId;
+        if (body.appStoreLink !== undefined)
+          pbUpdate.app_store_link = body.appStoreLink;
 
         const updated = await pbPatch(
           `/api/collections/settings/records/${id}`,

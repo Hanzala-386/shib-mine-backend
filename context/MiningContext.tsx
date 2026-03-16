@@ -1,10 +1,14 @@
 import React, {
   createContext, useContext, useState, useEffect,
-  useRef, useMemo, ReactNode,
+  useRef, useMemo, ReactNode, useCallback,
 } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
+
+const SESSIONS_COUNT_KEY = 'shib_mine_sessions_v1';
+const RATE_US_EVERY = 5; // show Rate Us after every 5th completed session
 
 export type MiningStatus = 'idle' | 'mining' | 'ready_to_claim';
 
@@ -37,6 +41,8 @@ interface MiningContextValue {
   activeBooster: { multiplier: number; expiresAt: number } | null;
   activateBooster: (multiplier: number) => Promise<{ success: boolean; error?: string }>;
   startMiningWithBooster: (multiplier: number) => Promise<{ success: boolean; error?: string }>;
+  showRateUs: boolean;
+  dismissRateUs: () => void;
 }
 
 const MiningContext = createContext<MiningContextValue | null>(null);
@@ -76,6 +82,9 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [miningEntryCost, setMiningEntryCost] = useState(24);
   const [activeBooster, setActiveBooster] = useState<{ multiplier: number; expiresAt: number } | null>(null);
+  const [showRateUs, setShowRateUs] = useState(false);
+
+  const dismissRateUs = useCallback(() => setShowRateUs(false), []);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shibIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -363,6 +372,17 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     try {
       const res = await api.claimMining({ sessionId: s.pbSessionId, pbId: currentPbId });
       await refreshBalance();
+
+      /* ── Rate Us: increment completed session count ── */
+      try {
+        const raw = await AsyncStorage.getItem(SESSIONS_COUNT_KEY);
+        const count = (parseInt(raw || '0', 10) || 0) + 1;
+        await AsyncStorage.setItem(SESSIONS_COUNT_KEY, String(count));
+        if (count % RATE_US_EVERY === 0) {
+          setShowRateUs(true);
+        }
+      } catch { /* non-critical */ }
+
       return safe(res?.reward, 0);
     } catch (e: any) {
       console.warn('[Mining] claimReward error:', e?.message);
@@ -473,10 +493,12 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     durationMinutes, setDurationMinutes,
     miningEntryCost,
     activeBooster, activateBooster, startMiningWithBooster,
+    showRateUs, dismissRateUs,
   }), [
     session, status, timeRemaining, elapsedMs, progress,
     displayedShibBalance, isClaiming, shibReward,
     miningRatePerSec, durationMinutes, miningEntryCost, activeBooster,
+    showRateUs, dismissRateUs,
   ]);
 
   return <MiningContext.Provider value={value}>{children}</MiningContext.Provider>;

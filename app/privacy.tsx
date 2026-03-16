@@ -21,7 +21,7 @@ const SECTIONS = [
   },
   {
     title: '4. Advertising & Third-Party SDKs',
-    body: `We use Google AdMob to display advertisements within the App. AdMob may collect device identifiers and usage data to serve relevant ads. AdMob's data practices are governed by Google's Privacy Policy (policies.google.com/privacy).\n\nBy using this App, you consent to the display of advertisements. You may opt out of personalized advertising through your device's ad settings (Settings > Privacy > Advertising on iOS; Settings > Google > Ads on Android).`,
+    body: `We display advertisements through the following certified advertising partners:\n\n• Google AdMob — Governed by Google's Privacy Policy (policies.google.com/privacy). AdMob may collect device identifiers and usage data to serve relevant ads.\n\n• Unity Ads (Unity Technologies) — Governed by Unity's Privacy Policy (unity.com/legal/privacy-policy). Unity may collect device identifiers and gameplay data to serve ads.\n\n• AppLovin MAX (AppLovin Corporation) — Governed by AppLovin's Privacy Policy (applovin.com/privacy). AppLovin may collect device and behavioral data to deliver and optimize ad delivery.\n\nBy using this App, you consent to the display of advertisements from these networks. You may opt out of personalized advertising through your device's ad settings (Settings > Privacy > Advertising on iOS; Settings > Google > Ads on Android). You may also visit each partner's privacy portal to manage your preferences.`,
   },
   {
     title: '5. Data Storage & Security',
@@ -41,7 +41,7 @@ const SECTIONS = [
   },
   {
     title: '9. Contact Us',
-    body: `For questions or concerns about this Privacy Policy or your personal data, please contact:\n\nsupport@shibmine.app`,
+    body: `For questions or concerns about this Privacy Policy or your personal data, please contact:\n\n[ENTER_SUPPORT_EMAIL_HERE]`,
   },
 ];
 
