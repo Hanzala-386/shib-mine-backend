@@ -40,6 +40,14 @@
       "expo-font",
       "expo-web-browser",
       [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#F4C430",
+          "sounds": []
+        }
+      ],
+      [
         "react-native-google-mobile-ads",
         {
           "androidAppId": "ca-app-pub-3940256099942544~3347511713",

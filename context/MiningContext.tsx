@@ -262,6 +262,9 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       if (remaining === 0) {
         clearAllTimers();
+        import('@/lib/notifications').then(({ notifyMiningComplete }) => {
+          notifyMiningComplete().catch(() => {});
+        });
         setSession((prev) => {
           if (!prev) return null;
           const done: MiningSession = { ...prev, status: 'ready_to_claim' };

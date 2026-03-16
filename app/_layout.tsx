@@ -19,11 +19,17 @@ import { MiningProvider } from "@/context/MiningContext";
 import { AdminProvider } from "@/context/AdminContext";
 import { AdProvider } from "@/context/AdContext";
 import Colors from "@/constants/colors";
+import { requestNotificationPermission } from "@/lib/notifications";
 
 SplashScreen.preventAutoHideAsync();
 
 function RootLayoutNav() {
   const { isLoading, user, firebaseUser } = useAuth();
+
+  // Request notification permission once when app loads
+  useEffect(() => {
+    requestNotificationPermission().catch(() => {});
+  }, []);
 
   // On app startup: once isLoading resolves, navigate to the right screen
   useEffect(() => {
@@ -49,6 +55,8 @@ function RootLayoutNav() {
       <Stack.Screen name="auth" />
       <Stack.Screen name="verify-email" />
       <Stack.Screen name="admin" options={{ presentation: "modal" }} />
+      <Stack.Screen name="privacy" options={{ headerShown: false }} />
+      <Stack.Screen name="terms" options={{ headerShown: false }} />
     </Stack>
   );
 }
