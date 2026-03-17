@@ -130,15 +130,15 @@ async function ensureOtpCollection() {
       name: "otp_codes",
       type: "base",
       fields: [
-        { name: "user_id",    type: "text", required: true },
-        { name: "code",       type: "text", required: true },
-        { name: "expires_at", type: "text", required: true },
+        { name: "user",       type: "relation", required: true, collectionId: "", options: { collectionId: "users", cascadeDelete: false, maxSelect: 1 } },
+        { name: "code",       type: "text",     required: true },
+        { name: "expires_at", type: "date",     required: true },
       ],
     }, token);
     console.log("[otp_codes] Collection created in PocketBase");
   } catch (e: any) {
     console.warn("[otp_codes] Could not auto-create collection:", e.message,
-      "\n→ Please create it manually in PocketBase admin with fields: user_id (text), code (text), expires_at (text)");
+      "\n→ Please create it manually in PocketBase admin with fields: user (relation→users), code (text), expires_at (date)");
   }
 }
 
@@ -204,7 +204,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Delete any existing OTPs for this user
       const existing = await pbGet(
-        `/api/collections/otp_codes/records?filter=${encodeURIComponent(`user_id="${pbId}"`)}&perPage=50`,
+        `/api/collections/otp_codes/records?filter=${encodeURIComponent(`user="${pbId}"`)}&perPage=50`,
       );
       for (const rec of existing.items ?? []) {
         await pbDelete(`/api/collections/otp_codes/records/${rec.id}`).catch(() => {});
@@ -212,15 +212,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Generate cryptographically secure 6-digit OTP
       const otp = crypto.randomInt(100000, 1000000).toString();
-      const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      // PocketBase date field format: YYYY-MM-DD HH:MM:SS.sssZ
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
+        .toISOString()
+        .replace("T", " ");
 
-      // Store OTP in PocketBase
+      // Store OTP in PocketBase — field names match the manually-created collection:
+      //   user (relation → users), code (text), expires_at (date)
+      console.log(`[OTP] Storing OTP record for user=${pbId}, expires_at=${expiresAt}`);
       const stored = await pbPost("/api/collections/otp_codes/records", {
-        user_id: pbId,
+        user: pbId,          // relation field pointing to users collection
         code: otp,
         expires_at: expiresAt,
       });
-      if (stored.code) return res.status(500).json({ error: "Failed to store OTP" });
+      if (stored.code) {
+        console.error("[OTP] PocketBase store failed — code:", stored.code, "| message:", stored.message, "| data:", JSON.stringify(stored.data ?? {}));
+        return res.status(500).json({ error: `Failed to store OTP (PB ${stored.code}: ${stored.message || "unknown"})` });
+      }
 
       // Send email via Brevo SMTP
       await sendOtpEmail(email, otp);
@@ -228,8 +236,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`[OTP] Sent deletion OTP to ${email} for user ${pbId}`);
       res.json({ success: true });
     } catch (e: any) {
-      console.error("[/api/auth/request-delete-otp]", e.message);
-      res.status(500).json({ error: "Failed to send OTP. Check SMTP configuration." });
+      console.error("[/api/auth/request-delete-otp] Unexpected error:", e.message, e.stack);
+      res.status(500).json({ error: e.message || "Failed to send OTP." });
     }
   });
 
@@ -239,9 +247,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { pbId, code } = req.body;
       if (!pbId || !code) return res.status(400).json({ error: "pbId and code required" });
 
-      // Find OTP record for this user
+      // Find OTP record for this user (field is "user" relation, not "user_id")
       const records = await pbGet(
-        `/api/collections/otp_codes/records?filter=${encodeURIComponent(`user_id="${pbId}"`)}&perPage=10`,
+        `/api/collections/otp_codes/records?filter=${encodeURIComponent(`user="${pbId}"`)}&perPage=10`,
       );
       const otpRecord = (records.items ?? []).find((r: any) => r.code === String(code).trim());
 

@@ -100,6 +100,7 @@ export default function ProfileScreen() {
   const [isRequestingOtp, setIsRequestingOtp] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [otpError, setOtpError] = useState('');
+  const [resendCountdown, setResendCountdown] = useState(0);
 
   const miningCount  = pbUser?.totalClaims ?? 0;
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
@@ -164,6 +165,19 @@ export default function ProfileScreen() {
     setShowConfirmDeleteModal(true);
   }
 
+  // 60-second resend countdown when OTP modal is open
+  useEffect(() => {
+    if (!showOtpModal) { setResendCountdown(0); return; }
+    setResendCountdown(60);
+    const id = setInterval(() => {
+      setResendCountdown(prev => {
+        if (prev <= 1) { clearInterval(id); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [showOtpModal]);
+
   async function handleSendOtp() {
     const email = firebaseUser?.email || user?.email || '';
     if (!pbId || !email) return;
@@ -175,7 +189,36 @@ export default function ProfileScreen() {
       setShowConfirmDeleteModal(false);
       setShowOtpModal(true);
     } catch (e: any) {
-      setOtpError(e?.message || 'Could not send OTP. Please try again.');
+      const msg = typeof e?.message === 'string' ? e.message
+        : typeof e?.error === 'string' ? e.error
+        : 'Could not send OTP. Please try again.';
+      setOtpError(msg);
+    } finally {
+      setIsRequestingOtp(false);
+    }
+  }
+
+  async function handleResendOtp() {
+    if (resendCountdown > 0) return;
+    const email = firebaseUser?.email || user?.email || '';
+    if (!pbId || !email) return;
+    setIsRequestingOtp(true);
+    setOtpError('');
+    try {
+      await api.requestDeleteOtp(pbId, email);
+      setOtpCode('');
+      setResendCountdown(60);
+      const id = setInterval(() => {
+        setResendCountdown(prev => {
+          if (prev <= 1) { clearInterval(id); return 0; }
+          return prev - 1;
+        });
+      }, 1000);
+    } catch (e: any) {
+      const msg = typeof e?.message === 'string' ? e.message
+        : typeof e?.error === 'string' ? e.error
+        : 'Could not resend OTP.';
+      setOtpError(msg);
     } finally {
       setIsRequestingOtp(false);
     }
@@ -200,7 +243,10 @@ export default function ProfileScreen() {
       ]);
     } catch (e: any) {
       setIsDeleting(false);
-      setOtpError(e?.message || 'Verification failed. Please try again.');
+      const msg = typeof e?.message === 'string' ? e.message
+        : typeof e?.error === 'string' ? e.error
+        : 'Verification failed. Please try again.';
+      setOtpError(msg);
     }
   }
 
@@ -627,20 +673,14 @@ export default function ProfileScreen() {
             </Pressable>
 
             <Pressable
-              onPress={() => {
-                const email = firebaseUser?.email || user?.email || '';
-                if (!email || !pbId || isDeleting) return;
-                setIsRequestingOtp(true);
-                api.requestDeleteOtp(pbId, email)
-                  .then(() => { setOtpCode(''); setOtpError(''); Alert.alert('Sent', 'A new code has been sent to your email.'); })
-                  .catch((e: any) => Alert.alert('Error', e?.message || 'Could not resend OTP.'))
-                  .finally(() => setIsRequestingOtp(false));
-              }}
-              disabled={isRequestingOtp || isDeleting}
-              style={otpStyles.resendBtn}
+              onPress={handleResendOtp}
+              disabled={isRequestingOtp || isDeleting || resendCountdown > 0}
+              style={[otpStyles.resendBtn, (isRequestingOtp || resendCountdown > 0) && { opacity: 0.45 }]}
             >
               <Text style={otpStyles.resendText}>
-                {isRequestingOtp ? 'Sending…' : 'Resend Code'}
+                {isRequestingOtp ? 'Sending…'
+                  : resendCountdown > 0 ? `Resend Code (${resendCountdown}s)`
+                  : 'Resend Code'}
               </Text>
             </Pressable>
 

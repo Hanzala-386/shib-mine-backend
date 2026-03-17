@@ -78,6 +78,10 @@ export default function TermsScreen() {
             <Text style={styles.sectionBody}>{s.body}</Text>
           </View>
         ))}
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>Questions? Contact us at</Text>
+          <Text style={styles.footerEmail}>support@shibahit.com</Text>
+        </View>
       </ScrollView>
     </View>
   );
@@ -97,4 +101,7 @@ const styles = StyleSheet.create({
   section: { marginBottom: 26 },
   sectionTitle: { fontFamily: 'Inter_700Bold', fontSize: 15, color: Colors.gold, marginBottom: 10 },
   sectionBody: { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textSecondary, lineHeight: 22 },
+  footer: { marginTop: 12, paddingTop: 20, borderTopWidth: 1, borderTopColor: Colors.darkBorder, alignItems: 'center', gap: 4 },
+  footerText: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted },
+  footerEmail: { fontFamily: 'Inter_700Bold', fontSize: 14, color: Colors.neonOrange },
 });
