@@ -94,8 +94,11 @@ export default function ProfileScreen() {
   const [newPw, setNewPw]          = useState('');
   const [confirmPw, setConfirmPw]  = useState('');
   const [pwLoading, setPwLoading]  = useState(false);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showOtpModal, setShowOtpModal] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [isRequestingOtp, setIsRequestingOtp] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [otpError, setOtpError] = useState('');
 
   const miningCount  = pbUser?.totalClaims ?? 0;
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
@@ -155,23 +158,58 @@ export default function ProfileScreen() {
     await signOut();
   }
 
-  async function handleDeleteAccount() {
+  function handleInitiateDelete() {
     if (!pbId || !firebaseUser) {
       Alert.alert('Error', 'Account not ready. Please try again.');
       return;
     }
+    const email = firebaseUser.email || user?.email || '';
+    Alert.alert(
+      'Delete Account',
+      `This will permanently delete your account and all your data. A 6-digit verification code will be sent to ${email}.\n\nThis action cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Send OTP & Continue',
+          style: 'destructive',
+          onPress: async () => {
+            setIsRequestingOtp(true);
+            try {
+              await api.requestDeleteOtp(pbId, email);
+              setOtpCode('');
+              setOtpError('');
+              setShowOtpModal(true);
+            } catch (e: any) {
+              Alert.alert('Error', e?.message || 'Could not send OTP. Please try again.');
+            } finally {
+              setIsRequestingOtp(false);
+            }
+          },
+        },
+      ],
+    );
+  }
+
+  async function handleConfirmDelete() {
+    if (otpCode.length !== 6) {
+      setOtpError('Please enter the full 6-digit code.');
+      return;
+    }
+    setOtpError('');
     setIsDeleting(true);
     try {
-      // 1. Delete from PocketBase via our server
-      await api.deleteAccount(pbId);
+      // 1. Verify OTP + delete PocketBase record
+      await api.confirmDelete(pbId, otpCode);
       // 2. Delete Firebase account
-      await deleteUser(firebaseUser);
-      // 3. Sign out and navigate to auth
-      setShowDeleteModal(false);
-      await signOut();
+      await deleteUser(firebaseUser!);
+      // 3. Navigate away
+      setShowOtpModal(false);
+      Alert.alert('Account Deleted', 'Your account has been permanently deleted. Goodbye!', [
+        { text: 'OK', onPress: () => signOut() },
+      ]);
     } catch (e: any) {
       setIsDeleting(false);
-      Alert.alert('Delete Failed', e?.message || 'Could not delete account. Please try again.');
+      setOtpError(e?.message || 'Verification failed. Please try again.');
     }
   }
 
@@ -421,8 +459,9 @@ export default function ProfileScreen() {
               icon="trash-outline"
               label="Delete Account"
               danger
-              onPress={() => setShowDeleteModal(true)}
+              onPress={handleInitiateDelete}
               testID="btn-delete-account"
+              rightEl={isRequestingOtp ? <ActivityIndicator size="small" color={Colors.error} /> : undefined}
             />
           </View>
         </Animated.View>
@@ -512,33 +551,67 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* ══ DELETE ACCOUNT MODAL ════════════════════════════════════════════════ */}
-      <Modal visible={showDeleteModal} transparent animationType="fade" onRequestClose={() => !isDeleting && setShowDeleteModal(false)}>
-        <Pressable style={styles.versionOverlay} onPress={() => !isDeleting && setShowDeleteModal(false)}>
-          <Pressable style={[styles.versionCard, { padding: 0 }]} onPress={(e) => e.stopPropagation()}>
-            <LinearGradient colors={['rgba(220,38,38,0.18)', 'rgba(30,20,20,0.98)']} style={[styles.versionGradient, { gap: 14 }]}>
-              <Ionicons name="warning-outline" size={44} color={Colors.error} />
-              <Text style={[styles.versionAppName, { color: Colors.error }]}>Delete Account</Text>
-              <Text style={[styles.versionAbout, { textAlign: 'center', marginTop: 0 }]}>
-                This will permanently delete your SHIB Mine account and all associated data.{'\n\n'}This action cannot be undone.
+      {/* ══ OTP DELETION MODAL ══════════════════════════════════════════════════ */}
+      <Modal visible={showOtpModal} transparent animationType="slide" onRequestClose={() => !isDeleting && setShowOtpModal(false)}>
+        <View style={otpStyles.overlay}>
+          <View style={[otpStyles.sheet, { paddingBottom: insets.bottom + 24 }]}>
+            <View style={otpStyles.handle} />
+            <Ionicons name="mail-outline" size={36} color={Colors.error} style={{ alignSelf: 'center', marginBottom: 8 }} />
+            <Text style={otpStyles.title}>Verify Your Identity</Text>
+            <Text style={otpStyles.subtitle}>
+              Enter the 6-digit code sent to{'\n'}
+              <Text style={{ color: Colors.textPrimary }}>{firebaseUser?.email || ''}</Text>
+            </Text>
+
+            <TextInput
+              style={otpStyles.input}
+              value={otpCode}
+              onChangeText={(t) => { setOtpCode(t.replace(/\D/g, '').slice(0, 6)); setOtpError(''); }}
+              keyboardType="number-pad"
+              maxLength={6}
+              placeholder="• • • • • •"
+              placeholderTextColor={Colors.textMuted}
+              textAlign="center"
+              autoFocus
+              editable={!isDeleting}
+            />
+
+            {!!otpError && <Text style={otpStyles.error}>{otpError}</Text>}
+
+            <Pressable
+              style={[otpStyles.confirmBtn, isDeleting && { opacity: 0.6 }]}
+              onPress={handleConfirmDelete}
+              disabled={isDeleting}
+              testID="btn-confirm-delete-otp"
+            >
+              {isDeleting
+                ? <ActivityIndicator color="#fff" />
+                : <Text style={otpStyles.confirmBtnText}>Confirm Account Deletion</Text>}
+            </Pressable>
+
+            <Pressable
+              onPress={() => {
+                const email = firebaseUser?.email || user?.email || '';
+                if (!email || !pbId || isDeleting) return;
+                setIsRequestingOtp(true);
+                api.requestDeleteOtp(pbId, email)
+                  .then(() => { setOtpCode(''); setOtpError(''); Alert.alert('Sent', 'A new code has been sent to your email.'); })
+                  .catch((e: any) => Alert.alert('Error', e?.message || 'Could not resend OTP.'))
+                  .finally(() => setIsRequestingOtp(false));
+              }}
+              disabled={isRequestingOtp || isDeleting}
+              style={otpStyles.resendBtn}
+            >
+              <Text style={otpStyles.resendText}>
+                {isRequestingOtp ? 'Sending…' : 'Resend Code'}
               </Text>
-              <View style={styles.versionDivider} />
-              <Pressable
-                style={[styles.versionClose, { backgroundColor: Colors.error + '22', borderColor: Colors.error + '60', borderWidth: 1 }]}
-                onPress={handleDeleteAccount}
-                disabled={isDeleting}
-              >
-                {isDeleting
-                  ? <ActivityIndicator size="small" color={Colors.error} />
-                  : <Text style={[styles.versionCloseText, { color: Colors.error }]}>Yes, Delete My Account</Text>
-                }
-              </Pressable>
-              <Pressable onPress={() => setShowDeleteModal(false)} disabled={isDeleting} style={{ paddingVertical: 8 }}>
-                <Text style={{ color: Colors.textMuted, fontSize: 14, textAlign: 'center' }}>Cancel</Text>
-              </Pressable>
-            </LinearGradient>
-          </Pressable>
-        </Pressable>
+            </Pressable>
+
+            <Pressable onPress={() => setShowOtpModal(false)} disabled={isDeleting} style={{ paddingVertical: 8 }}>
+              <Text style={{ color: Colors.textMuted, fontSize: 14, textAlign: 'center' }}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
       </Modal>
     </View>
   );
@@ -666,4 +739,30 @@ const styles = StyleSheet.create({
   pwSubmitText:     { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
   pwCancel:         { alignItems: 'center', paddingVertical: 8 },
   pwCancelText:     { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textMuted },
+});
+
+const otpStyles = StyleSheet.create({
+  overlay:    { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  sheet:      { backgroundColor: '#1a1209', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, gap: 14 },
+  handle:     { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.darkBorder, alignSelf: 'center', marginBottom: 8 },
+  title:      { fontFamily: 'Inter_700Bold', fontSize: 20, color: Colors.error, textAlign: 'center' },
+  subtitle:   { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+  input: {
+    borderWidth: 2,
+    borderColor: Colors.error + '60',
+    borderRadius: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    fontSize: 28,
+    fontFamily: 'Inter_700Bold',
+    color: Colors.textPrimary,
+    letterSpacing: 12,
+    backgroundColor: 'rgba(220,38,38,0.06)',
+    textAlign: 'center',
+  },
+  error:          { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.error, textAlign: 'center' },
+  confirmBtn:     { backgroundColor: Colors.error, borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
+  confirmBtnText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#fff' },
+  resendBtn:      { alignItems: 'center', paddingVertical: 6 },
+  resendText:     { fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.neonOrange },
 });

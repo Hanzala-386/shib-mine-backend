@@ -2,6 +2,8 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "node:http";
 import https from "node:https";
 import http from "node:http";
+import nodemailer from "nodemailer";
+import crypto from "node:crypto";
 
 const PB_URL = "https://api.webcod.in";
 
@@ -93,6 +95,53 @@ async function pbDelete(path: string) {
   return pbHttp("DELETE", path, null, token);
 }
 
+// ─── Brevo SMTP mail transporter ──────────────────────────────────────────
+function getMailTransporter() {
+  return nodemailer.createTransport({
+    host: "smtp-relay.brevo.com",
+    port: 587,
+    secure: false,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_KEY,
+    },
+  });
+}
+
+async function sendOtpEmail(to: string, otp: string) {
+  const from = `SHIB Mine <${process.env.SMTP_FROM || process.env.SMTP_USER}>`;
+  const transporter = getMailTransporter();
+  await transporter.sendMail({
+    from,
+    to,
+    subject: "Action Required: OTP for Account Deletion",
+    text: `Your OTP for deleting your SHIB Mine account is ${otp}. This code expires in 5 minutes. If you didn't request this, ignore this email.`,
+    html: `<p>Your OTP for deleting your SHIB Mine account is:</p><h2 style="letter-spacing:8px;font-size:32px;">${otp}</h2><p>This code expires in <strong>5 minutes</strong>.</p><p>If you didn't request this, ignore this email.</p>`,
+  });
+}
+
+// ─── Ensure otp_codes collection exists in PocketBase ─────────────────────
+async function ensureOtpCollection() {
+  try {
+    const check = await pbGet("/api/collections/otp_codes");
+    if (!check.code) return; // already exists
+    const token = await getAdminToken();
+    await pbHttp("POST", "/api/collections", {
+      name: "otp_codes",
+      type: "base",
+      fields: [
+        { name: "user_id",    type: "text", required: true },
+        { name: "code",       type: "text", required: true },
+        { name: "expires_at", type: "text", required: true },
+      ],
+    }, token);
+    console.log("[otp_codes] Collection created in PocketBase");
+  } catch (e: any) {
+    console.warn("[otp_codes] Could not auto-create collection:", e.message,
+      "\n→ Please create it manually in PocketBase admin with fields: user_id (text), code (text), expires_at (text)");
+  }
+}
+
 // Settings cache
 let settingsCache: any = null;
 let settingsCacheAt = 0;
@@ -140,7 +189,102 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Warm up admin token, ensure PB schema on startup
   getAdminToken()
     .then(() => ensureReferralEarningsField())
+    .then(() => ensureOtpCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
+
+  // ── OTP: Request account-deletion OTP ─────────────────────────────────────
+  app.post("/api/auth/request-delete-otp", async (req: Request, res: Response) => {
+    try {
+      const { pbId, email } = req.body;
+      if (!pbId || !email) return res.status(400).json({ error: "pbId and email required" });
+
+      // Verify user exists
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // Delete any existing OTPs for this user
+      const existing = await pbGet(
+        `/api/collections/otp_codes/records?filter=${encodeURIComponent(`user_id="${pbId}"`)}&perPage=50`,
+      );
+      for (const rec of existing.items ?? []) {
+        await pbDelete(`/api/collections/otp_codes/records/${rec.id}`).catch(() => {});
+      }
+
+      // Generate cryptographically secure 6-digit OTP
+      const otp = crypto.randomInt(100000, 1000000).toString();
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+
+      // Store OTP in PocketBase
+      const stored = await pbPost("/api/collections/otp_codes/records", {
+        user_id: pbId,
+        code: otp,
+        expires_at: expiresAt,
+      });
+      if (stored.code) return res.status(500).json({ error: "Failed to store OTP" });
+
+      // Send email via Brevo SMTP
+      await sendOtpEmail(email, otp);
+
+      console.log(`[OTP] Sent deletion OTP to ${email} for user ${pbId}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/auth/request-delete-otp]", e.message);
+      res.status(500).json({ error: "Failed to send OTP. Check SMTP configuration." });
+    }
+  });
+
+  // ── OTP: Confirm deletion with OTP ────────────────────────────────────────
+  app.post("/api/auth/confirm-delete", async (req: Request, res: Response) => {
+    try {
+      const { pbId, code } = req.body;
+      if (!pbId || !code) return res.status(400).json({ error: "pbId and code required" });
+
+      // Find OTP record for this user
+      const records = await pbGet(
+        `/api/collections/otp_codes/records?filter=${encodeURIComponent(`user_id="${pbId}"`)}&perPage=10`,
+      );
+      const otpRecord = (records.items ?? []).find((r: any) => r.code === String(code).trim());
+
+      if (!otpRecord) return res.status(400).json({ error: "Invalid OTP. Please try again." });
+
+      // Check expiry
+      if (new Date(otpRecord.expires_at) < new Date()) {
+        await pbDelete(`/api/collections/otp_codes/records/${otpRecord.id}`).catch(() => {});
+        return res.status(400).json({ error: "OTP has expired. Please request a new one." });
+      }
+
+      // Delete OTP record immediately (single-use)
+      await pbDelete(`/api/collections/otp_codes/records/${otpRecord.id}`).catch(() => {});
+
+      // Delete user's mining sessions
+      try {
+        const sessions = await pbGet(
+          `/api/collections/mining_sessions/records?filter=${encodeURIComponent(`user="${pbId}"`)}&perPage=200`,
+        );
+        for (const s of sessions.items ?? []) {
+          await pbDelete(`/api/collections/mining_sessions/records/${s.id}`).catch(() => {});
+        }
+      } catch { /* non-critical */ }
+
+      // Delete the user record from PocketBase
+      const deleteUrl = `${PB_URL}/api/collections/users/records/${pbId}`;
+      const adminToken = await getAdminToken();
+      const delRes = await fetch(deleteUrl, {
+        method: "DELETE",
+        headers: { Authorization: adminToken },
+      });
+      if (!delRes.ok && delRes.status !== 204) {
+        console.error("[confirm-delete] PB user delete failed:", delRes.status);
+        return res.status(500).json({ error: "Failed to delete account" });
+      }
+
+      console.log(`[confirm-delete] Account deleted for pbId=${pbId}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/auth/confirm-delete]", e.message);
+      res.status(500).json({ error: "Account deletion failed. Please try again." });
+    }
+  });
 
   // ── Settings ──────────────────────────────────────────────────────────────
   app.get("/api/app/settings", async (_req: Request, res: Response) => {

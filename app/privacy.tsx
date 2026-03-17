@@ -36,11 +36,15 @@ const SECTIONS = [
     body: `The App may send local push notifications to inform you when your mining session is complete. These notifications are triggered locally on your device and do not involve transmitting personal data to external servers. You can disable notifications at any time through your device's notification settings.`,
   },
   {
-    title: '8. Changes to This Policy',
+    title: '8. Account Deletion & Identity Verification',
+    body: `To protect your security, permanently deleting your SHIB Mine account requires email-based One-Time Password (OTP) verification. When you initiate an account deletion request:\n\n• A 6-digit OTP is generated and sent to your registered email address.\n• The OTP is valid for 5 minutes and can only be used once.\n• Upon successful verification, all account data — including your virtual balance, mining history, and referral records — is permanently and irreversibly deleted from our systems.\n\nThis verification step ensures that only the legitimate account owner can delete an account, protecting you against unauthorised deletion.`,
+  },
+  {
+    title: '9. Changes to This Policy',
     body: `We may update this Privacy Policy periodically. Continued use of the App after any changes constitutes your acceptance of the revised policy. The "Last Updated" date at the top of this page will reflect the most recent revision.`,
   },
   {
-    title: '9. Contact Us',
+    title: '10. Contact Us',
     body: `For questions or concerns about this Privacy Policy or your personal data, please contact:\n\n[ENTER_SUPPORT_EMAIL_HERE]`,
   },
 ];

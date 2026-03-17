@@ -181,8 +181,11 @@ export const api = {
 
   adminGetStats: () => request<AdminStats>('GET', '/api/app/admin/stats'),
 
-  deleteAccount: (pbId: string) =>
-    request<{ success: boolean }>('DELETE', `/api/app/user/${pbId}/delete-account`),
+  requestDeleteOtp: (pbId: string, email: string) =>
+    request<{ success: boolean }>('POST', '/api/auth/request-delete-otp', { pbId, email }),
+
+  confirmDelete: (pbId: string, code: string) =>
+    request<{ success: boolean }>('POST', '/api/auth/confirm-delete', { pbId, code }),
 };
 
 // ── Types ──────────────────────────────────────────────────────────────────
