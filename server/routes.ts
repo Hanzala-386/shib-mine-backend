@@ -212,22 +212,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Generate cryptographically secure 6-digit OTP
       const otp = crypto.randomInt(100000, 1000000).toString();
-      // PocketBase date field format: YYYY-MM-DD HH:MM:SS.sssZ
+      // PocketBase date field format: "YYYY-MM-DD HH:MM:SS" (no T, no Z, no ms)
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
         .toISOString()
-        .replace("T", " ");
+        .replace("T", " ")
+        .replace(/\.\d{3}Z$/, "");
 
       // Store OTP in PocketBase — field names match the manually-created collection:
       //   user (relation → users), code (text), expires_at (date)
       console.log(`[OTP] Storing OTP record for user=${pbId}, expires_at=${expiresAt}`);
       const stored = await pbPost("/api/collections/otp_codes/records", {
-        user: pbId,          // relation field pointing to users collection
+        user: pbId,
         code: otp,
         expires_at: expiresAt,
       });
-      if (stored.code) {
-        console.error("[OTP] PocketBase store failed — code:", stored.code, "| message:", stored.message, "| data:", JSON.stringify(stored.data ?? {}));
-        return res.status(500).json({ error: `Failed to store OTP (PB ${stored.code}: ${stored.message || "unknown"})` });
+      // PB success: response has "id" and "collectionId". A real error has "status" (HTTP int) or no "id".
+      if (!stored.id) {
+        console.error("[OTP] PocketBase store failed — full response:", JSON.stringify(stored));
+        return res.status(500).json({ error: `Failed to store OTP (PB ${stored.status || "unknown"}: ${stored.message || "unknown"})` });
       }
 
       // Send email via Brevo SMTP
