@@ -95,28 +95,61 @@ async function pbDelete(path: string) {
   return pbHttp("DELETE", path, null, token);
 }
 
-// ─── Brevo SMTP mail transporter ──────────────────────────────────────────
-function getMailTransporter() {
-  return nodemailer.createTransport({
+// ─── Brevo SMTP via PocketBase-configured credentials ─────────────────────
+// Reads SMTP config from PocketBase settings so there's only one source of truth.
+let smtpConfigCache: { host: string; port: number; user: string; pass: string } | null = null;
+
+async function getSmtpConfig() {
+  if (smtpConfigCache) return smtpConfigCache;
+  try {
+    const token = await getAdminToken();
+    const settings = await pbHttp("GET", "/api/settings", null, token);
+    const s = settings?.smtp;
+    if (s?.host && s?.username) {
+      smtpConfigCache = { host: s.host, port: s.port || 587, user: s.username, pass: s.password || "" };
+      console.log(`[SMTP] Loaded config from PocketBase: ${s.host}:${s.port} user=${s.username}`);
+      return smtpConfigCache;
+    }
+  } catch (e: any) {
+    console.warn("[SMTP] Could not load PocketBase SMTP settings:", e.message);
+  }
+  // Fallback to env vars
+  return {
     host: "smtp-relay.brevo.com",
     port: 587,
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_KEY,
-    },
-  });
+    user: process.env.SMTP_USER || "",
+    pass: process.env.SMTP_KEY || "",
+  };
 }
 
 async function sendOtpEmail(to: string, otp: string) {
-  const from = `SHIB Mine <${process.env.SMTP_FROM || process.env.SMTP_USER}>`;
-  const transporter = getMailTransporter();
+  const cfg = await getSmtpConfig();
+  const from = `SHIB Mine <${process.env.SMTP_FROM || "support@shibahit.com"}>`;
+  const transporter = nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: false,
+    auth: { user: cfg.user, pass: cfg.pass },
+    tls: { rejectUnauthorized: false },
+  });
   await transporter.sendMail({
     from,
     to,
-    subject: "Action Required: OTP for Account Deletion",
-    text: `Your OTP for deleting your SHIB Mine account is ${otp}. This code expires in 5 minutes. If you didn't request this, ignore this email.`,
-    html: `<p>Your OTP for deleting your SHIB Mine account is:</p><h2 style="letter-spacing:8px;font-size:32px;">${otp}</h2><p>This code expires in <strong>5 minutes</strong>.</p><p>If you didn't request this, ignore this email.</p>`,
+    subject: "Action Required: Your Account Deletion OTP",
+    text: `Your OTP for deleting your SHIB Mine account is: ${otp}\n\nThis code expires in 5 minutes. If you didn't request this, ignore this email.`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#1a1a1a;color:#fff;padding:32px;border-radius:12px;">
+        <h2 style="color:#FF6B00;margin:0 0 16px;">SHIB Mine</h2>
+        <p style="color:#ccc;margin:0 0 24px;">You requested to delete your account. Enter the code below to confirm.</p>
+        <div style="background:#2a2a2a;border-radius:10px;padding:24px;text-align:center;margin-bottom:24px;">
+          <p style="color:#aaa;font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:2px;">Your OTP Code</p>
+          <h1 style="color:#FFD700;font-size:42px;letter-spacing:14px;margin:0;">${otp}</h1>
+        </div>
+        <p style="color:#888;font-size:13px;margin:0;">This code expires in <strong style="color:#fff;">5 minutes</strong>. If you didn't request this, you can safely ignore this email.</p>
+        <hr style="border:none;border-top:1px solid #333;margin:24px 0;"/>
+        <p style="color:#666;font-size:12px;margin:0;">SHIB Mine &bull; support@shibahit.com</p>
+      </div>
+    `,
   });
 }
 
