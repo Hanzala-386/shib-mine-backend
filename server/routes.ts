@@ -2,7 +2,6 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "node:http";
 import https from "node:https";
 import http from "node:http";
-import nodemailer from "nodemailer";
 import crypto from "node:crypto";
 
 const PB_URL = "https://api.webcod.in";
@@ -95,62 +94,80 @@ async function pbDelete(path: string) {
   return pbHttp("DELETE", path, null, token);
 }
 
-// ─── Brevo SMTP via PocketBase-configured credentials ─────────────────────
-// Reads SMTP config from PocketBase settings so there's only one source of truth.
-let smtpConfigCache: { host: string; port: number; user: string; pass: string } | null = null;
+// ─── Send OTP email via PocketBase's own mailer ────────────────────────────
+// Strategy: temporarily patch PB's verification template with the OTP content,
+// call /api/settings/test/email (which uses PB's configured Brevo SMTP),
+// then restore the original template. This bypasses all Nodemailer/SMTP auth
+// issues since PocketBase handles the Brevo connection internally.
 
-async function getSmtpConfig() {
-  if (smtpConfigCache) return smtpConfigCache;
-  try {
-    const token = await getAdminToken();
-    const settings = await pbHttp("GET", "/api/settings", null, token);
-    const s = settings?.smtp;
-    if (s?.host && s?.username) {
-      smtpConfigCache = { host: s.host, port: s.port || 587, user: s.username, pass: s.password || "" };
-      console.log(`[SMTP] Loaded config from PocketBase: ${s.host}:${s.port} user=${s.username}`);
-      return smtpConfigCache;
-    }
-  } catch (e: any) {
-    console.warn("[SMTP] Could not load PocketBase SMTP settings:", e.message);
-  }
-  // Fallback to env vars
-  return {
-    host: "smtp-relay.brevo.com",
-    port: 587,
-    user: process.env.SMTP_USER || "",
-    pass: process.env.SMTP_KEY || "",
-  };
-}
+let otpEmailLock = false; // simple mutex — only one OTP email send at a time
 
 async function sendOtpEmail(to: string, otp: string) {
-  const cfg = await getSmtpConfig();
-  const from = `SHIB Mine <${process.env.SMTP_FROM || "support@shibahit.com"}>`;
-  const transporter = nodemailer.createTransport({
-    host: cfg.host,
-    port: cfg.port,
-    secure: false,
-    auth: { user: cfg.user, pass: cfg.pass },
-    tls: { rejectUnauthorized: false },
-  });
-  await transporter.sendMail({
-    from,
-    to,
-    subject: "Action Required: Your Account Deletion OTP",
-    text: `Your OTP for deleting your SHIB Mine account is: ${otp}\n\nThis code expires in 5 minutes. If you didn't request this, ignore this email.`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#1a1a1a;color:#fff;padding:32px;border-radius:12px;">
-        <h2 style="color:#FF6B00;margin:0 0 16px;">SHIB Mine</h2>
-        <p style="color:#ccc;margin:0 0 24px;">You requested to delete your account. Enter the code below to confirm.</p>
-        <div style="background:#2a2a2a;border-radius:10px;padding:24px;text-align:center;margin-bottom:24px;">
-          <p style="color:#aaa;font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:2px;">Your OTP Code</p>
-          <h1 style="color:#FFD700;font-size:42px;letter-spacing:14px;margin:0;">${otp}</h1>
-        </div>
-        <p style="color:#888;font-size:13px;margin:0;">This code expires in <strong style="color:#fff;">5 minutes</strong>. If you didn't request this, you can safely ignore this email.</p>
-        <hr style="border:none;border-top:1px solid #333;margin:24px 0;"/>
-        <p style="color:#666;font-size:12px;margin:0;">SHIB Mine &bull; support@shibahit.com</p>
-      </div>
-    `,
-  });
+  // Wait if another OTP send is in progress (up to 15s)
+  const deadline = Date.now() + 15_000;
+  while (otpEmailLock && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 200));
+  }
+  otpEmailLock = true;
+
+  const token = await getAdminToken();
+
+  // 1. Read current PB settings to save original verification template
+  const currentSettings = await pbHttp("GET", "/api/settings", null, token);
+  const originalTemplate = currentSettings?.meta?.verificationTemplate ?? {};
+
+  try {
+    // 2. Patch verification template with OTP content
+    const otpBody = `
+<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;background:#1a1a1a;color:#fff;padding:32px;border-radius:12px;">
+  <h2 style="color:#FF6B00;margin:0 0 8px;">SHIB Mine</h2>
+  <p style="color:#ccc;margin:0 0 24px;">You requested to delete your account. Enter the code below to confirm.</p>
+  <div style="background:#2a2a2a;border-radius:10px;padding:24px;text-align:center;margin-bottom:24px;">
+    <p style="color:#aaa;font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:2px;">Your 6-Digit OTP</p>
+    <h1 style="color:#FFD700;font-size:42px;letter-spacing:14px;margin:0;">${otp}</h1>
+  </div>
+  <p style="color:#888;font-size:13px;margin:0;">This code expires in <strong style="color:#fff;">5 minutes</strong>. If you didn't request this, you can safely ignore this email.</p>
+  <hr style="border:none;border-top:1px solid #333;margin:24px 0;"/>
+  <p style="color:#666;font-size:12px;margin:0;">SHIB Mine &bull; support@shibahit.com</p>
+</div>`;
+
+    await pbHttp("PATCH", "/api/settings", {
+      meta: {
+        ...currentSettings.meta,
+        verificationTemplate: {
+          ...originalTemplate,
+          subject: "Your SHIB Mine Account Deletion OTP",
+          body: otpBody,
+          actionUrl: "",
+        },
+      },
+    }, token);
+
+    // 3. Trigger PocketBase to send the email using its own configured SMTP
+    const sendResult = await pbHttp("POST", "/api/settings/test/email", {
+      template: "verification",
+      email: to,
+    }, token);
+
+    if (sendResult && sendResult.status >= 400) {
+      throw new Error(sendResult.message || "PocketBase failed to send email");
+    }
+
+    console.log(`[OTP] Email sent to ${to} via PocketBase mailer`);
+  } finally {
+    // 4. Always restore the original template
+    try {
+      await pbHttp("PATCH", "/api/settings", {
+        meta: {
+          ...currentSettings.meta,
+          verificationTemplate: originalTemplate,
+        },
+      }, token);
+    } catch (restoreErr: any) {
+      console.warn("[OTP] Failed to restore PB verification template:", restoreErr.message);
+    }
+    otpEmailLock = false;
+  }
 }
 
 // ─── Ensure otp_codes collection exists in PocketBase ─────────────────────
