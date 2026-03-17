@@ -94,6 +94,7 @@ export default function ProfileScreen() {
   const [newPw, setNewPw]          = useState('');
   const [confirmPw, setConfirmPw]  = useState('');
   const [pwLoading, setPwLoading]  = useState(false);
+  const [showConfirmDeleteModal, setShowConfirmDeleteModal] = useState(false);
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpCode, setOtpCode] = useState('');
   const [isRequestingOtp, setIsRequestingOtp] = useState(false);
@@ -159,35 +160,25 @@ export default function ProfileScreen() {
   }
 
   function handleInitiateDelete() {
-    if (!pbId || !firebaseUser) {
-      Alert.alert('Error', 'Account not ready. Please try again.');
-      return;
+    if (!pbId || !firebaseUser) return;
+    setShowConfirmDeleteModal(true);
+  }
+
+  async function handleSendOtp() {
+    const email = firebaseUser?.email || user?.email || '';
+    if (!pbId || !email) return;
+    setIsRequestingOtp(true);
+    try {
+      await api.requestDeleteOtp(pbId, email);
+      setOtpCode('');
+      setOtpError('');
+      setShowConfirmDeleteModal(false);
+      setShowOtpModal(true);
+    } catch (e: any) {
+      setOtpError(e?.message || 'Could not send OTP. Please try again.');
+    } finally {
+      setIsRequestingOtp(false);
     }
-    const email = firebaseUser.email || user?.email || '';
-    Alert.alert(
-      'Delete Account',
-      `This will permanently delete your account and all your data. A 6-digit verification code will be sent to ${email}.\n\nThis action cannot be undone.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Send OTP & Continue',
-          style: 'destructive',
-          onPress: async () => {
-            setIsRequestingOtp(true);
-            try {
-              await api.requestDeleteOtp(pbId, email);
-              setOtpCode('');
-              setOtpError('');
-              setShowOtpModal(true);
-            } catch (e: any) {
-              Alert.alert('Error', e?.message || 'Could not send OTP. Please try again.');
-            } finally {
-              setIsRequestingOtp(false);
-            }
-          },
-        },
-      ],
-    );
   }
 
   async function handleConfirmDelete() {
@@ -461,7 +452,6 @@ export default function ProfileScreen() {
               danger
               onPress={handleInitiateDelete}
               testID="btn-delete-account"
-              rightEl={isRequestingOtp ? <ActivityIndicator size="small" color={Colors.error} /> : undefined}
             />
           </View>
         </Animated.View>
@@ -549,6 +539,53 @@ export default function ProfileScreen() {
             </Pressable>
           </View>
         </View>
+      </Modal>
+
+      {/* ══ CONFIRM DELETE WARNING MODAL ════════════════════════════════════════ */}
+      <Modal visible={showConfirmDeleteModal} transparent animationType="fade" onRequestClose={() => !isRequestingOtp && setShowConfirmDeleteModal(false)}>
+        <Pressable style={styles.versionOverlay} onPress={() => !isRequestingOtp && setShowConfirmDeleteModal(false)}>
+          <Pressable style={[styles.versionCard, { padding: 0 }]} onPress={(e) => e.stopPropagation()}>
+            <LinearGradient colors={['rgba(220,38,38,0.20)', 'rgba(18,10,5,0.99)']} style={[styles.versionGradient, { gap: 12 }]}>
+              <Ionicons name="warning" size={48} color={Colors.error} />
+              <Text style={[styles.versionAppName, { color: Colors.error }]}>Delete Account</Text>
+
+              {/* Email badge */}
+              <View style={deleteModalStyles.emailBadge}>
+                <Ionicons name="mail-outline" size={14} color={Colors.textMuted} />
+                <Text style={deleteModalStyles.emailText} numberOfLines={1}>
+                  {firebaseUser?.email || user?.email || ''}
+                </Text>
+              </View>
+
+              <Text style={deleteModalStyles.warningText}>
+                {'⚠️  This action is permanent.\n\nOnce deleted, your SHIB balance, Power Tokens, and account history will be gone forever.\n\nDo you wish to proceed?'}
+              </Text>
+
+              <View style={styles.versionDivider} />
+
+              {!!otpError && <Text style={deleteModalStyles.sendError}>{otpError}</Text>}
+
+              <Pressable
+                style={[deleteModalStyles.sendOtpBtn, isRequestingOtp && { opacity: 0.65 }]}
+                onPress={handleSendOtp}
+                disabled={isRequestingOtp}
+                testID="btn-send-otp"
+              >
+                {isRequestingOtp
+                  ? <ActivityIndicator color="#fff" />
+                  : <>
+                      <Ionicons name="send-outline" size={16} color="#fff" />
+                      <Text style={deleteModalStyles.sendOtpText}>Confirm & Send OTP</Text>
+                    </>
+                }
+              </Pressable>
+
+              <Pressable onPress={() => { setShowConfirmDeleteModal(false); setOtpError(''); }} disabled={isRequestingOtp} style={{ paddingVertical: 8 }}>
+                <Text style={{ color: Colors.textMuted, fontSize: 14, textAlign: 'center' }}>Cancel</Text>
+              </Pressable>
+            </LinearGradient>
+          </Pressable>
+        </Pressable>
       </Modal>
 
       {/* ══ OTP DELETION MODAL ══════════════════════════════════════════════════ */}
@@ -739,6 +776,35 @@ const styles = StyleSheet.create({
   pwSubmitText:     { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
   pwCancel:         { alignItems: 'center', paddingVertical: 8 },
   pwCancelText:     { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textMuted },
+});
+
+const deleteModalStyles = StyleSheet.create({
+  emailBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 20,
+    paddingVertical: 6, paddingHorizontal: 14, maxWidth: '100%',
+  },
+  emailText: {
+    fontFamily: 'Inter_500Medium', fontSize: 13,
+    color: Colors.textSecondary, flexShrink: 1,
+  },
+  warningText: {
+    fontFamily: 'Inter_400Regular', fontSize: 14,
+    color: Colors.textSecondary, textAlign: 'center',
+    lineHeight: 22,
+  },
+  sendError: {
+    fontFamily: 'Inter_400Regular', fontSize: 13,
+    color: Colors.error, textAlign: 'center',
+  },
+  sendOtpBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, backgroundColor: Colors.error, borderRadius: 14,
+    paddingVertical: 15, width: '100%',
+  },
+  sendOtpText: {
+    fontFamily: 'Inter_700Bold', fontSize: 16, color: '#fff',
+  },
 });
 
 const otpStyles = StyleSheet.create({

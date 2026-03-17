@@ -45,7 +45,7 @@ const SECTIONS = [
   },
   {
     title: '10. Contact Us',
-    body: `For questions or concerns about this Privacy Policy or your personal data, please contact:\n\n[ENTER_SUPPORT_EMAIL_HERE]`,
+    body: `For questions or concerns about this Privacy Policy or your personal data, please contact:\n\nsupport@shibahit.com`,
   },
 ];
 

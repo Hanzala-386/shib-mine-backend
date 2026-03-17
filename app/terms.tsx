@@ -52,7 +52,7 @@ const SECTIONS = [
   },
   {
     title: '12. Contact',
-    body: `For questions regarding these Terms, contact us at:\n\n[ENTER_SUPPORT_EMAIL_HERE]`,
+    body: `For questions regarding these Terms, contact us at:\n\nsupport@shibahit.com`,
   },
 ];
 

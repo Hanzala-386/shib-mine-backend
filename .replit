@@ -83,3 +83,8 @@ args = "npm run expo:dev"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[userenv]
+
+[userenv.shared]
+SMTP_FROM = "support@shibahit.com"
