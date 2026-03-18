@@ -710,16 +710,6 @@ export default function HomeScreen() {
           </View>
         </Animated.View>
 
-        {/* Ad banner placeholder */}
-        <View style={styles.adBanner}>
-          <LinearGradient
-            colors={['rgba(255,107,0,0.08)', 'rgba(244,196,48,0.05)']}
-            style={styles.adBannerInner}
-          >
-            <Ionicons name="tv-outline" size={14} color={Colors.textMuted} />
-            <Text style={styles.adBannerText}>AdMob Banner Ad</Text>
-          </LinearGradient>
-        </View>
       </ScrollView>
 
       {/* ══ RATE US MODAL ══════════════════════════════════════════════════════ */}
@@ -846,9 +836,6 @@ const styles = StyleSheet.create({
   statCard: { flex: 1, backgroundColor: Colors.darkCard, borderRadius: 16, padding: 16, alignItems: 'center', gap: 6, borderWidth: 1, borderColor: Colors.darkBorder },
   statValue: { fontFamily: 'Inter_700Bold', fontSize: 18, color: Colors.textPrimary },
   statLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted },
-  adBanner: { borderRadius: 10, overflow: 'hidden' },
-  adBannerInner: { height: 50, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8, borderWidth: 1, borderColor: Colors.darkBorder, borderRadius: 10 },
-  adBannerText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted },
 });
 
 // ── Modal styles ───────────────────────────────────────────────────────────────

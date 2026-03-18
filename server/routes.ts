@@ -290,22 +290,24 @@ function generateReferralCode() {
   return Math.random().toString(36).substr(2, 6).toUpperCase();
 }
 
-// ─── Ensure PB schema has referral_earnings field ──────────────────────────
+// ─── Ensure PB schema has referral_earnings + referral_balance fields ───────
 async function ensureReferralEarningsField() {
   try {
     const token = await getAdminToken();
     const colls = await pbHttp("GET", "/api/collections?perPage=200", null, token);
     const usersCol = (colls.items || []).find((c: any) => c.name === "users");
     if (!usersCol) return;
-    const hasField = (usersCol.schema || []).some((f: any) => f.name === "referral_earnings");
-    if (hasField) return;
+    const schema: any[] = usersCol.schema || [];
+    const missingFields: any[] = [];
+    if (!schema.some((f: any) => f.name === "referral_earnings"))
+      missingFields.push({ name: "referral_earnings", type: "number", required: false });
+    if (!schema.some((f: any) => f.name === "referral_balance"))
+      missingFields.push({ name: "referral_balance", type: "number", required: false });
+    if (missingFields.length === 0) return;
     await pbHttp("PATCH", `/api/collections/${usersCol.id}`, {
-      schema: [
-        ...(usersCol.schema || []),
-        { name: "referral_earnings", type: "number", required: false },
-      ],
+      schema: [...schema, ...missingFields],
     }, token);
-    console.log("[PB] Added referral_earnings field to users collection");
+    console.log("[PB] Added fields to users collection:", missingFields.map((f) => f.name).join(", "));
   } catch (e: any) {
     console.warn("[PB] Schema update skipped:", e.message);
   }
@@ -507,19 +509,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/app/user/:pbId/referral-stats", async (req: Request, res: Response) => {
     try {
       const { pbId } = req.params;
-      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,referral_earnings`);
+      const [user, referred] = await Promise.all([
+        pbGet(`/api/collections/users/records/${pbId}?fields=id,referral_earnings,referral_balance`),
+        pbGet(`/api/collections/users/records?filter=${encodeURIComponent(`referred_by="${pbId}"`)}&perPage=50&fields=id,email,created,total_claims`),
+      ]);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
-      const referred = await pbGet(
-        `/api/collections/users/records?filter=referred_by="${pbId}"&perPage=1&fields=id`,
-      );
       res.json({
         referredCount: referred.totalItems || 0,
         totalEarnings: user.referral_earnings || 0,
+        referralBalance: user.referral_balance || 0,
+        referredUsers: (referred.items || []).map((u: any) => ({
+          id: u.id,
+          email: u.email ? u.email.replace(/(.{2}).+(@.+)/, "$1***$2") : "***",
+          joined: u.created,
+          claims: u.total_claims || 0,
+        })),
       });
     } catch (e: any) {
       console.error("[/api/app/user/referral-stats]", e.message);
       res.status(500).json({ error: "Failed to fetch referral stats" });
+    }
+  });
+
+  // ── Referral balance claim ─────────────────────────────────────────────────
+  app.post("/api/app/user/:pbId/claim-referral", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,referral_balance,shib_balance`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      const balance = user.referral_balance || 0;
+      if (balance <= 0) return res.status(400).json({ error: "No referral rewards to claim" });
+      const newShib = (user.shib_balance || 0) + balance;
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        shib_balance: newShib,
+        referral_balance: 0,
+      });
+      res.json({ success: true, claimed: balance, newShibBalance: newShib });
+    } catch (e: any) {
+      console.error("[/api/app/user/claim-referral]", e.message);
+      res.status(500).json({ error: "Failed to claim referral rewards" });
     }
   });
 
@@ -1190,7 +1219,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         total_claims: newClaims,
       });
 
-      // 10% referral commission — try direct PB ID first (new format), fallback to code (old format)
+      // 10% referral commission → goes into referral_balance (must be claimed)
       if (user.referred_by) {
         (async () => {
           try {
@@ -1206,10 +1235,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
             if (referrer) {
               const commission = Math.round(serverReward * 0.1);
-              await pbPatch(`/api/collections/users/records/${referrer.id}`, {
-                shib_balance: (referrer.shib_balance || 0) + commission,
-                referral_earnings: (referrer.referral_earnings || 0) + commission,
-              });
+              if (commission > 0) {
+                await pbPatch(`/api/collections/users/records/${referrer.id}`, {
+                  referral_balance:   (referrer.referral_balance || 0) + commission,
+                  referral_earnings:  (referrer.referral_earnings || 0) + commission,
+                });
+              }
             }
           } catch (_) {}
         })();
@@ -1791,7 +1822,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
       console.log(`[/api/app/game/reward] pbId=${pbId} +${safeAmount}PT → newPT=${newPT} totalScore=${newTotal}`);
 
-      // 10% referral commission on game earnings
+      // 10% referral commission on game earnings → referral_balance (claimable)
       if (user.referred_by) {
         (async () => {
           try {
@@ -1809,7 +1840,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
               const commission = Math.round(safeAmount * 0.1);
               if (commission > 0) {
                 await pbPatch(`/api/collections/users/records/${referrer.id}`, {
-                  power_tokens: (referrer.power_tokens || 0) + commission,
+                  power_tokens:      (referrer.power_tokens || 0) + commission,
+                  referral_balance:  (referrer.referral_balance || 0) + commission,
                   referral_earnings: (referrer.referral_earnings || 0) + commission,
                 });
               }

@@ -1,18 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, Alert, Switch, Platform,
-  Modal, TextInput, Image, ActivityIndicator,
+  Modal, TextInput, Image, ActivityIndicator, Animated as RNAnimated,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
@@ -85,10 +86,14 @@ export default function ProfileScreen() {
   const { user, pbUser, firebaseUser, signOut, isAdmin, refreshBalance } = useAuth();
   const { shibBalance, powerTokens } = useWallet();
 
+  const queryClient = useQueryClient();
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [showVersion, setShowVersion] = useState(false);
+  const [showClaimModal, setShowClaimModal] = useState(false);
+  const [isClaiming, setIsClaiming] = useState(false);
+  const claimAnim = useRef(new RNAnimated.Value(0)).current;
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPw, setCurrentPw]  = useState('');
   const [newPw, setNewPw]          = useState('');
@@ -107,13 +112,48 @@ export default function ProfileScreen() {
   const pbId         = pbUser?.pbId ?? '';
 
   /* Referral stats */
-  const { data: referralStats } = useQuery({
+  const { data: referralStats, refetch: refetchReferralStats } = useQuery({
     queryKey: ['/api/app/user/referral-stats', pbId],
-    queryFn: () => fetchJson(`/api/app/user/${pbId}/referral-stats`),
+    queryFn: () => api.getReferralStats(pbId),
     enabled: !!pbId,
     staleTime: 60_000,
   });
-  const totalReferrals = referralStats?.referredCount ?? 0;
+  const totalReferrals    = referralStats?.referredCount ?? 0;
+  const referralBalance   = referralStats?.referralBalance ?? 0;
+  const totalEarnings     = referralStats?.totalEarnings ?? 0;
+  const referredUsers     = referralStats?.referredUsers ?? [];
+
+  async function handleOpenClaimModal() {
+    if (referralBalance <= 0) {
+      Alert.alert('No Rewards Yet', 'You have no referral rewards to claim right now. Share your code and earn when friends mine!');
+      return;
+    }
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    claimAnim.setValue(0);
+    setShowClaimModal(true);
+    RNAnimated.timing(claimAnim, { toValue: 1, duration: 280, useNativeDriver: true }).start();
+  }
+
+  async function handleClaimReferral() {
+    if (isClaiming || !pbId) return;
+    setIsClaiming(true);
+    try {
+      const result = await api.claimReferral(pbId);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setShowClaimModal(false);
+      claimAnim.setValue(0);
+      await Promise.all([refreshBalance(), refetchReferralStats()]);
+      queryClient.invalidateQueries({ queryKey: ['/api/app/user/referral-stats', pbId] });
+      Alert.alert(
+        'Rewards Claimed! 🎉',
+        `${formatShib(result.claimed)} SHIB has been added to your wallet.`,
+      );
+    } catch (e: any) {
+      Alert.alert('Claim Failed', e?.message || 'Please try again.');
+    } finally {
+      setIsClaiming(false);
+    }
+  }
 
   /* Load saved avatar */
   useEffect(() => {
@@ -375,6 +415,75 @@ export default function ProfileScreen() {
           </LinearGradient>
         </Animated.View>
 
+        {/* ── Referral Rewards section ── */}
+        <Animated.View entering={FadeInDown.delay(270).springify()} style={styles.rewardCard}>
+          <LinearGradient
+            colors={['rgba(244,196,48,0.10)', 'rgba(255,107,0,0.07)']}
+            style={styles.rewardInner}
+          >
+            {/* Header row */}
+            <View style={styles.rewardHeaderRow}>
+              <View style={styles.rewardIconWrap}>
+                <MaterialCommunityIcons name="gift" size={22} color={Colors.gold} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rewardTitle}>Referral Rewards</Text>
+                <Text style={styles.rewardSub}>Lifetime earned: {formatShib(totalEarnings)} SHIB</Text>
+              </View>
+              {/* Claim button */}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.claimBtn,
+                  referralBalance <= 0 && styles.claimBtnDisabled,
+                  { opacity: pressed ? 0.8 : 1 },
+                ]}
+                onPress={handleOpenClaimModal}
+              >
+                <LinearGradient
+                  colors={referralBalance > 0 ? [Colors.gold, Colors.neonOrange] : ['#3a3a3a', '#2a2a2a']}
+                  style={styles.claimBtnGrad}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                >
+                  <MaterialCommunityIcons name="hand-coin" size={14} color={referralBalance > 0 ? '#000' : Colors.textMuted} />
+                  <Text style={[styles.claimBtnText, referralBalance <= 0 && { color: Colors.textMuted }]}>Claim</Text>
+                </LinearGradient>
+              </Pressable>
+            </View>
+
+            {/* Claimable balance */}
+            <View style={styles.balanceRow}>
+              <Text style={styles.balanceLabel}>Claimable Balance</Text>
+              <Text style={[styles.balanceAmount, { color: referralBalance > 0 ? Colors.gold : Colors.textMuted }]}>
+                {formatShib(referralBalance)} SHIB
+              </Text>
+            </View>
+
+            {/* Referred users list */}
+            {referredUsers.length > 0 ? (
+              <View style={styles.referredList}>
+                <Text style={styles.referredListTitle}>People You Referred</Text>
+                {referredUsers.map((u, i) => (
+                  <View key={u.id} style={[styles.referredRow, i < referredUsers.length - 1 && styles.referredRowBorder]}>
+                    <View style={styles.referredAvatar}>
+                      <Ionicons name="person" size={14} color={Colors.neonOrange} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.referredEmail}>{u.email}</Text>
+                      <Text style={styles.referredMeta}>{u.claims} sessions · joined {new Date(u.joined).toLocaleDateString()}</Text>
+                    </View>
+                    <MaterialCommunityIcons name="check-circle" size={16} color={Colors.gold + '80'} />
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.emptyReferrals}>
+                <Ionicons name="people-outline" size={28} color={Colors.textMuted} />
+                <Text style={styles.emptyReferralsText}>No referrals yet.{'\n'}Share your code to start earning!</Text>
+              </View>
+            )}
+          </LinearGradient>
+        </Animated.View>
+
         {/* ── My Profile section ── */}
         <Animated.View entering={FadeInDown.delay(300).springify()}>
           <View style={styles.sectionHeaderRow}>
@@ -502,6 +611,94 @@ export default function ProfileScreen() {
           </View>
         </Animated.View>
       </ScrollView>
+
+      {/* ══ REFERRAL CLAIM MODAL ════════════════════════════════════════════════ */}
+      <Modal
+        visible={showClaimModal}
+        transparent
+        animationType="none"
+        onRequestClose={() => setShowClaimModal(false)}
+        statusBarTranslucent
+      >
+        <RNAnimated.View style={[styles.claimOverlay, { opacity: claimAnim }]}>
+          <BlurView intensity={50} tint="dark" style={StyleSheet.absoluteFill} />
+        </RNAnimated.View>
+        <Pressable style={styles.claimOverlay} onPress={() => !isClaiming && setShowClaimModal(false)} />
+        <RNAnimated.View
+          style={[
+            styles.claimSheet,
+            {
+              opacity: claimAnim,
+              transform: [{
+                translateY: claimAnim.interpolate({ inputRange: [0, 1], outputRange: [80, 0] }),
+              }],
+            },
+          ]}
+        >
+          <LinearGradient
+            colors={['rgba(30,24,10,0.99)', 'rgba(14,14,24,0.99)']}
+            style={styles.claimCard}
+          >
+            <View style={styles.claimHandle} />
+
+            {/* Icon + title */}
+            <View style={styles.claimIconRing}>
+              <LinearGradient colors={[Colors.gold + '30', Colors.neonOrange + '20']} style={styles.claimIconGrad}>
+                <MaterialCommunityIcons name="gift-open" size={36} color={Colors.gold} />
+              </LinearGradient>
+            </View>
+            <Text style={styles.claimModalTitle}>Referral Rewards</Text>
+            <Text style={styles.claimModalSub}>Earned from your friends' mining sessions</Text>
+
+            {/* Balance display */}
+            <View style={styles.claimBalanceBox}>
+              <Text style={styles.claimBalanceLabel}>Total Claimable</Text>
+              <Text style={styles.claimBalanceVal}>{formatShib(referralBalance)} SHIB</Text>
+              <Text style={styles.claimBalanceNote}>Will be moved to your SHIB wallet instantly</Text>
+            </View>
+
+            {/* Stats row */}
+            <View style={styles.claimStatsRow}>
+              <View style={styles.claimStat}>
+                <Text style={styles.claimStatVal}>{totalReferrals}</Text>
+                <Text style={styles.claimStatLbl}>Friends</Text>
+              </View>
+              <View style={[styles.claimStat, { borderLeftWidth: 1, borderRightWidth: 1, borderColor: Colors.darkBorder }]}>
+                <Text style={styles.claimStatVal}>{formatShib(totalEarnings)}</Text>
+                <Text style={styles.claimStatLbl}>Lifetime SHIB</Text>
+              </View>
+              <View style={styles.claimStat}>
+                <Text style={styles.claimStatVal}>{referredUsers.reduce((s, u) => s + u.claims, 0)}</Text>
+                <Text style={styles.claimStatLbl}>Sessions</Text>
+              </View>
+            </View>
+
+            {/* Claim button */}
+            <Pressable
+              style={({ pressed }) => [styles.claimNowBtn, { opacity: pressed || isClaiming ? 0.8 : 1 }]}
+              onPress={handleClaimReferral}
+              disabled={isClaiming}
+            >
+              <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.claimNowGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                {isClaiming ? (
+                  <ActivityIndicator size="small" color="#000" />
+                ) : (
+                  <>
+                    <MaterialCommunityIcons name="hand-coin" size={20} color="#000" />
+                    <Text style={styles.claimNowText}>Claim Now</Text>
+                  </>
+                )}
+              </LinearGradient>
+            </Pressable>
+
+            <Pressable onPress={() => !isClaiming && setShowClaimModal(false)} style={{ paddingVertical: 12 }} hitSlop={8}>
+              <Text style={{ fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.textMuted, textAlign: 'center' }}>
+                Cancel
+              </Text>
+            </Pressable>
+          </LinearGradient>
+        </RNAnimated.View>
+      </Modal>
 
       {/* ══ VERSION MODAL ══════════════════════════════════════════════════════ */}
       <Modal visible={showVersion} transparent animationType="fade" onRequestClose={() => setShowVersion(false)}>
@@ -816,6 +1013,51 @@ const styles = StyleSheet.create({
   pwSubmitText:     { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
   pwCancel:         { alignItems: 'center', paddingVertical: 8 },
   pwCancelText:     { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textMuted },
+
+  /* ── Referral Rewards section ── */
+  rewardCard:       { borderRadius: 20, overflow: 'hidden', marginBottom: 20, borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)' },
+  rewardInner:      { padding: 18, gap: 14 },
+  rewardHeaderRow:  { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  rewardIconWrap:   { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(244,196,48,0.12)', alignItems: 'center', justifyContent: 'center' },
+  rewardTitle:      { fontFamily: 'Inter_700Bold', fontSize: 15, color: Colors.textPrimary },
+  rewardSub:        { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, marginTop: 2 },
+  claimBtn:         { borderRadius: 20, overflow: 'hidden' },
+  claimBtnDisabled: { opacity: 0.7 },
+  claimBtnGrad:     { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 14, paddingVertical: 8 },
+  claimBtnText:     { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#000' },
+  balanceRow:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10 },
+  balanceLabel:     { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textSecondary },
+  balanceAmount:    { fontFamily: 'Inter_700Bold', fontSize: 15, color: Colors.gold },
+  referredList:     { gap: 0 },
+  referredListTitle:{ fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 },
+  referredRow:      { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 },
+  referredRowBorder:{ borderBottomWidth: 1, borderBottomColor: Colors.darkBorder },
+  referredAvatar:   { width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(255,107,0,0.12)', alignItems: 'center', justifyContent: 'center' },
+  referredEmail:    { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textPrimary },
+  referredMeta:     { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, marginTop: 2 },
+  emptyReferrals:   { alignItems: 'center', gap: 8, paddingVertical: 8 },
+  emptyReferralsText:{ fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted, textAlign: 'center', lineHeight: 19 },
+
+  /* ── Claim Modal ── */
+  claimOverlay:     { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end' },
+  claimSheet:       { position: 'absolute', bottom: 0, left: 0, right: 0 },
+  claimCard:        { borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, paddingBottom: 36, alignItems: 'center', gap: 8 },
+  claimHandle:      { width: 40, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.15)', marginBottom: 8 },
+  claimIconRing:    { marginBottom: 4 },
+  claimIconGrad:    { width: 80, height: 80, borderRadius: 40, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(244,196,48,0.25)' },
+  claimModalTitle:  { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.textPrimary, textAlign: 'center' },
+  claimModalSub:    { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textSecondary, textAlign: 'center', marginBottom: 4 },
+  claimBalanceBox:  { width: '100%', borderRadius: 16, backgroundColor: 'rgba(244,196,48,0.08)', borderWidth: 1, borderColor: 'rgba(244,196,48,0.25)', padding: 18, alignItems: 'center', gap: 4, marginVertical: 4 },
+  claimBalanceLabel:{ fontFamily: 'Inter_500Medium', fontSize: 12, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 },
+  claimBalanceVal:  { fontFamily: 'Inter_700Bold', fontSize: 32, color: Colors.gold },
+  claimBalanceNote: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, textAlign: 'center' },
+  claimStatsRow:    { flexDirection: 'row', width: '100%', backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 14, borderWidth: 1, borderColor: Colors.darkBorder, marginBottom: 8 },
+  claimStat:        { flex: 1, alignItems: 'center', paddingVertical: 12 },
+  claimStatVal:     { fontFamily: 'Inter_700Bold', fontSize: 16, color: Colors.textPrimary },
+  claimStatLbl:     { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted, marginTop: 2 },
+  claimNowBtn:      { width: '100%', borderRadius: 16, overflow: 'hidden' },
+  claimNowGrad:     { height: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
+  claimNowText:     { fontFamily: 'Inter_700Bold', fontSize: 17, color: '#000' },
 });
 
 const deleteModalStyles = StyleSheet.create({

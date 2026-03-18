@@ -163,9 +163,20 @@ export const api = {
     ),
 
   getReferralStats: (pbId: string) =>
-    request<{ referredCount: number; totalEarnings: number }>(
+    request<{
+      referredCount: number;
+      totalEarnings: number;
+      referralBalance: number;
+      referredUsers: { id: string; email: string; joined: string; claims: number }[];
+    }>(
       'GET',
       `/api/app/user/${pbId}/referral-stats`,
+    ),
+
+  claimReferral: (pbId: string) =>
+    request<{ success: boolean; claimed: number; newShibBalance: number }>(
+      'POST',
+      `/api/app/user/${pbId}/claim-referral`,
     ),
 
   // ── Admin ─────────────────────────────────────────────────────────────
