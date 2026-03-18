@@ -20,6 +20,7 @@ import { AdminProvider } from "@/context/AdminContext";
 import { AdProvider } from "@/context/AdContext";
 import Colors from "@/constants/colors";
 import { requestNotificationPermission } from "@/lib/notifications";
+import { TermsGateModal } from "@/components/TermsGateModal";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -50,14 +51,17 @@ function RootLayoutNav() {
   if (isLoading) return null;
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="auth" />
-      <Stack.Screen name="verify-email" />
-      <Stack.Screen name="admin" options={{ presentation: "modal" }} />
-      <Stack.Screen name="privacy" options={{ headerShown: false }} />
-      <Stack.Screen name="terms" options={{ headerShown: false }} />
-    </Stack>
+    <>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="auth" />
+        <Stack.Screen name="verify-email" />
+        <Stack.Screen name="admin" options={{ presentation: "modal" }} />
+        <Stack.Screen name="privacy" options={{ headerShown: false }} />
+        <Stack.Screen name="terms" options={{ headerShown: false }} />
+      </Stack>
+      <TermsGateModal />
+    </>
   );
 }
 

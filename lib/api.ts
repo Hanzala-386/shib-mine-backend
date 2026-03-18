@@ -18,7 +18,12 @@ async function request<T = any>(
       signal: controller.signal,
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    if (!res.ok) {
+      const err: any = new Error(data?.error || `HTTP ${res.status}`);
+      if (data?.code) err.code = data.code;
+      err.status = res.status;
+      throw err;
+    }
     return data as T;
   } catch (err: any) {
     if (err?.name === 'AbortError') throw new Error('Request timed out. Check your connection.');

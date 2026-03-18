@@ -40,11 +40,15 @@ const SECTIONS = [
     body: `To protect your security, permanently deleting your SHIB Mine account requires email-based One-Time Password (OTP) verification. When you initiate an account deletion request:\n\n• A 6-digit OTP is generated and sent to your registered email address.\n• The OTP is valid for 5 minutes and can only be used once.\n• Upon successful verification, all account data — including your virtual balance, mining history, and referral records — is permanently and irreversibly deleted from our systems.\n\nThis verification step ensures that only the legitimate account owner can delete an account, protecting you against unauthorised deletion.`,
   },
   {
-    title: '9. Changes to This Policy',
+    title: '9. Fraud Prevention & Account Blacklisting',
+    body: `To protect the integrity of the platform and comply with anti-fraud obligations, we maintain a permanent blacklist of email addresses associated with deleted accounts.\n\nWhen you permanently delete your SHIB Mine account:\n\n• Your registered email address is saved to a secure blacklist database before all account data is erased.\n• This blacklisted email cannot be used to create a new SHIB Mine account at any time in the future.\n• This restriction is permanent and cannot be reversed.\n\nThis measure exists to prevent fraudulent abuse of new-user welcome bonuses, referral rewards, and withdrawal thresholds. By using the App, you acknowledge and consent to this policy.\n\nAny attempt to circumvent this restriction — including through email aliasing, temporary email addresses, or using another person's email address — constitutes a material breach of our Terms of Service and may be reported to the relevant authorities.`,
+  },
+  {
+    title: '10. Changes to This Policy',
     body: `We may update this Privacy Policy periodically. Continued use of the App after any changes constitutes your acceptance of the revised policy. The "Last Updated" date at the top of this page will reflect the most recent revision.`,
   },
   {
-    title: '10. Contact Us',
+    title: '11. Contact Us',
     body: `For questions or concerns about this Privacy Policy or your personal data, please contact:\n\nsupport@shibahit.com`,
   },
 ];

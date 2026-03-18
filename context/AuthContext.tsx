@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo, ReactNode } from 'react';
+import { Alert } from 'react-native';
 import storage from '@/lib/storage';
 import { router } from 'expo-router';
 import {
@@ -98,7 +99,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (freshUser.emailVerified) {
       // Firebase says verified → make sure PB is synced
-      await confirmAndLoadUser(freshUser);
+      try {
+        await confirmAndLoadUser(freshUser);
+      } catch (e: any) {
+        // confirmAndLoadUser already signed out and cleared state for banned emails
+        console.warn('[Auth] handleAuthStateChange: confirmAndLoadUser threw:', e?.message);
+        if (e?.code === 'EMAIL_PERMANENTLY_BANNED' || e?.status === 403) {
+          Alert.alert(
+            'Account Permanently Banned',
+            e.message || 'This email address is permanently banned and cannot be used to create a new account.',
+            [{ text: 'OK' }]
+          );
+        }
+        setIsLoading(false);
+      }
     } else {
       // Not verified yet → show the check-email screen
       setPbUser(null);
@@ -126,8 +140,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setPbUser(pb);
       setUser(pbToProfile(pb, fbUser));
       await storage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
-    } catch (e) {
+    } catch (e: any) {
       console.warn('[Auth] confirmAndLoadUser failed:', e);
+      if (e?.code === 'EMAIL_PERMANENTLY_BANNED' || e?.status === 403) {
+        // This email was permanently blacklisted — sign out and surface the error
+        setPbUser(null);
+        setUser(null);
+        setIsLoading(false);
+        try { await firebaseSignOut(auth); } catch {}
+        // Surface the error to auth screen via re-throw so auth.tsx shows it
+        throw e;
+      }
       setPbUser(null);
       setUser(null);
     }
@@ -230,7 +253,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         router.replace('/(tabs)' as any);
         return { verified: true };
       }
-    } catch {}
+    } catch (e: any) {
+      if (e?.code === 'EMAIL_PERMANENTLY_BANNED' || e?.status === 403) {
+        Alert.alert(
+          'Account Permanently Banned',
+          e.message || 'This email address is permanently banned and cannot be used to register a new account.',
+          [{ text: 'OK' }]
+        );
+        throw e; // Re-throw so verify-email.tsx can react
+      }
+    }
     return { verified: false };
   }
 

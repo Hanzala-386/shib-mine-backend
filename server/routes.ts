@@ -217,6 +217,58 @@ async function ensureOtpCollection() {
   }
 }
 
+// ─── Ensure deleted_emails collection exists in PocketBase ─────────────────
+async function ensureDeletedEmailsCollection() {
+  try {
+    const check = await pbGet("/api/collections/deleted_emails");
+    if (!check.code) return; // already exists
+    const token = await getAdminToken();
+    await pbHttp("POST", "/api/collections", {
+      name: "deleted_emails",
+      type: "base",
+      fields: [
+        { name: "email", type: "text", required: true },
+      ],
+    }, token);
+    console.log("[deleted_emails] Collection created in PocketBase");
+  } catch (e: any) {
+    console.warn("[deleted_emails] Could not auto-create collection:", e.message);
+  }
+}
+
+/** Save an email address to the permanent blacklist before account deletion */
+async function blacklistEmail(email: string): Promise<void> {
+  if (!email) return;
+  try {
+    const normalised = email.toLowerCase().trim();
+    // Idempotent: check if already blacklisted
+    const existing = await pbGet(
+      `/api/collections/deleted_emails/records?filter=${encodeURIComponent(`email="${normalised}"`)}&perPage=1`
+    );
+    if (existing.items?.[0]) {
+      console.log(`[deleted_emails] Email already blacklisted: ${normalised}`);
+      return;
+    }
+    await pbPost("/api/collections/deleted_emails/records", { email: normalised });
+    console.log(`[deleted_emails] Email blacklisted: ${normalised}`);
+  } catch (e: any) {
+    console.warn(`[deleted_emails] Failed to blacklist email ${email}:`, e.message);
+  }
+}
+
+/** Returns true if the email is permanently blacklisted (previously deleted account) */
+async function isEmailBlacklisted(email: string): Promise<boolean> {
+  try {
+    const normalised = email.toLowerCase().trim();
+    const res = await pbGet(
+      `/api/collections/deleted_emails/records?filter=${encodeURIComponent(`email="${normalised}"`)}&perPage=1`
+    );
+    return !!(res.items?.[0]);
+  } catch {
+    return false; // on error, do not block signup
+  }
+}
+
 // Settings cache
 let settingsCache: any = null;
 let settingsCacheAt = 0;
@@ -266,6 +318,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureReferralEarningsField())
     .then(() => ensureOtpCollection())
     .then(() => ensureDailyUsageCollection())
+    .then(() => ensureDeletedEmailsCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
@@ -352,6 +405,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Delete OTP record immediately (single-use)
       await pbDelete(`/api/collections/otp_codes/records/${otpRecord.id}`).catch(() => {});
+
+      // ── Fraud prevention: fetch user email and blacklist it BEFORE deletion ──
+      try {
+        const userRecord = await pbGet(`/api/collections/users/records/${pbId}?fields=id,email`);
+        if (userRecord?.email) {
+          await blacklistEmail(userRecord.email);
+        }
+      } catch (e: any) {
+        console.warn("[confirm-delete] Could not fetch user email for blacklisting:", e.message);
+      }
 
       // Delete user's mining sessions
       try {
@@ -466,9 +529,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { pbId } = req.params;
       if (!pbId) return res.status(400).json({ error: "Missing pbId" });
 
-      // Verify user exists first
-      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
+      // Verify user exists and fetch email for blacklisting
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,email`);
       if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // ── Fraud prevention: blacklist email BEFORE deletion ──
+      if (user.email) {
+        await blacklistEmail(user.email).catch(() => {});
+      }
 
       // Hard-delete from PocketBase
       const deleteUrl = `${process.env.PB_URL || "https://api.webcod.in"}/api/collections/users/records/${pbId}`;
@@ -498,6 +566,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         req.body;
       if (!firebaseUid || !email)
         return res.status(400).json({ error: "firebaseUid and email required" });
+
+      // ── Fraud prevention: block re-registration from a previously deleted email ──
+      const blocked = await isEmailBlacklisted(email);
+      if (blocked) {
+        console.warn(`[auth/sync] Blocked signup attempt from blacklisted email: ${email}`);
+        return res.status(403).json({
+          error: "This email address is associated with a deleted account and cannot be used to create a new account.",
+          code: "EMAIL_PERMANENTLY_BANNED",
+        });
+      }
 
       // Try to find existing user
       const existing = await pbGet(
@@ -599,6 +677,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { firebaseUid, email, displayName, referralCode, referredBy } = req.body;
       if (!firebaseUid || !email)
         return res.status(400).json({ error: "firebaseUid and email required" });
+
+      // ── Fraud prevention: block re-registration from a previously deleted email ──
+      const confirmedBlocked = await isEmailBlacklisted(email);
+      if (confirmedBlocked) {
+        console.warn(`[confirm-verified] Blocked from blacklisted email: ${email}`);
+        return res.status(403).json({
+          error: "This email address is associated with a deleted account and cannot be used to create a new account.",
+          code: "EMAIL_PERMANENTLY_BANNED",
+        });
+      }
 
       // Try to find by firebase_uid
       const byUid = await pbGet(

@@ -47,11 +47,15 @@ const SECTIONS = [
     body: `For your security, permanently deleting your account requires email-based One-Time Password (OTP) verification. Upon submitting a deletion request:\n\n• A 6-digit OTP is sent to your registered email address.\n• The OTP is valid for 5 minutes and is single-use.\n• Successful verification results in the permanent, irreversible deletion of your account and all associated data, including your virtual balance and history.\n\nThis measure protects users against unauthorised account deletion.`,
   },
   {
-    title: '11. Changes to Terms',
+    title: '11. Fraud Prevention & Account Blacklisting',
+    body: `To protect the integrity of our platform and prevent abuse, we operate a permanent email blacklist for deleted accounts.\n\nUpon account deletion:\n\n• Your registered email address is permanently recorded in a blacklist database before your account data is erased.\n• The blacklisted email address cannot be used to register a new SHIB Mine account, ever.\n• This restriction cannot be reversed or appealed.\n\nThis policy exists to prevent fraudulent exploitation of welcome bonuses (100 SHIB + 500 PT), referral rewards, and withdrawal thresholds. By using this App, you explicitly consent to and acknowledge this policy.\n\nAttempting to circumvent this restriction — through email aliasing, new Firebase accounts, temporary email providers, or any other means — constitutes a material breach of these Terms and will result in permanent ban of all associated accounts.`,
+  },
+  {
+    title: '12. Changes to Terms',
     body: `We reserve the right to modify these Terms at any time. Continued use of the App after changes are posted constitutes acceptance. We will notify users of material changes via in-app notification where practicable.`,
   },
   {
-    title: '12. Contact',
+    title: '13. Contact',
     body: `For questions regarding these Terms, contact us at:\n\nsupport@shibahit.com`,
   },
 ];

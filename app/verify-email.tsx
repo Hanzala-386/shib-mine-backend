@@ -61,8 +61,12 @@ export default function VerifyEmailScreen() {
         setErrorMsg("Your email hasn't been verified yet. Please click the link in the email we sent.");
       }
       // If verified, checkVerificationStatus navigates to /(tabs) automatically
-    } catch {
-      setErrorMsg('Could not check status. Please try again.');
+    } catch (e: any) {
+      if (e?.code === 'EMAIL_PERMANENTLY_BANNED' || e?.status === 403) {
+        setErrorMsg(e.message || 'This email address has been permanently banned. Please contact support.');
+      } else {
+        setErrorMsg('Could not check status. Please try again.');
+      }
     } finally {
       setIsChecking(false);
     }
