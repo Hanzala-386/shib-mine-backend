@@ -23,6 +23,7 @@ import {
 import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useWallet } from '@/context/WalletContext';
+import { useAds } from '@/context/AdContext';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
@@ -87,12 +88,14 @@ export default function ProfileScreen() {
   const { shibBalance, powerTokens } = useWallet();
 
   const queryClient = useQueryClient();
+  const { showInterstitial } = useAds();
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [showVersion, setShowVersion] = useState(false);
   const [showClaimModal, setShowClaimModal] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
+  const [showReferralDetails, setShowReferralDetails] = useState(false);
   const claimAnim = useRef(new RNAnimated.Value(0)).current;
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPw, setCurrentPw]  = useState('');
@@ -134,25 +137,27 @@ export default function ProfileScreen() {
     RNAnimated.timing(claimAnim, { toValue: 1, duration: 280, useNativeDriver: true }).start();
   }
 
-  async function handleClaimReferral() {
+  function handleClaimReferral() {
     if (isClaiming || !pbId) return;
     setIsClaiming(true);
-    try {
-      const result = await api.claimReferral(pbId);
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setShowClaimModal(false);
-      claimAnim.setValue(0);
-      await Promise.all([refreshBalance(), refetchReferralStats()]);
-      queryClient.invalidateQueries({ queryKey: ['/api/app/user/referral-stats', pbId] });
-      Alert.alert(
-        'Rewards Claimed! 🎉',
-        `${formatShib(result.claimed)} SHIB has been added to your wallet.`,
-      );
-    } catch (e: any) {
-      Alert.alert('Claim Failed', e?.message || 'Please try again.');
-    } finally {
-      setIsClaiming(false);
-    }
+    showInterstitial(async (_shown) => {
+      try {
+        const result = await api.claimReferral(pbId);
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setShowClaimModal(false);
+        claimAnim.setValue(0);
+        await Promise.all([refreshBalance(), refetchReferralStats()]);
+        queryClient.invalidateQueries({ queryKey: ['/api/app/user/referral-stats', pbId] });
+        Alert.alert(
+          'Rewards Claimed!',
+          `${formatShib(result.claimed)} SHIB has been added to your wallet.`,
+        );
+      } catch (e: any) {
+        Alert.alert('Claim Failed', e?.message || 'Please try again.');
+      } finally {
+        setIsClaiming(false);
+      }
+    });
   }
 
   /* Load saved avatar */
@@ -458,11 +463,27 @@ export default function ProfileScreen() {
               </Text>
             </View>
 
-            {/* Referred users list */}
+            {/* Referred users list — expandable */}
             {referredUsers.length > 0 ? (
               <View style={styles.referredList}>
-                <Text style={styles.referredListTitle}>People You Referred</Text>
-                {referredUsers.map((u, i) => (
+                {/* Toggle header */}
+                <Pressable
+                  style={styles.referredToggleRow}
+                  onPress={() => setShowReferralDetails(v => !v)}
+                >
+                  <Ionicons name="people" size={14} color={Colors.gold} />
+                  <Text style={styles.referredListTitle}>
+                    {totalReferrals} {totalReferrals === 1 ? 'Friend' : 'Friends'} Referred
+                  </Text>
+                  <Ionicons
+                    name={showReferralDetails ? 'chevron-up' : 'chevron-down'}
+                    size={15}
+                    color={Colors.textMuted}
+                  />
+                </Pressable>
+
+                {/* Expanded detail rows */}
+                {showReferralDetails && referredUsers.map((u, i) => (
                   <View key={u.id} style={[styles.referredRow, i < referredUsers.length - 1 && styles.referredRowBorder]}>
                     <View style={styles.referredAvatar}>
                       <Ionicons name="person" size={14} color={Colors.neonOrange} />
@@ -1028,8 +1049,9 @@ const styles = StyleSheet.create({
   balanceRow:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10 },
   balanceLabel:     { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textSecondary },
   balanceAmount:    { fontFamily: 'Inter_700Bold', fontSize: 15, color: Colors.gold },
-  referredList:     { gap: 0 },
-  referredListTitle:{ fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 },
+  referredList:      { gap: 0 },
+  referredToggleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4, marginBottom: 2 },
+  referredListTitle: { flex: 1, fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.gold },
   referredRow:      { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 },
   referredRowBorder:{ borderBottomWidth: 1, borderBottomColor: Colors.darkBorder },
   referredAvatar:   { width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(255,107,0,0.12)', alignItems: 'center', justifyContent: 'center' },

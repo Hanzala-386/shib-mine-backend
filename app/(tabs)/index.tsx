@@ -272,6 +272,8 @@ export default function HomeScreen() {
 
   const [showAdLoader, setShowAdLoader] = useState(false);
   const [showLowPtWarning, setShowLowPtWarning] = useState(false);
+  const [showWelcomeBonus, setShowWelcomeBonus] = useState(false);
+  const welcomeAnim = useRef(new RNAnimated.Value(0)).current;
 
   // Booster modal state — simple local flag, does NOT cause mining to reset
   const [selectedBooster, setSelectedBooster] = useState<BoosterItem | null>(null);
@@ -286,6 +288,18 @@ export default function HomeScreen() {
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
+  }, []);
+
+  // Welcome bonus popup — fires once per new signup
+  useEffect(() => {
+    AsyncStorage.getItem('shib_welcome_bonus_pending').then((val) => {
+      if (val === 'true') {
+        AsyncStorage.removeItem('shib_welcome_bonus_pending');
+        welcomeAnim.setValue(0);
+        setShowWelcomeBonus(true);
+        RNAnimated.spring(welcomeAnim, { toValue: 1, useNativeDriver: true, tension: 60, friction: 9 }).start();
+      }
+    });
   }, []);
 
   // ── Zero-NaN safe values ─────────────────────────────────────────────────
@@ -712,6 +726,92 @@ export default function HomeScreen() {
 
       </ScrollView>
 
+      {/* ══ WELCOME BONUS MODAL ════════════════════════════════════════════════ */}
+      <Modal
+        visible={showWelcomeBonus}
+        transparent
+        animationType="none"
+        onRequestClose={() => setShowWelcomeBonus(false)}
+        statusBarTranslucent
+      >
+        <View style={welcomeStyles.overlay}>
+          <RNAnimated.View
+            style={[
+              welcomeStyles.card,
+              {
+                opacity: welcomeAnim,
+                transform: [{
+                  scale: welcomeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.82, 1] }),
+                }],
+              },
+            ]}
+          >
+            <LinearGradient
+              colors={['rgba(30,22,4,0.99)', 'rgba(14,10,28,0.99)']}
+              style={welcomeStyles.cardInner}
+            >
+              {/* Shimmer glow ring */}
+              <View style={welcomeStyles.glowRing}>
+                <LinearGradient
+                  colors={[Colors.gold + '40', Colors.neonOrange + '30', Colors.gold + '20']}
+                  style={welcomeStyles.glowRingGrad}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                >
+                  <MaterialCommunityIcons name="gift" size={44} color={Colors.gold} />
+                </LinearGradient>
+              </View>
+
+              {/* Confetti dots */}
+              <Text style={welcomeStyles.confetti}>🎉</Text>
+
+              <Text style={welcomeStyles.title}>Welcome Bonus!</Text>
+              <Text style={welcomeStyles.subtitle}>
+                Congratulations! Your account has been credited with:
+              </Text>
+
+              {/* Bonus rows */}
+              <View style={welcomeStyles.bonusRow}>
+                <LinearGradient
+                  colors={['rgba(244,196,48,0.15)', 'rgba(244,196,48,0.05)']}
+                  style={welcomeStyles.bonusItem}
+                >
+                  <MaterialCommunityIcons name="bitcoin" size={26} color={Colors.gold} />
+                  <Text style={welcomeStyles.bonusAmount}>100</Text>
+                  <Text style={welcomeStyles.bonusLabel}>Shiba Inu{'\n'}Coins</Text>
+                </LinearGradient>
+                <LinearGradient
+                  colors={['rgba(255,107,0,0.15)', 'rgba(255,107,0,0.05)']}
+                  style={welcomeStyles.bonusItem}
+                >
+                  <MaterialCommunityIcons name="lightning-bolt" size={26} color={Colors.neonOrange} />
+                  <Text style={[welcomeStyles.bonusAmount, { color: Colors.neonOrange }]}>500</Text>
+                  <Text style={welcomeStyles.bonusLabel}>Power{'\n'}Tokens</Text>
+                </LinearGradient>
+              </View>
+
+              <Text style={welcomeStyles.hint}>
+                Use Power Tokens to start mining and unlock boosters!
+              </Text>
+
+              {/* CTA */}
+              <Pressable
+                style={({ pressed }) => [welcomeStyles.ctaBtn, { opacity: pressed ? 0.85 : 1 }]}
+                onPress={() => setShowWelcomeBonus(false)}
+              >
+                <LinearGradient
+                  colors={[Colors.gold, Colors.neonOrange]}
+                  style={welcomeStyles.ctaGrad}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                >
+                  <MaterialCommunityIcons name="rocket-launch" size={20} color="#000" />
+                  <Text style={welcomeStyles.ctaText}>Start Mining!</Text>
+                </LinearGradient>
+              </Pressable>
+            </LinearGradient>
+          </RNAnimated.View>
+        </View>
+      </Modal>
+
       {/* ══ RATE US MODAL ══════════════════════════════════════════════════════ */}
       <Modal visible={showRateUs} transparent animationType="fade" onRequestClose={dismissRateUs}>
         <Pressable style={rateStyles.overlay} onPress={dismissRateUs}>
@@ -949,4 +1049,104 @@ const rateStyles = StyleSheet.create({
   rateBtn: { width: '100%', borderRadius: 14, overflow: 'hidden', marginTop: 4 },
   rateBtnGrad: { paddingVertical: 14, alignItems: 'center' },
   rateBtnText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
+});
+
+const welcomeStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 28,
+  },
+  card: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 28,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.35)',
+  },
+  cardInner: {
+    padding: 28,
+    alignItems: 'center',
+    gap: 0,
+  },
+  glowRing: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    overflow: 'hidden',
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: 'rgba(244,196,48,0.45)',
+  },
+  glowRingGrad: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confetti: { fontSize: 26, marginBottom: 4 },
+  title: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 26,
+    color: Colors.gold,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 14,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 22,
+    paddingHorizontal: 8,
+  },
+  bonusRow: {
+    flexDirection: 'row',
+    gap: 14,
+    width: '100%',
+    marginBottom: 18,
+  },
+  bonusItem: {
+    flex: 1,
+    borderRadius: 18,
+    padding: 18,
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.2)',
+  },
+  bonusAmount: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 28,
+    color: Colors.gold,
+  },
+  bonusLabel: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  hint: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 17,
+    marginBottom: 22,
+    paddingHorizontal: 4,
+  },
+  ctaBtn: { width: '100%' },
+  ctaGrad: {
+    height: 54,
+    borderRadius: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  ctaText: { fontFamily: 'Inter_700Bold', fontSize: 17, color: '#000' },
 });

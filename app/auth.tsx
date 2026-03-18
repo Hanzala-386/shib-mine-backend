@@ -184,6 +184,7 @@ export default function AuthScreen() {
         if (!check.valid) { setErrorMsg('Invalid Referral Code. Please check and try again.'); setIsLoading(false); return; }
       }
       await signUp(email.trim(), password, displayName.trim(), trimmedCode || undefined);
+      await AsyncStorage.setItem('shib_welcome_bonus_pending', 'true');
     } catch (e: any) {
       handleAuthError(e);
     } finally {

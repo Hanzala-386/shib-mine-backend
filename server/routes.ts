@@ -1419,9 +1419,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
       res.json(
         (r.items || []).map((w: any) => {
-          const rawName: string = w.expand?.user?.display_name || "User";
-          const visibleLen = Math.min(5, Math.max(1, rawName.length - 2));
-          const maskedName = rawName.slice(0, visibleLen) + "***";
+          // Use display_name (username); if it looks like an email, extract the local part
+          let rawName: string = w.expand?.user?.display_name || "User";
+          if (rawName.includes("@")) rawName = rawName.split("@")[0];
+          // Show up to 6 chars then mask the rest to preserve privacy
+          const visibleLen = Math.min(6, Math.max(2, rawName.length - 1));
+          const maskedName = rawName.slice(0, visibleLen) + (rawName.length > visibleLen ? "•••" : "");
           return {
             id: w.id,
             maskedName,
