@@ -90,38 +90,23 @@ if (Platform.OS !== 'web') {
   }
 }
 
-/* ─── Unity Ads SDK ──────────────────────────────────────────────────────────── */
-let UnityAds: any = null;
+/* ─── Unity Ads + AppLovin MAX — loaded via platform-specific module ─────────
+ *   lib/native-ads.native.ts → loaded on Android/iOS (requires react-native-unity-ads
+ *     and react-native-applovin-max to be linked in the native build)
+ *   lib/native-ads.web.ts    → loaded on web (all exports are null stubs)
+ * Metro bundler resolves the correct file at build time via the .native/.web suffix.
+ * ─────────────────────────────────────────────────────────────────────────────── */
+import {
+  UnityAds,
+  AppLovinMAX,
+  ALInterstitial,
+  ALRewarded,
+  ALAdView as _ALAdView,
+  ALAdFormat as _ALAdFormat,
+} from '@/lib/native-ads';
 
-if (Platform.OS !== 'web') {
-  try {
-    UnityAds = require('react-native-unity-ads').default;
-    console.log('[AdContext] Unity Ads SDK loaded ✓');
-  } catch {
-    console.log('[AdContext] react-native-unity-ads not available');
-  }
-}
-
-/* ─── AppLovin MAX SDK ───────────────────────────────────────────────────────── */
-let AppLovinMAX: any      = null;
-let ALInterstitial: any   = null;
-let ALRewarded: any       = null;
-export let ALAdView: any  = null;
-export let ALAdFormat: any = null;
-
-if (Platform.OS !== 'web') {
-  try {
-    const pkg        = require('react-native-applovin-max');
-    AppLovinMAX      = pkg.AppLovinMAX ?? pkg.default;
-    ALInterstitial   = pkg.InterstitialAd;
-    ALRewarded       = pkg.RewardedAd;
-    ALAdView         = pkg.AdView;
-    ALAdFormat       = pkg.AdFormat;
-    console.log('[AdContext] AppLovin MAX SDK loaded ✓');
-  } catch {
-    console.log('[AdContext] react-native-applovin-max not available');
-  }
-}
+export const ALAdView   = _ALAdView;
+export const ALAdFormat = _ALAdFormat;
 
 export { BannerAdComponent, BannerAdSize, nativeSdkAvailable };
 
