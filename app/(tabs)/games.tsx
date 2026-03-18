@@ -11,6 +11,7 @@ import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 import { showRewardedAd } from '@/lib/nativeAds';
+import { useAds } from '@/context/AdContext';
 
 function pbHeaders(pbId: string): HeadersInit {
   return { 'Content-Type': 'application/json', 'X-PB-ID': pbId };
@@ -75,6 +76,7 @@ export default function GamesScreen() {
   const insets = useSafeAreaInsets();
   const { addPowerTokens, powerTokens } = useWallet();
   const { pbUser, refreshBalance } = useAuth();
+  const { showGameInterstitial } = useAds();
 
   const wvRef           = useRef<any>(null);
   const adCfg           = useRef<AdSettings>(AD_DEFAULT);
@@ -345,8 +347,12 @@ export default function GamesScreen() {
     });
   }, [addPowerTokens, fetchGameData, refreshBalance]);
 
-  /* ── CLAIM → directly add score PT (no interstitial) ── */
+  /* ── CLAIM → interstitial ad (AdMob → Unity → AppLovin) then add score PT ── */
   const handleClaim = useCallback(async () => {
+    // Show interstitial before processing the claim
+    await new Promise<void>((resolve) => {
+      showGameInterstitial(() => resolve());
+    });
     setPhase('saving');
     const pts = scoreRef.current;
     try {
@@ -360,7 +366,7 @@ export default function GamesScreen() {
       await refreshBalance().catch(() => {});
       setEarned(pts); setPhase('reward');
     }
-  }, [addPowerTokens, fetchGameData, refreshBalance]);
+  }, [addPowerTokens, fetchGameData, refreshBalance, showGameInterstitial]);
 
   /* ── Native WebView message handler ── */
   const onNativeMessage = useCallback((e: { nativeEvent: { data: string } }) => {

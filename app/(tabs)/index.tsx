@@ -17,7 +17,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useWallet } from '@/context/WalletContext';
 import { useMining } from '@/context/MiningContext';
 import { useAdmin } from '@/context/AdminContext';
-import { adService } from '@/lib/AdService';
+import { useAds } from '@/context/AdContext';
 import Colors from '@/constants/colors';
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
@@ -268,6 +268,7 @@ export default function HomeScreen() {
     showRateUs, dismissRateUs,
   } = useMining();
   const { settings } = useAdmin();
+  const { showMiningInterstitial } = useAds();
 
   const [showAdLoader, setShowAdLoader] = useState(false);
   const [showLowPtWarning, setShowLowPtWarning] = useState(false);
@@ -364,19 +365,18 @@ export default function HomeScreen() {
 
   const withAd = useCallback(async (action: () => Promise<{ success: boolean; error?: string }>) => {
     setShowAdLoader(true);
-    await adService.showUnityInterstitial(
-      async () => {
-        setShowAdLoader(false);
-        const result = await action();
-        if (result.success) {
-          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        } else {
-          Alert.alert('Cannot Start Mining', result.error || 'Failed to start mining.');
-        }
-      },
-      () => setShowAdLoader(false),
-    );
-  }, []);
+    // Mining/Power buttons — Unity → AppLovin ONLY (no AdMob per policy)
+    await new Promise<void>((resolve) => {
+      showMiningInterstitial(() => resolve());
+    });
+    setShowAdLoader(false);
+    const result = await action();
+    if (result.success) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } else {
+      Alert.alert('Cannot Start Mining', result.error || 'Failed to start mining.');
+    }
+  }, [showMiningInterstitial]);
 
   const handleStartMining = useCallback(async () => {
     if (!pbUser) { Alert.alert('Not Ready', 'Account sync in progress. Please wait.'); return; }

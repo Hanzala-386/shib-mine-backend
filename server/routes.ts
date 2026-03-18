@@ -149,6 +149,52 @@ async function sendOtpEmail(to: string, otp: string) {
   console.log(`[OTP] Email delivered to ${to}`);
 }
 
+// ─── Ensure daily_usage collection exists in PocketBase ───────────────────
+async function ensureDailyUsageCollection() {
+  try {
+    const check = await pbGet("/api/collections/daily_usage");
+    if (!check.code) return; // already exists
+    const token = await getAdminToken();
+    await pbHttp("POST", "/api/collections", {
+      name: "daily_usage",
+      type: "base",
+      fields: [
+        { name: "date_day", type: "text",   required: true },
+        { name: "count",    type: "number", required: true },
+      ],
+    }, token);
+    console.log("[daily_usage] Collection created in PocketBase");
+  } catch (e: any) {
+    console.warn("[daily_usage] Could not auto-create collection:", e.message);
+  }
+}
+
+// ─── Check and increment daily email limit (max 300/day) ──────────────────
+async function checkAndIncrementDailyEmailLimit(): Promise<{ allowed: boolean; message?: string }> {
+  const today = new Date().toISOString().substring(0, 10); // YYYY-MM-DD
+  try {
+    const result = await pbGet(
+      `/api/collections/daily_usage/records?filter=${encodeURIComponent(`date_day="${today}"`)}&perPage=1`
+    );
+    if (result.items && result.items.length > 0) {
+      const rec = result.items[0];
+      if (rec.count >= 300) {
+        console.warn(`[daily_usage] Daily OTP limit reached: ${rec.count} emails sent today`);
+        return { allowed: false, message: "Daily limit reached. Please try again after 24 hours." };
+      }
+      await pbPatch(`/api/collections/daily_usage/records/${rec.id}`, { count: rec.count + 1 });
+      console.log(`[daily_usage] Email count for ${today}: ${rec.count + 1}`);
+    } else {
+      await pbPost("/api/collections/daily_usage/records", { date_day: today, count: 1 });
+      console.log(`[daily_usage] New daily usage record created for ${today}`);
+    }
+    return { allowed: true };
+  } catch (e: any) {
+    console.warn("[daily_usage] Could not check limit (allowing anyway):", e.message);
+    return { allowed: true }; // fail open — don't block emails if tracking fails
+  }
+}
+
 // ─── Ensure otp_codes collection exists in PocketBase ─────────────────────
 async function ensureOtpCollection() {
   try {
@@ -219,6 +265,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   getAdminToken()
     .then(() => ensureReferralEarningsField())
     .then(() => ensureOtpCollection())
+    .then(() => ensureDailyUsageCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
@@ -261,8 +308,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(500).json({ error: `Failed to store OTP (PB ${stored.status || "unknown"}: ${stored.message || "unknown"})` });
       }
 
+      // Check daily email limit (300/day) before sending
+      const limitCheck = await checkAndIncrementDailyEmailLimit();
+      if (!limitCheck.allowed) {
+        return res.status(429).json({ error: limitCheck.message });
+      }
+
       // Send email via Brevo SMTP
-      await sendOtpEmail(email, otp);
+      try {
+        await sendOtpEmail(email, otp);
+      } catch (smtpErr: any) {
+        console.error("[SMTP] Failed to deliver OTP email:", smtpErr.message, smtpErr.stack);
+        return res.status(500).json({ error: "Failed to send email. Please try again later." });
+      }
 
       console.log(`[OTP] Sent deletion OTP to ${email} for user ${pbId}`);
       res.json({ success: true });

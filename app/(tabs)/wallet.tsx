@@ -8,6 +8,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useWallet, type WithdrawalRecord } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
+import { useAds } from '@/context/AdContext';
 import Colors from '@/constants/colors';
 
 const BEP20_FEE = 3680; // fixed SHIB fee for BEP-20 network withdrawals
@@ -52,6 +53,7 @@ export default function WalletScreen() {
   const insets = useSafeAreaInsets();
   const { shibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
   const { pbUser } = useAuth();
+  const { showMiningInterstitial } = useAds();
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>('Binance Email');
   const [address, setAddress] = useState('');
@@ -92,6 +94,10 @@ export default function WalletScreen() {
       return;
     }
     setSubmitting(true);
+    // Show Unity → AppLovin interstitial before processing (no AdMob per policy)
+    await new Promise<void>((resolve) => {
+      showMiningInterstitial(() => resolve());
+    });
     const res = await createWithdrawal(method, address.trim(), grossAmt);
     setSubmitting(false);
     if (res.success) {

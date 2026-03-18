@@ -97,6 +97,12 @@ export default function VerifyEmailScreen() {
           <StepRow number="1" text="Open the email from SHIB Mine" />
           <StepRow number="2" text="Click the verification link" />
           <StepRow number="3" text={"Tap \"I've verified\" below"} />
+          <View style={styles.spamNote}>
+            <Ionicons name="information-circle-outline" size={14} color={Colors.textMuted} />
+            <Text style={styles.spamNoteText}>
+              Note: If you don't see the email in your inbox, please check your Spam or Junk folder.
+            </Text>
+          </View>
         </View>
 
         {statusMsg !== '' && (
@@ -222,6 +228,15 @@ const styles = StyleSheet.create({
     width: '100%', backgroundColor: Colors.darkCard,
     borderRadius: 16, padding: 20, marginBottom: 24,
     borderWidth: 1, borderColor: Colors.darkBorder,
+  },
+  spamNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+    marginTop: 8, paddingTop: 12,
+    borderTopWidth: 1, borderTopColor: Colors.darkBorder,
+  },
+  spamNoteText: {
+    flex: 1, fontFamily: 'Inter_400Regular', fontSize: 12,
+    color: Colors.textMuted, lineHeight: 17,
   },
   successBox: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
