@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, Pressable, ScrollView, Alert, Platform,
   Animated as RNAnimated, ActivityIndicator, Modal, Linking,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
