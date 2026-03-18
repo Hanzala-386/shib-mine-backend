@@ -101,10 +101,16 @@ async function pbDelete(path: string) {
 //   SMTP_KEY  = xsmtpsib-...               (the Brevo SMTP password/key)
 
 async function sendOtpEmail(to: string, otp: string) {
-  const smtpUser = (process.env.SMTP_USER || "").trim();
-  const smtpPass = (process.env.SMTP_KEY  || "").trim();
+  // Detect which secret holds the email vs the key by checking content
+  const rawA = (process.env.SMTP_USER || "").trim();
+  const rawB = (process.env.SMTP_KEY  || "").trim();
 
-  console.log(`[SMTP] user len=${smtpUser.length} starts-with=${smtpUser.substring(0,10)} | key len=${smtpPass.length} starts-with=${smtpPass.substring(0,9)}`);
+  // The Brevo SMTP login is always an email address (contains @)
+  // The Brevo SMTP password is the xsmtpsib-... key (starts with xsmtpsib or is long)
+  const smtpUser = rawA.includes("@") ? rawA : rawB;
+  const smtpPass = rawA.includes("@") ? rawB : rawA;
+
+  console.log(`[SMTP] resolved user=${smtpUser} | key-len=${smtpPass.length} | key-starts=${smtpPass.substring(0,9)}`);
 
   const transporter = nodemailer.createTransport({
     host: "smtp-relay.brevo.com",
