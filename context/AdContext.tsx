@@ -236,9 +236,8 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
   function _showAdMobInterstitial(unitId: string, onDone: (shown: boolean) => void) {
     if (!unitId) { onDone(false); return; }
     if (!nativeSdkAvailable || !InterstitialAdClass || !sdkReady) {
-      console.log('[AdMob] Interstitial simulating (3s) unitId=', unitId);
-      setAdLoading(true);
-      setTimeout(() => { setAdLoading(false); onDone(true); }, 3000);
+      // No native SDK — proceed immediately (no fake delay in preview/web)
+      onDone(true);
       return;
     }
     setAdLoading(true);
@@ -395,9 +394,8 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
   function _showAdMobRewarded(unitId: string, onDone: (watched: boolean) => void) {
     if (!unitId) { onDone(false); return; }
     if (!nativeSdkAvailable || !RewardedAdClass || !sdkReady) {
-      console.log('[AdMob] Rewarded simulating (5s) unitId=', unitId);
-      setAdLoading(true);
-      setTimeout(() => { setAdLoading(false); onDone(true); }, 5000);
+      // No native SDK — proceed immediately
+      onDone(true);
       return;
     }
     setAdLoading(true);

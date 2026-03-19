@@ -140,7 +140,8 @@ export default function ProfileScreen() {
   function handleClaimReferral() {
     if (isClaiming || !pbId) return;
     setIsClaiming(true);
-    showInterstitial(async (_shown) => {
+
+    const doTransfer = async () => {
       try {
         const result = await api.claimReferral(pbId);
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -148,16 +149,20 @@ export default function ProfileScreen() {
         claimAnim.setValue(0);
         await Promise.all([refreshBalance(), refetchReferralStats()]);
         queryClient.invalidateQueries({ queryKey: ['/api/app/user/referral-stats', pbId] });
-        Alert.alert(
-          'Rewards Claimed!',
-          `${formatShib(result.claimed)} SHIB has been added to your wallet.`,
-        );
+        Alert.alert('Rewards Claimed!', `${formatShib(result.claimed)} SHIB has been added to your wallet.`);
       } catch (e: any) {
         Alert.alert('Claim Failed', e?.message || 'Please try again.');
       } finally {
         setIsClaiming(false);
       }
-    });
+    };
+
+    try {
+      showInterstitial((_shown) => { doTransfer(); });
+    } catch {
+      // If the ad system itself throws, still proceed with the transfer
+      doTransfer();
+    }
   }
 
   /* Load saved avatar */

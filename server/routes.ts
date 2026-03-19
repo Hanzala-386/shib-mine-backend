@@ -764,8 +764,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         display_name: displayName || email.split("@")[0],
         referral_code: code,
         referred_by: referrerPbId || "",
-        shib_balance: 100,   // welcome bonus: 100 SHIB
-        power_tokens: 500,   // welcome bonus: 500 Power Tokens
+        shib_balance: 100,        // welcome bonus: 100 SHIB
+        power_tokens: 500,        // welcome bonus: 500 Power Tokens
+        referral_balance: 0,
+        referral_earnings: 0,
         total_claims: 0,
         total_wins: 0,
         is_verified: true,
@@ -1419,15 +1421,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
       res.json(
         (r.items || []).map((w: any) => {
-          // Use display_name (username); if it looks like an email, extract the local part
-          let rawName: string = w.expand?.user?.display_name || "User";
-          if (rawName.includes("@")) rawName = rawName.split("@")[0];
-          // Show up to 6 chars then mask the rest to preserve privacy
-          const visibleLen = Math.min(6, Math.max(2, rawName.length - 1));
-          const maskedName = rawName.slice(0, visibleLen) + (rawName.length > visibleLen ? "•••" : "");
+          // Use display_name (username); strip email domain if stored as email
+          let username: string = w.expand?.user?.display_name || "SHIB Miner";
+          if (username.includes("@")) username = username.split("@")[0];
           return {
             id: w.id,
-            maskedName,
+            maskedName: username,
             method: w.method,
             amount: w.amount,
           };
