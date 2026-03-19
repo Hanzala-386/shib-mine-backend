@@ -290,24 +290,50 @@ function generateReferralCode() {
   return Math.random().toString(36).substr(2, 6).toUpperCase();
 }
 
-// ─── Ensure PB schema has referral_earnings + referral_balance fields ───────
-async function ensureReferralEarningsField() {
+// ─── Ensure PB users collection has all required fields, all optional ────────
+async function ensureUserSchema() {
+  // All number/text fields the app writes to the users collection.
+  // ALL must be required:false so that 0 / "" are accepted without errors.
+  const REQUIRED_FIELDS: Array<{ name: string; type: string }> = [
+    { name: "firebase_uid",       type: "text"   },
+    { name: "display_name",       type: "text"   },
+    { name: "referral_code",      type: "text"   },
+    { name: "referred_by",        type: "text"   },
+    { name: "is_verified",        type: "bool"   },
+    { name: "shib_balance",       type: "number" },
+    { name: "power_tokens",       type: "number" },
+    { name: "referral_balance",   type: "number" },
+    { name: "referral_earnings",  type: "number" },
+    { name: "total_claims",       type: "number" },
+    { name: "total_wins",         type: "number" },
+  ];
+
   try {
     const token = await getAdminToken();
     const colls = await pbHttp("GET", "/api/collections?perPage=200", null, token);
     const usersCol = (colls.items || []).find((c: any) => c.name === "users");
     if (!usersCol) return;
+
     const schema: any[] = usersCol.schema || [];
-    const missingFields: any[] = [];
-    if (!schema.some((f: any) => f.name === "referral_earnings"))
-      missingFields.push({ name: "referral_earnings", type: "number", required: false });
-    if (!schema.some((f: any) => f.name === "referral_balance"))
-      missingFields.push({ name: "referral_balance", type: "number", required: false });
-    if (missingFields.length === 0) return;
-    await pbHttp("PATCH", `/api/collections/${usersCol.id}`, {
-      schema: [...schema, ...missingFields],
-    }, token);
-    console.log("[PB] Added fields to users collection:", missingFields.map((f) => f.name).join(", "));
+    let changed = false;
+
+    for (const desired of REQUIRED_FIELDS) {
+      const existing = schema.find((f: any) => f.name === desired.name);
+      if (!existing) {
+        // Field missing — add it as optional
+        schema.push({ name: desired.name, type: desired.type, required: false });
+        changed = true;
+      } else if (existing.required === true) {
+        // Field exists but is required — make it optional so 0/"" are accepted
+        existing.required = false;
+        changed = true;
+      }
+    }
+
+    if (!changed) return;
+
+    await pbHttp("PATCH", `/api/collections/${usersCol.id}`, { schema }, token);
+    console.log("[PB] users schema updated — all app fields are now optional");
   } catch (e: any) {
     console.warn("[PB] Schema update skipped:", e.message);
   }
@@ -317,7 +343,7 @@ async function ensureReferralEarningsField() {
 export async function registerRoutes(app: Express): Promise<Server> {
   // Warm up admin token, ensure PB schema on startup
   getAdminToken()
-    .then(() => ensureReferralEarningsField())
+    .then(() => ensureUserSchema())
     .then(() => ensureOtpCollection())
     .then(() => ensureDailyUsageCollection())
     .then(() => ensureDeletedEmailsCollection())
@@ -632,9 +658,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         referrerPbId = referrerRes.items?.[0]?.id;
       }
 
-      // Try to find user by email (handles manually created accounts with empty firebase_uid)
+      // Try to find user by email — filter must be fully URL-encoded so @ in email doesn't break PB parser
       const byEmail = await pbGet(
-        `/api/collections/users/records?filter=email="${email}"&perPage=1`,
+        `/api/collections/users/records?filter=${encodeURIComponent(`email="${email}"`)}&perPage=1`,
       );
       if (byEmail.items?.[0]) {
         let u = byEmail.items[0];
@@ -669,15 +695,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         display_name: displayName || email.split("@")[0],
         referral_code: code,
         referred_by: referrerPbId || "",
-        shib_balance: 100,   // welcome bonus: 100 SHIB
-        power_tokens: 500,   // welcome bonus: 500 Power Tokens
+        shib_balance: 100,      // welcome bonus: 100 SHIB
+        power_tokens: 500,      // welcome bonus: 500 Power Tokens
+        referral_balance: 0,
+        referral_earnings: 0,
         total_claims: 0,
         total_wins: 0,
         is_verified: false,
       });
 
       if (created.code) {
-        return res.status(400).json({ error: created.message });
+        const detail = JSON.stringify({ code: created.code, message: created.message, data: created.data });
+        console.error(`[auth/sync] PB user creation FAILED. email=${email} | PB error: ${detail}`);
+        return res.status(400).json({ error: created.message, detail: created.data });
       }
 
       // Give referrer 30 Power Tokens immediately on successful signup
@@ -729,9 +759,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.json(formatUser(updated.code ? { ...u, is_verified: true } : updated));
       }
 
-      // Try to find by email
+      // Try to find by email — filter must be fully URL-encoded so @ in email doesn't break PB parser
       const byEmail = await pbGet(
-        `/api/collections/users/records?filter=email="${email}"&perPage=1`,
+        `/api/collections/users/records?filter=${encodeURIComponent(`email="${email}"`)}&perPage=1`,
       );
       if (byEmail.items?.[0]) {
         const u = byEmail.items[0];
@@ -773,7 +803,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         is_verified: true,
       });
 
-      if (created.code) return res.status(400).json({ error: created.message });
+      if (created.code) {
+        const detail = JSON.stringify({ code: created.code, message: created.message, data: created.data });
+        console.error(`[confirm-verified] PB user creation FAILED. payload email=${email} displayName=${displayName} | PB error: ${detail}`);
+        return res.status(400).json({ error: created.message, detail: created.data });
+      }
 
       // Give referrer 30 Power Tokens immediately on successful signup
       if (referrerPbId) {
@@ -796,6 +830,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
   if (process.env.NODE_ENV !== "production") {
     app.get("/api/dev/status", (_req: Request, res: Response) => {
       res.json({ env: "development", authMode: "firebase-email-link" });
+    });
+
+    // Debug: look up a user in PB by email or firebase_uid (dev only, no auth required)
+    app.get("/api/dev/lookup-user", async (req: Request, res: Response) => {
+      try {
+        const { email, uid } = req.query;
+        const results: any = {};
+
+        if (email) {
+          const r = await pbGet(`/api/collections/users/records?filter=${encodeURIComponent(`email="${email}"`)}&perPage=1`);
+          results.byEmail = r.items?.[0] ? {
+            id: r.items[0].id,
+            email: r.items[0].email,
+            display_name: r.items[0].display_name,
+            firebase_uid: r.items[0].firebase_uid,
+            is_verified: r.items[0].is_verified,
+            shib_balance: r.items[0].shib_balance,
+            power_tokens: r.items[0].power_tokens,
+            referral_balance: r.items[0].referral_balance,
+            referral_earnings: r.items[0].referral_earnings,
+            referral_code: r.items[0].referral_code,
+          } : null;
+        }
+
+        if (uid) {
+          const r = await pbGet(`/api/collections/users/records?filter=${encodeURIComponent(`firebase_uid="${uid}"`)}&perPage=1`);
+          results.byUid = r.items?.[0] ? {
+            id: r.items[0].id,
+            email: r.items[0].email,
+            display_name: r.items[0].display_name,
+            firebase_uid: r.items[0].firebase_uid,
+            is_verified: r.items[0].is_verified,
+            shib_balance: r.items[0].shib_balance,
+            power_tokens: r.items[0].power_tokens,
+            referral_balance: r.items[0].referral_balance,
+            referral_earnings: r.items[0].referral_earnings,
+            referral_code: r.items[0].referral_code,
+          } : null;
+        }
+
+        res.json(results);
+      } catch (e: any) {
+        res.status(500).json({ error: e.message });
+      }
     });
   }
 
@@ -1376,12 +1454,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         `/api/collections/users/records?sort=-shib_balance&perPage=100&fields=id,display_name,shib_balance`,
       );
       res.json(
-        (r.items || []).map((u: any, i: number) => ({
-          rank: i + 1,
-          id: u.id,
-          displayName: u.display_name || "Anonymous",
-          shibBalance: u.shib_balance || 0,
-        })),
+        (r.items || []).map((u: any, i: number) => {
+          let name: string = u.display_name || "Anonymous";
+          // Strip email domain if display_name was stored as email (e.g. "user@gmail.com" → "user")
+          if (name.includes("@")) name = name.split("@")[0];
+          return {
+            rank: i + 1,
+            id: u.id,
+            displayName: name,
+            shibBalance: u.shib_balance || 0,
+          };
+        }),
       );
     } catch (e: any) {
       console.error("[/api/app/leaderboard]", e.message);
@@ -1401,10 +1484,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         `/api/collections/users/records?filter=${encodeURIComponent(`shib_balance>${balance}`)}&perPage=1&fields=id`,
       );
       const rank = (ahead.totalItems || 0) + 1;
+      let rankName: string = user.display_name || "You";
+      if (rankName.includes("@")) rankName = rankName.split("@")[0];
       res.json({
         rank,
         id: user.id,
-        displayName: user.display_name || "You",
+        displayName: rankName,
         shibBalance: balance,
       });
     } catch (e: any) {
