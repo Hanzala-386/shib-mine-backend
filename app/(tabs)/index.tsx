@@ -266,7 +266,7 @@ export default function HomeScreen() {
     status, timeRemaining, progress, startMining, claimReward,
     shibReward, session, displayedShibBalance,
     miningEntryCost, activeBooster, activateBooster, startMiningWithBooster, isClaiming,
-    showRateUs, dismissRateUs,
+    showRateUs, dismissRateUs, markAppRated,
   } = useMining();
   const { settings } = useAdmin();
   const { showMiningInterstitial } = useAds();
@@ -403,8 +403,29 @@ export default function HomeScreen() {
   const handleClaim = useCallback(async () => {
     if (isClaiming) return;
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const reward = await claimReward();
-    if (reward > 0) Alert.alert('Reward Claimed! 🎉', `You earned ${formatShib(reward)} SHIB!`);
+    try {
+      const reward = await claimReward();
+      if (reward > 0) Alert.alert('Reward Claimed! 🎉', `You earned ${formatShib(reward)} SHIB!`);
+    } catch (e: any) {
+      const errCode = e?.data?.error || '';
+      if (errCode === 'ACCOUNT_BLOCKED') {
+        Alert.alert(
+          'Account Suspended',
+          e?.data?.message || 'Your account has been suspended due to repeated time fraud attempts.',
+          [{ text: 'OK' }],
+        );
+      } else if (errCode === 'FRAUD_DETECTED') {
+        const strikes = e?.data?.fraudAttempts ?? 0;
+        const isBlocked = e?.data?.blocked ?? false;
+        Alert.alert(
+          isBlocked ? 'Account Suspended' : `Time Fraud Detected — Strike ${strikes}/3`,
+          e?.data?.message || 'Claim rejected due to date/time mismatch.',
+          [{ text: 'OK' }],
+        );
+      } else {
+        Alert.alert('Claim Failed', e?.message || 'Something went wrong. Please try again.');
+      }
+    }
   }, [isClaiming, claimReward]);
 
   // Opens the booster modal — blocked during active mining to prevent double-spend
@@ -824,9 +845,9 @@ export default function HomeScreen() {
               <Pressable
                 style={rateStyles.rateBtn}
                 onPress={() => {
-                  const link = settings?.appStoreLink;
+                  const link = settings?.playStoreUrl || settings?.appStoreLink;
                   if (link) Linking.openURL(link).catch(() => {});
-                  dismissRateUs();
+                  markAppRated();
                 }}
               >
                 <LinearGradient colors={[Colors.neonOrange, Colors.gold]} style={rateStyles.rateBtnGrad}>

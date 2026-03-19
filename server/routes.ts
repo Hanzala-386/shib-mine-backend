@@ -306,6 +306,8 @@ async function ensureUserSchema() {
     { name: "referral_earnings",  type: "number" },
     { name: "total_claims",       type: "number" },
     { name: "total_wins",         type: "number" },
+    { name: "fraud_attempts",     type: "number" },
+    { name: "status",             type: "text"   },
   ];
 
   try {
@@ -507,6 +509,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         applovinBannerId: s.applovin_banner_id,
         applovinInterstitialId: s.applovin_interstitial_id,
         appStoreLink: s.app_store_link || '',
+        playStoreUrl: s.play_store_url || s.app_store_link || '',
+        ratePopupFrequency: s.rate_popup_frequency || 5,
       });
     } catch (e: any) {
       console.error("[/api/app/settings]", e.message);
@@ -1246,14 +1250,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!sessionId || !pbId)
         return res.status(400).json({ error: "sessionId and pbId required" });
 
-      // Fetch session and settings in parallel
-      const [session, settings] = await Promise.all([
+      // Fetch session, settings, and user in parallel
+      const [session, settings, user] = await Promise.all([
         pbGet(`/api/collections/mining_sessions/records/${sessionId}`),
         fetchSettings(),
+        pbGet(`/api/collections/users/records/${pbId}`),
       ]);
 
       if (session.code) return res.status(404).json({ error: "Session not found" });
       if (!settings) return res.status(503).json({ error: "Settings unavailable" });
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // Guard 0: account must not be blocked
+      if (user.status === "blocked") {
+        return res.status(403).json({
+          error: "ACCOUNT_BLOCKED",
+          blocked: true,
+          message: "Your account has been suspended due to repeated time fraud attempts.",
+        });
+      }
 
       // Guard 1: session must belong to this user
       if (session.user !== pbId) {
@@ -1265,12 +1280,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(409).json({ error: "Session already claimed" });
       }
 
-      // Guard 3: mining time must have actually elapsed
+      // Guard 3: mining time must have actually elapsed (server-authoritative time)
       const startMs = new Date(session.start_time.replace(" ", "T") + "Z").getTime();
       const durationSec = (settings.mining_duration_minutes || 60) * 60;
       const elapsed = Date.now() - startMs;
       if (elapsed < durationSec * 1000) {
-        return res.status(400).json({ error: "Mining session not complete yet" });
+        // 3-strike fraud detection
+        const strikes = (user.fraud_attempts || 0) + 1;
+        const isBlocked = strikes >= 3;
+        await pbPatch(`/api/collections/users/records/${pbId}`, {
+          fraud_attempts: strikes,
+          ...(isBlocked ? { status: "blocked" } : {}),
+        });
+        return res.status(400).json({
+          error: "FRAUD_DETECTED",
+          fraudAttempts: strikes,
+          blocked: isBlocked,
+          message: isBlocked
+            ? "Your account has been suspended due to repeated time fraud attempts."
+            : `Claim Rejected! Date & Time mismatch detected. Strike ${strikes}/3. Please use automatic date & time settings on your device.`,
+        });
       }
 
       // Server-side reward — 100% authoritative, no client value accepted
@@ -1286,11 +1315,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (claimPatch.code) {
         return res.status(500).json({ error: "Failed to mark session as claimed" });
       }
-
-      // Fetch user, update balance
-      const user = await pbGet(`/api/collections/users/records/${pbId}`);
-      if (user.code)
-        return res.status(404).json({ error: "User not found" });
 
       const newShib = (user.shib_balance || 0) + serverReward;
       const newClaims = (user.total_claims || 0) + 1;
@@ -1663,6 +1687,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           pbUpdate.applovin_interstitial_id = body.applovinInterstitialId;
         if (body.appStoreLink !== undefined)
           pbUpdate.app_store_link = body.appStoreLink;
+        if (body.playStoreUrl !== undefined)
+          pbUpdate.play_store_url = body.playStoreUrl;
+        if (body.ratePopupFrequency !== undefined)
+          pbUpdate.rate_popup_frequency = body.ratePopupFrequency;
 
         const updated = await pbPatch(
           `/api/collections/settings/records/${id}`,
@@ -1991,6 +2019,8 @@ function formatUser(u: any) {
     isVerified: !!u.is_verified,
     activeBoosterMultiplier: u.active_booster_multiplier || 1,
     boosterExpires: u.booster_expiry || "",
+    fraudAttempts: u.fraud_attempts || 0,
+    status: u.status || "",
     created: u.created,
   };
 }

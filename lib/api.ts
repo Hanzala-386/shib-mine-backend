@@ -222,6 +222,8 @@ export interface PBUser {
   created: string;
   activeBoosterMultiplier: number;
   boosterExpires: string;
+  fraudAttempts: number;
+  status: string;
 }
 
 export interface AppSettings {
@@ -249,6 +251,8 @@ export interface AppSettings {
   applovinBannerId: string;
   applovinInterstitialId: string;
   appStoreLink: string;
+  playStoreUrl: string;
+  ratePopupFrequency: number;
 }
 
 export interface MiningSessionResponse {

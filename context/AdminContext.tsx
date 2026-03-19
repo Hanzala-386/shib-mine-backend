@@ -35,6 +35,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   applovinBannerId: '',
   applovinInterstitialId: '',
   appStoreLink: '',
+  playStoreUrl: '',
+  ratePopupFrequency: 5,
 };
 
 const CACHE_KEY = 'shib_settings_cache_v2';

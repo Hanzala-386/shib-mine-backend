@@ -137,6 +137,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (cached) await storage.removeItem(`shib_pending_${fbUser.uid}`);
 
+      if (pb.status === 'blocked') {
+        setPbUser(null);
+        setUser(null);
+        setIsLoading(false);
+        try { await firebaseSignOut(auth); } catch {}
+        return;
+      }
       setPbUser(pb);
       setUser(pbToProfile(pb, fbUser));
       await storage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
@@ -275,9 +282,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!fbUser) return;
     try {
       const pb = await api.getUser(fbUser.uid).catch(() => null);
-      if (pb?.is_verified) {
-        setPbUser(pb);
-        setUser(pbToProfile(pb, fbUser));
+      if (pb) {
+        if (pb.status === 'blocked') { await signOut(); return; }
+        if (pb.is_verified) {
+          setPbUser(pb);
+          setUser(pbToProfile(pb, fbUser));
+        }
       }
     } catch {}
   }
@@ -288,6 +298,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const pb = await api.getUser(fbUser.uid).catch(() => null);
       if (pb) {
+        // Sign out blocked accounts immediately
+        if (pb.status === 'blocked') {
+          await signOut();
+          return;
+        }
         setPbUser(pb);
         if (pb.is_verified) setUser(pbToProfile(pb, fbUser));
       }
