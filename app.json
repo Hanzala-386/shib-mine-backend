@@ -55,7 +55,18 @@
           "userTrackingUsageDescription": "This identifier will be used to deliver personalized ads to you."
         }
       ],
-      "./plugins/withAndroidConfig"
+      "./plugins/withAndroidConfig",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "buildToolsVersion": "35.0.0",
+            "minSdkVersion": 24
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

@@ -3,8 +3,8 @@
  *
  * Expo Config Plugin — patches generated Android files on every `npx expo prebuild`.
  *
- *  1. AGP version     — Downgrades to 8.9.1 (max supported by Android Studio Panda 2)
- *  2. Gradle wrapper  — Updates to Gradle 8.11.1 (required by AGP 8.9.1)
+ *  1. AGP version     — Pins to 8.9.1 (stable with Gradle 8.13)
+ *  2. Gradle wrapper  — Updates to Gradle 8.13 (required for compileSdk 35/36 on EAS)
  *  3. Ad adapters     — Adds Unity Ads + AppLovin mediation adapter deps
  *  4. NDK version     — Pins to 26.1.10909125 (stable LTS for RN 0.81)
  *  5. C++ config      — Sets -DANDROID_STL=c++_shared + cppFlags "-std=c++17" in cmake
@@ -53,7 +53,7 @@ function withGradleWrapper(config) {
 
       content = content.replace(
         /^distributionUrl=.+$/m,
-        'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.11.1-bin.zip'
+        'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.13-bin.zip'
       );
 
       fs.writeFileSync(wrapperPath, content, 'utf8');
