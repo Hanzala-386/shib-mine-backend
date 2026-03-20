@@ -1044,10 +1044,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: session.message });
 
       const durationMs = dur * 60 * 1000;
-      const rawStart = (session.start_time || "").replace(" ", "T");
+      const rawStart = (session.created || session.start_time || "").replace(" ", "T");
       const parsedStart = rawStart.endsWith("Z") ? rawStart : rawStart + "Z";
       const startTimeMs = new Date(parsedStart).getTime();
       const endTimeMs = startTimeMs + durationMs;
+      const serverNow = Date.now();
 
       res.json({
         id: session.id,
@@ -1055,6 +1056,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         startTimeMs,
         endTimeMs,
         durationMs,
+        serverTime: serverNow,
         multiplier,
         expectedReward,
         miningRatePerSec: rate,
@@ -1102,7 +1104,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     },
   );
 
-  // ── Mining: Start ─────────────────────────────────────────────────────────
+  // ── Server time — anti-clock-manipulation ─────────────────────────────────
+  // Returns server Unix timestamp in ms. Clients use this to compute clock
+  // drift so that the countdown timer always tracks server time, not phone time.
+  app.get("/api/app/server-time", (_req: Request, res: Response) => {
+    res.json({ serverTime: Date.now() });
+  });
+
   app.post("/api/app/mine/start", async (req: Request, res: Response) => {
     try {
       const { pbId } = req.body;
@@ -1173,19 +1181,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: session.message });
 
       const durationMs = dur * 60 * 1000;
-      // Parse start_time stored by this server (no-T, no-Z format)
-      const rawStart = (session.start_time || "").replace(" ", "T");
-      const parsedStart = rawStart.endsWith("Z") ? rawStart : rawStart + "Z";
-      const startTimeMs = new Date(parsedStart).getTime();
+      // Use PocketBase's server-assigned `created` timestamp as the canonical
+      // start time. This is set by PB's own clock — completely tamper-proof.
+      const rawCreated = (session.created || session.start_time || "").replace(" ", "T");
+      const parsedCreated = rawCreated.endsWith("Z") ? rawCreated : rawCreated + "Z";
+      const startTimeMs = new Date(parsedCreated).getTime();
       const endTimeMs = startTimeMs + durationMs;
+      const serverNow = Date.now();
 
       res.json({
         id: session.id,
         pbId,
-        startTime: session.start_time,
-        startTimeMs,   // explicit Unix-ms — no client-side string parsing needed
-        endTimeMs,     // explicit deadline — remaining = endTimeMs - Date.now()
+        startTime: session.created || session.start_time,
+        startTimeMs,   // derived from PB's created — tamper-proof server time
+        endTimeMs,     // explicit deadline
         durationMs,
+        serverTime: serverNow,   // client syncs clock drift using this
         multiplier: activeMultiplier,
         expectedReward,
         miningRatePerSec: rate,
@@ -1214,21 +1225,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const settings = await fetchSettings();
         const dur = (settings?.mining_duration_minutes || 60) * 60 * 1000;
 
-        // Robust start_time parsing — handle both "2024-03-13 10:30:00.123" and "2024-03-13T10:30:00.123Z"
-        const rawStart = (s.start_time || "").replace(" ", "T");
+        // Use PB's server-assigned `created` as canonical start (tamper-proof)
+        const rawStart = (s.created || s.start_time || "").replace(" ", "T");
         const parsedStart = rawStart.endsWith("Z") ? rawStart : rawStart + "Z";
         const startTimeMs = new Date(parsedStart).getTime();
         const endTimeMs = startTimeMs + dur;
-        const elapsed = Date.now() - startTimeMs;
+        const serverNow = Date.now();
+        const elapsed = serverNow - startTimeMs;
         const status = elapsed >= dur ? "ready_to_claim" : "mining";
 
         res.json({
           session: {
             id: s.id,
-            startTime: s.start_time,   // kept for legacy compatibility
-            startTimeMs,               // explicit Unix-ms start timestamp
-            endTimeMs,                 // explicit Unix-ms deadline: remaining = endTimeMs - Date.now()
+            startTime: s.created || s.start_time,
+            startTimeMs,               // derived from PB's created — tamper-proof
+            endTimeMs,                 // Unix-ms deadline
             durationMs: dur,
+            serverTime: serverNow,     // client uses this to sync clock drift
             status,
             multiplier: s.booster_multiplier || 1,
           },
@@ -1281,7 +1294,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Guard 3: mining time must have actually elapsed (server-authoritative time)
-      const startMs = new Date(session.start_time.replace(" ", "T") + "Z").getTime();
+      // Use PB's `created` field — auto-assigned by PocketBase, tamper-proof.
+      // Fall back to start_time for legacy sessions created before this change.
+      const canonicalStart = session.created || session.start_time;
+      const rawStartMs = (canonicalStart || "").replace(" ", "T");
+      const parsedStartMs = rawStartMs.endsWith("Z") ? rawStartMs : rawStartMs + "Z";
+      const startMs = new Date(parsedStartMs).getTime();
       const durationSec = (settings.mining_duration_minutes || 60) * 60;
       const elapsed = Date.now() - startMs;
       if (elapsed < durationSec * 1000) {

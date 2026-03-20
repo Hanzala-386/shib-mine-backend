@@ -107,11 +107,14 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shibIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const driftSyncRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isClaimingRef = useRef(false);
   const sessionRef = useRef<MiningSession | null>(null);
   const miningRateRef = useRef(miningRatePerSec);
   const activeBoosterRef = useRef(activeBooster);
   const pbIdRef = useRef<string | null>(null);
+  // clockDrift = serverTime - phoneTime. Non-zero when device clock is manipulated.
+  const clockDriftRef = useRef(0);
   const cacheKeyRef = useRef<string | null>(null);
 
   const uid = user?.uid ?? null;
@@ -161,15 +164,44 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
+  // Returns the current time adjusted by the measured server clock drift.
+  // If the user has changed their device clock, Date.now() will be wrong —
+  // serverNow() compensates so timers always track server time.
+  function serverNow(): number {
+    return Date.now() + clockDriftRef.current;
+  }
+
+  // Syncs clockDrift with the server. Can be seeded with a serverTime already
+  // in a network response to avoid an extra round-trip.
+  async function syncClockDrift(knownServerTime?: number): Promise<void> {
+    try {
+      const t0 = Date.now();
+      let serverTime = knownServerTime;
+      if (!serverTime) {
+        const res = await api.getServerTime();
+        serverTime = res?.serverTime;
+      }
+      if (serverTime && isFinite(serverTime)) {
+        // If we made a round-trip, estimate RTT and mid-point correction
+        const rtt = knownServerTime ? 0 : (Date.now() - t0);
+        clockDriftRef.current = serverTime - Date.now() + Math.floor(rtt / 2);
+      }
+    } catch { /* non-critical — keep last known drift */ }
+  }
+
   function clearAllTimers() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     if (shibIntervalRef.current) { clearInterval(shibIntervalRef.current); shibIntervalRef.current = null; }
+    if (driftSyncRef.current) { clearInterval(driftSyncRef.current); driftSyncRef.current = null; }
   }
 
   async function loadSession() {
     const currentPbId = pbIdRef.current;
     const currentCacheKey = cacheKeyRef.current;
     try {
+      // Sync clock drift immediately on session load (non-blocking)
+      syncClockDrift().catch(() => {});
+
       // Try local cache first for instant UI restore
       if (currentCacheKey) {
         const raw = await storage.getItem(currentCacheKey);
@@ -179,13 +211,14 @@ export function MiningProvider({ children }: { children: ReactNode }) {
             const endTimeMs = safe(s.endTimeMs, 0);
             const durationMs = safe(s.durationMs, 3600000);
             if (endTimeMs > 0) {
-              const remaining = endTimeMs - Date.now();
+              const now = serverNow();
+              const remaining = endTimeMs - now;
               if (s.status === 'mining' && remaining > 0) {
                 // Timer is still running — restore UI immediately from cache
                 setSession(s);
                 sessionRef.current = s;
                 setTimeRemaining(remaining);
-                setElapsedMs(Math.max(0, Date.now() - safe(s.startTimeMs, endTimeMs - durationMs)));
+                setElapsedMs(Math.max(0, now - safe(s.startTimeMs, endTimeMs - durationMs)));
                 startTimers(s);
               } else if (s.status === 'mining' && remaining <= 0) {
                 // Timer expired while app was closed — mark ready to claim
@@ -219,6 +252,10 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   async function verifyWithServer(currentPbId: string, currentCacheKey: string | null) {
     try {
       const res = await api.getActiveMining(currentPbId);
+      // Sync drift from background verification
+      if (res?.session?.serverTime && isFinite(res.session.serverTime)) {
+        clockDriftRef.current = res.session.serverTime - Date.now();
+      }
       if (!res?.session) {
         // Server says no session — only clear if we're in ready_to_claim (server confirmed)
         const current = sessionRef.current;
@@ -236,10 +273,15 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     const res = await api.getActiveMining(currentPbId);
     if (res?.session) {
       const s = res.session;
+      // Sync clock drift from server's response time — free, no extra round-trip
+      if (s.serverTime && isFinite(s.serverTime)) {
+        clockDriftRef.current = s.serverTime - Date.now();
+      }
       const durationMs = safe(s.durationMs, 3600000);
       const endTimeMs = resolveEndMs(s.endTimeMs, s.startTimeMs, durationMs);
       const startTimeMs = resolveStartMs(s.startTimeMs, s.endTimeMs, durationMs);
-      const remaining = endTimeMs - Date.now();
+      const now = serverNow();
+      const remaining = endTimeMs - now;
       const status: MiningStatus = remaining <= 0 ? 'ready_to_claim' : 'mining';
 
       const local: MiningSession = {
@@ -258,7 +300,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       if (status === 'mining') {
         setTimeRemaining(Math.max(0, remaining));
-        setElapsedMs(Math.max(0, Date.now() - startTimeMs));
+        setElapsedMs(Math.max(0, now - startTimeMs));
         startTimers(local);
       } else {
         clearAllTimers();
@@ -279,14 +321,15 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   function startTimers(s: MiningSession) {
     clearAllTimers();
 
-    const endTimeMs = safe(s.endTimeMs, Date.now() + s.durationMs);
+    const endTimeMs = safe(s.endTimeMs, serverNow() + s.durationMs);
     const startTimeMs = safe(s.startTimeMs, endTimeMs - s.durationMs);
     const durationMs = safe(s.durationMs, 3600000);
 
-    // 1-second countdown — derived from endTimeMs (wall-clock accurate)
+    // 1-second countdown — uses serverNow() so phone clock changes have no effect
     intervalRef.current = setInterval(() => {
-      const remaining = Math.max(0, endTimeMs - Date.now());
-      const elapsed = Math.min(Date.now() - startTimeMs, durationMs);
+      const now = serverNow();
+      const remaining = Math.max(0, endTimeMs - now);
+      const elapsed = Math.min(now - startTimeMs, durationMs);
       setTimeRemaining(remaining);
       setElapsedMs(elapsed);
 
@@ -308,15 +351,22 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
     // 100ms SHIB animation — reads live refs so booster upgrades appear instantly
     shibIntervalRef.current = setInterval(() => {
-      const elapsed = Math.min(Math.max(0, Date.now() - startTimeMs), durationMs);
+      const now = serverNow();
+      const elapsed = Math.min(Math.max(0, now - startTimeMs), durationMs);
       const booster = activeBoosterRef.current;
       const effectiveMultiplier =
-        booster && booster.expiresAt > Date.now()
+        booster && booster.expiresAt > serverNow()
           ? safe(booster.multiplier, 1)
           : safe(s.multiplier, 1);
       const rate = safe(miningRateRef.current, 0.01736) * effectiveMultiplier;
       setDisplayedShibBalance(safe(rate * (elapsed / 1000), 0));
     }, 100);
+
+    // Re-sync clock drift every 5 minutes during active mining.
+    // This catches users who change device clock AFTER mining starts.
+    driftSyncRef.current = setInterval(() => {
+      syncClockDrift().catch(() => {});
+    }, 5 * 60 * 1000);
   }
 
   // ── Public actions ─────────────────────────────────────────────────────────
@@ -327,12 +377,17 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     if (!currentPbId) return { success: false, error: 'Account not ready. Please wait.' };
 
     const booster = activeBoosterRef.current;
-    const multiplier = booster && booster.expiresAt > Date.now() ? safe(booster.multiplier, 1) : 1;
+    const multiplier = booster && booster.expiresAt > serverNow() ? safe(booster.multiplier, 1) : 1;
 
     clearAllTimers();
 
     try {
       const res = await api.startMining({ pbId: currentPbId, multiplier });
+
+      // Sync clock drift immediately from the server response
+      if (res?.serverTime && isFinite(res.serverTime)) {
+        clockDriftRef.current = res.serverTime - Date.now();
+      }
 
       if (res?.miningRatePerSec) setMiningRatePerSec(safe(res.miningRatePerSec, 0.01736));
 
@@ -352,7 +407,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       sessionRef.current = newSession;
       setSession(newSession);
-      setTimeRemaining(Math.max(0, endTimeMs - Date.now()));
+      setTimeRemaining(Math.max(0, endTimeMs - serverNow()));
       setElapsedMs(0);
       setDisplayedShibBalance(0);
       startTimers(newSession);
@@ -457,6 +512,11 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     try {
       const res = await api.activateAndMine({ pbId: currentPbId, multiplier });
 
+      // Sync clock drift from server response
+      if (res?.serverTime && isFinite(res.serverTime)) {
+        clockDriftRef.current = res.serverTime - Date.now();
+      }
+
       if (res?.miningRatePerSec) setMiningRatePerSec(safe(res.miningRatePerSec, 0.01736));
 
       const expiresAt = parseBoosterTs(res.boosterExpiresAt);
@@ -483,7 +543,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       // All state updates synchronous — React batches these together
       setActiveBooster(newBooster);
       setSession(newSession);
-      setTimeRemaining(Math.max(0, endTimeMs - Date.now()));
+      setTimeRemaining(Math.max(0, endTimeMs - serverNow()));
       setElapsedMs(0);
       setDisplayedShibBalance(0);
 

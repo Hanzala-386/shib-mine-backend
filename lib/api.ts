@@ -37,6 +37,9 @@ export const api = {
   // ── Settings ───────────────────────────────────────────────────────────
   getSettings: () => request<AppSettings>('GET', '/api/app/settings'),
 
+  // ── Server time — anti-clock-manipulation ──────────────────────────────
+  getServerTime: () => request<{ serverTime: number }>('GET', '/api/app/server-time'),
+
   // ── Auth ──────────────────────────────────────────────────────────────
   // Called after Firebase emailVerified = true.
   // Creates / updates PB user with is_verified: true.
@@ -108,6 +111,7 @@ export const api = {
       boosterExpiresAt: string;
       ptDeducted: number;
       newPowerTokens: number;
+      serverTime: number;
       status: string;
     }>('POST', '/api/app/boosters/activate-and-mine', payload),
 
@@ -259,9 +263,10 @@ export interface MiningSessionResponse {
   id: string;
   pbId: string;
   startTime: string;
-  startTimeMs: number;   // Unix ms — no client string parsing needed
-  endTimeMs: number;     // Unix ms deadline: remaining = endTimeMs - Date.now()
+  startTimeMs: number;   // Unix ms — derived from PB's server-assigned `created`
+  endTimeMs: number;     // Unix ms deadline
   durationMs: number;
+  serverTime: number;    // Server Unix ms at response time — use to sync clock drift
   multiplier: number;
   expectedReward: number;
   miningRatePerSec: number;
@@ -273,9 +278,10 @@ export interface MiningSessionResponse {
 export interface ActiveSession {
   id: string;
   startTime: string;
-  startTimeMs: number;   // Unix ms
+  startTimeMs: number;   // Unix ms — derived from PB's created
   endTimeMs: number;     // Unix ms deadline
   durationMs: number;
+  serverTime: number;    // Server Unix ms — use to sync clock drift
   multiplier: number;
   status: 'mining' | 'ready_to_claim';
 }
