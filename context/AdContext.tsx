@@ -187,30 +187,26 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
         });
         console.log('[AdContext] Settings loaded from PocketBase ✓');
 
-        /* ── SDK INITS DISABLED FOR EXPO GO / WEB PREVIEW ──────────────────
-         *  Uncomment these blocks before building the final APK.
-         * ─────────────────────────────────────────────────────────────────── */
+        /* Initialize Unity Ads */
+        if (UnityAds && merged.unityGameId) {
+          try {
+            UnityAds.initialize(merged.unityGameId, false);
+            console.log('[AdContext] Unity Ads initializing with gameId:', merged.unityGameId);
+          } catch (e: any) {
+            console.warn('[AdContext] Unity init error:', e.message);
+          }
+        }
 
-        // /* Initialize Unity Ads */
-        // if (UnityAds && merged.unityGameId) {
-        //   try {
-        //     UnityAds.initialize(merged.unityGameId, false);
-        //     console.log('[AdContext] Unity Ads initializing with gameId:', merged.unityGameId);
-        //   } catch (e: any) {
-        //     console.warn('[AdContext] Unity init error:', e.message);
-        //   }
-        // }
-
-        // /* Initialize AppLovin MAX */
-        // if (AppLovinMAX && merged.applovinSdkKey) {
-        //   try {
-        //     AppLovinMAX.initialize(merged.applovinSdkKey)
-        //       .then(() => console.log('[AdContext] AppLovin MAX initialized ✓'))
-        //       .catch((e: any) => console.warn('[AdContext] AppLovin init error:', e.message));
-        //   } catch (e: any) {
-        //     console.warn('[AdContext] AppLovin init exception:', e.message);
-        //   }
-        // }
+        /* Initialize AppLovin MAX */
+        if (AppLovinMAX && merged.applovinSdkKey) {
+          try {
+            AppLovinMAX.initialize(merged.applovinSdkKey)
+              .then(() => console.log('[AdContext] AppLovin MAX initialized ✓'))
+              .catch((e: any) => console.warn('[AdContext] AppLovin init error:', e.message));
+          } catch (e: any) {
+            console.warn('[AdContext] AppLovin init exception:', e.message);
+          }
+        }
       })
       .catch(e => console.warn('[AdContext] Failed to fetch settings:', e));
   }, []);

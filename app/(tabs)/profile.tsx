@@ -24,6 +24,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useWallet } from '@/context/WalletContext';
 import { useAds } from '@/context/AdContext';
+import { InlineBannerAd } from '@/components/StickyBannerAd';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
@@ -88,7 +89,7 @@ export default function ProfileScreen() {
   const { shibBalance, powerTokens } = useWallet();
 
   const queryClient = useQueryClient();
-  const { showInterstitial } = useAds();
+  const { showInterstitial, showMiningInterstitial } = useAds();
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
@@ -158,9 +159,8 @@ export default function ProfileScreen() {
     };
 
     try {
-      showInterstitial((_shown) => { doTransfer(); });
+      showMiningInterstitial((_shown) => { doTransfer(); });
     } catch {
-      // If the ad system itself throws, still proceed with the transfer
       doTransfer();
     }
   }
@@ -510,6 +510,9 @@ export default function ProfileScreen() {
           </LinearGradient>
         </Animated.View>
 
+        {/* ── Banner Ad between Referral Rewards and My Profile ── */}
+        <InlineBannerAd />
+
         {/* ── My Profile section ── */}
         <Animated.View entering={FadeInDown.delay(300).springify()}>
           <View style={styles.sectionHeaderRow}>
@@ -566,6 +569,9 @@ export default function ProfileScreen() {
           </View>
         </Animated.View>
 
+        {/* ── Banner Ad between My Profile and Preferences ── */}
+        <InlineBannerAd />
+
         {/* ── Preferences ── */}
         <Animated.View entering={FadeInDown.delay(400).springify()}>
           <Text style={styles.sectionTitle}>Preferences</Text>
@@ -599,6 +605,9 @@ export default function ProfileScreen() {
             </View>
           </Animated.View>
         )}
+
+        {/* ── Banner Ad between Preferences and App Info ── */}
+        <InlineBannerAd />
 
         {/* ── App Info ── */}
         <Animated.View entering={FadeInDown.delay(500).springify()}>

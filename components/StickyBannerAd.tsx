@@ -55,6 +55,37 @@ function UnityBannerFallback({ fallbackUnitId }: { fallbackUnitId: string }) {
   return <AdMobBanner unitId={fallbackUnitId} />;
 }
 
+/* ── Shared banner render helper ──────────────────────────────────────────── */
+function renderBannerForProvider(provider: BannerProvider, admobId: string, applovinId: string) {
+  switch (provider) {
+    case 'unity':
+      return <UnityBannerFallback fallbackUnitId={admobId || TEST_IDS.BANNER} />;
+    case 'applovin':
+      if (applovinId && ALAdView) return <AppLovinBanner adUnitId={applovinId} />;
+      return <AdMobBanner unitId={admobId || TEST_IDS.BANNER} />;
+    case 'admob':
+    default:
+      return <AdMobBanner unitId={admobId || TEST_IDS.BANNER} />;
+  }
+}
+
+/* ── Inline banner — renders in flow (for use between content sections) ───── */
+export function InlineBannerAd() {
+  const { settings, bannerProvider } = useAds();
+  if (Platform.OS === 'web') return null;
+  const banner = renderBannerForProvider(
+    bannerProvider,
+    settings.admobBannerUnitId,
+    settings.applovinBannerId,
+  );
+  if (!banner) return null;
+  return (
+    <View style={inlineStyles.wrapper} key={`inline-banner-${bannerProvider}`}>
+      {banner}
+    </View>
+  );
+}
+
 /* ── Main sticky banner component ─────────────────────────────────────────── */
 export function StickyBannerAd() {
   const { settings, bannerProvider } = useAds();
@@ -99,5 +130,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'transparent',
     zIndex: 10,
+  },
+});
+
+const inlineStyles = StyleSheet.create({
+  wrapper: {
+    width: '100%',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+    marginVertical: 8,
   },
 });
