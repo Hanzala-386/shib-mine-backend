@@ -479,17 +479,22 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     } catch (e: any) {
       // e.data is populated by lib/api.ts request() — see err.data = data
       const errCode = e?.data?.error || '';
-      if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED') {
-        // Server has already expired the session and nullified current_mining_session.
-        // Clear local state too — UI resets to "Start Mining", forcing user to wait a full hour again.
+
+      // For any fraud or session-expiry error: clear local state so UI returns to "Start Mining"
+      if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED') {
         clearAllTimers();
         setTimeRemaining(0);
         setElapsedMs(0);
         setDisplayedShibBalance(0);
         setSession(null);
         sessionRef.current = null;
-        if (currentCacheKey) await storage.removeItem(currentCacheKey);
-        throw e;
+        try { if (currentCacheKey) await storage.removeItem(currentCacheKey); } catch { /* ignore */ }
+
+        // Only re-throw fraud/blocked so handleClaim can show alert;
+        // SESSION_EXPIRED returns 0 (user just needs to start fresh, no strike shown)
+        if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED') throw e;
+        console.warn('[Mining] Session expired/voided — reset to idle');
+        return 0;
       }
       console.warn('[Mining] claimReward error:', e?.message);
       return 0;

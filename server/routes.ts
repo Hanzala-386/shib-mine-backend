@@ -643,6 +643,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
       if (existing.items?.[0]) {
         let u = existing.items[0];
+
+        // Login blockade: blocked accounts cannot authenticate
+        if (u.status === "blocked") {
+          console.warn(`[auth/sync] Blocked login attempt from banned user: ${u.id} (${email})`);
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+          });
+        }
+
         // Auto-generate referral code if the user was created before this was added
         if (!u.referral_code) {
           const code = generateReferralCode();
@@ -897,6 +908,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
       let u = r.items?.[0];
       if (!u) return res.status(404).json({ error: "User not found" });
+
+      // Login blockade: blocked users cannot access the app
+      if (u.status === "blocked") {
+        return res.status(403).json({
+          error: "ACCOUNT_BLOCKED",
+          blocked: true,
+          message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+        });
+      }
 
       // Auto-generate referral code if missing
       if (!u.referral_code) {
@@ -1341,9 +1361,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: "Session does not belong to this user" });
       }
 
-      // Guard 2: one session = one claim only
-      if (session.claimed_amount && session.claimed_amount > 0) {
-        return res.status(409).json({ error: "Session already claimed" });
+      // Guard 2: reject sessions that are already claimed (> 0) OR voided/expired (< 0 i.e. = -1).
+      // CRITICAL: must use !== 0 not > 0 — voided sessions have claimed_amount = -1
+      // which passes a > 0 check and lets the same dead session trigger fraud repeatedly.
+      const claimedAmt = session.claimed_amount ?? 0;
+      if (claimedAmt !== 0) {
+        // Clear the stale reference so the UI can start fresh
+        await pbPatch(`/api/collections/users/records/${pbId}`, {
+          current_mining_session: "",
+        }).catch(() => {});
+        return res.status(400).json({
+          error: "SESSION_EXPIRED",
+          message: "This mining session has already been used. Please start a new one.",
+        });
       }
 
       // Guard 3: mining time must have actually elapsed (server-authoritative time)
@@ -1357,31 +1387,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const elapsed = Date.now() - startMs;
       if (elapsed < durationSec * 1000) {
         // ── 3-strike fraud detection ──────────────────────────────────────────
-        const strikes = (user.fraud_attempts || 0) + 1;
+        // Re-read fraud_attempts fresh to avoid race conditions
+        const currentStrikes = user.fraud_attempts || 0;
+        const strikes = currentStrikes + 1;
         const isBlocked = strikes >= 3;
 
-        // 1. Expire the fraud session immediately — user must restart from scratch.
-        //    claimed_amount = -1 is the "expired/voided" sentinel used throughout the app.
-        await pbPatch(`/api/collections/mining_sessions/records/${session.id}`, {
-          claimed_amount: -1,
-        });
+        console.log(`[FRAUD] user=${pbId} prev_strikes=${currentStrikes} new_strikes=${strikes} blocked=${isBlocked} elapsed=${Math.round(elapsed/1000)}s required=${durationSec}s`);
 
-        // 2. Update user: increment strike count, always nullify current session,
-        //    and set status = 'blocked' on the 3rd strike.
+        // 1. Expire the fraud session by DELETING it from the collection.
+        //    This guarantees no future claim can ever use this session.
+        try {
+          await pbDelete(`/api/collections/mining_sessions/records/${session.id}`);
+          console.log(`[FRAUD] Deleted session ${session.id}`);
+        } catch {
+          // Fallback: mark as voided if delete fails
+          await pbPatch(`/api/collections/mining_sessions/records/${session.id}`, { claimed_amount: -1 });
+          console.log(`[FRAUD] Marked session ${session.id} as voided (delete failed)`);
+        }
+
+        // 2. Update user: increment strike, wipe current session, block if >= 3 strikes
         await pbPatch(`/api/collections/users/records/${pbId}`, {
           fraud_attempts: strikes,
-          current_mining_session: "",          // always clear — forces fresh start
+          current_mining_session: "",
           ...(isBlocked ? { status: "blocked" } : {}),
         });
 
+        console.log(`[FRAUD] Updated user ${pbId}: fraud_attempts=${strikes} blocked=${isBlocked}`);
+
         const strikesLeft = 3 - strikes;
-        return res.status(400).json({
-          error: "FRAUD_DETECTED",
+        return res.status(isBlocked ? 403 : 400).json({
+          error: isBlocked ? "ACCOUNT_BLOCKED" : "FRAUD_DETECTED",
           fraudAttempts: strikes,
           blocked: isBlocked,
           message: isBlocked
             ? "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts."
-            : `Cheat Detected! Your phone time does not match our server. This is Strike ${strikes}/3. Your mining progress has been reset. 3 strikes = Permanent Ban.`,
+            : `Strike ${strikes}/3! Cheat detected. Your progress has been reset. ${strikesLeft} more attempt${strikesLeft === 1 ? "" : "s"} and you will be permanently banned.`,
         });
       }
 
@@ -1391,7 +1431,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const serverReward = miningRate * durationSec * boosterMultiplier;
 
       // Mark session claimed FIRST — any duplicate request now hits Guard 2
-      const claimPatch = await pbPatch(`/api/collections/mining_sessions/records/${sessionId}`, {
+      // IMPORTANT: use session.id (from the fetched record), NOT the client-provided sessionId
+      console.log(`[mine/claim] Claiming session ${session.id} for user ${pbId} — reward: ${serverReward}`);
+      const claimPatch = await pbPatch(`/api/collections/mining_sessions/records/${session.id}`, {
         claimed_amount: serverReward,
         is_verified: true,
       });

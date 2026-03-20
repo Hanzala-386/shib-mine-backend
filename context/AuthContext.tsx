@@ -281,36 +281,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const fbUser = auth.currentUser;
     if (!fbUser) return;
     try {
-      const pb = await api.getUser(fbUser.uid).catch(() => null);
-      if (pb) {
-        if (pb.status === 'blocked') {
-          Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
-          await signOut(); return;
-        }
-        if (pb.is_verified) {
-          setPbUser(pb);
-          setUser(pbToProfile(pb, fbUser));
-        }
+      // Don't swallow ACCOUNT_BLOCKED — re-throw it so the catch block can sign out
+      const pb = await api.getUser(fbUser.uid).catch((e: any) => {
+        if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) throw e;
+        return null;
+      });
+      if (!pb) return;
+      if (pb.status === 'blocked') {
+        Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
+        await signOut(); return;
       }
-    } catch {}
+      if (pb.is_verified) {
+        setPbUser(pb);
+        setUser(pbToProfile(pb, fbUser));
+      }
+    } catch (e: any) {
+      if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) {
+        Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
+        await signOut();
+      }
+    }
   }
 
   async function refreshBalance() {
     const fbUser = auth.currentUser;
     if (!fbUser) return;
     try {
-      const pb = await api.getUser(fbUser.uid).catch(() => null);
-      if (pb) {
-        // Sign out blocked accounts immediately
-        if (pb.status === 'blocked') {
-          Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
-          await signOut();
-          return;
-        }
-        setPbUser(pb);
-        if (pb.is_verified) setUser(pbToProfile(pb, fbUser));
+      // Don't swallow ACCOUNT_BLOCKED — re-throw it so the catch block can sign out
+      const pb = await api.getUser(fbUser.uid).catch((e: any) => {
+        if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) throw e;
+        return null;
+      });
+      if (!pb) return;
+      if (pb.status === 'blocked') {
+        Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
+        await signOut();
+        return;
       }
-    } catch {}
+      setPbUser(pb);
+      if (pb.is_verified) setUser(pbToProfile(pb, fbUser));
+    } catch (e: any) {
+      if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) {
+        Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
+        await signOut();
+      }
+    }
   }
 
   // Immediately updates the PT balance in state without a network round-trip.
