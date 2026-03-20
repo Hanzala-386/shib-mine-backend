@@ -20,8 +20,9 @@ async function request<T = any>(
     const data = await res.json();
     if (!res.ok) {
       const err: any = new Error(data?.error || `HTTP ${res.status}`);
-      if (data?.code) err.code = data.code;
+      err.data = data;       // ← attach full server payload so callers can read e.data.error, e.data.message, etc.
       err.status = res.status;
+      if (data?.code) err.code = data.code;
       throw err;
     }
     return data as T;

@@ -1005,7 +1005,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({
           error: "ACCOUNT_BLOCKED",
           blocked: true,
-          message: "Your account is permanently banned due to multiple fraud attempts.",
+          message: "Account Blocked! You have exceeded the limit of fraud attempts.",
         });
       }
 
@@ -1152,7 +1152,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({
           error: "ACCOUNT_BLOCKED",
           blocked: true,
-          message: "Your account is permanently banned due to multiple fraud attempts.",
+          message: "Account Blocked! You have exceeded the limit of fraud attempts.",
         });
       }
 
@@ -1258,7 +1258,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(403).json({
             error: "ACCOUNT_BLOCKED",
             blocked: true,
-            message: "Your account is permanently banned due to multiple fraud attempts.",
+            message: "Account Blocked! You have exceeded the limit of fraud attempts.",
           });
         }
 
@@ -1323,7 +1323,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({
           error: "ACCOUNT_BLOCKED",
           blocked: true,
-          message: "Your account is permanently banned due to multiple fraud attempts.",
+          message: "Account Blocked! You have exceeded the limit of fraud attempts.",
         });
       }
 
@@ -1363,13 +1363,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           fraud_attempts: strikes,
           ...(isBlocked ? { status: "blocked", current_mining_session: "" } : {}),
         });
+        const strikesLeft = 3 - strikes;
         return res.status(400).json({
           error: "FRAUD_DETECTED",
           fraudAttempts: strikes,
           blocked: isBlocked,
           message: isBlocked
-            ? "Your account is permanently banned due to multiple fraud attempts."
-            : `Strike ${strikes}/3! Fraud detected. Changing phone time is not allowed. 3 strikes = Permanent Ban.`,
+            ? "Account Blocked! You have exceeded the limit of fraud attempts."
+            : `Warning! Fraud detected (Phone clock manipulation). You have ${strikesLeft} strike${strikesLeft === 1 ? "" : "s"} left before a permanent ban.`,
         });
       }
 

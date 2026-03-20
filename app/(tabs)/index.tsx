@@ -260,7 +260,7 @@ const BoosterModal = memo(function BoosterModal({
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const { user, pbUser } = useAuth();
+  const { user, pbUser, signOut } = useAuth();
   const { powerTokens, shibBalance } = useWallet();
   const {
     status, timeRemaining, progress, startMining, claimReward,
@@ -408,25 +408,38 @@ export default function HomeScreen() {
       if (reward > 0) Alert.alert('Reward Claimed! 🎉', `You earned ${formatShib(reward)} SHIB!`);
     } catch (e: any) {
       const errCode = e?.data?.error || '';
-      if (errCode === 'ACCOUNT_BLOCKED') {
-        Alert.alert(
-          'Account Permanently Banned',
-          e?.data?.message || 'Your account is permanently banned due to multiple fraud attempts.',
-          [{ text: 'OK' }],
-        );
-      } else if (errCode === 'FRAUD_DETECTED') {
+      const serverMsg = e?.data?.message || '';
+
+      if (errCode === 'FRAUD_DETECTED') {
         const strikes = e?.data?.fraudAttempts ?? 0;
         const isBlocked = e?.data?.blocked ?? false;
+
+        if (isBlocked) {
+          // Strike 3 → account blocked — sign user out after they dismiss the alert
+          Alert.alert(
+            'Account Blocked!',
+            serverMsg || 'You have exceeded the limit of fraud attempts.',
+            [{ text: 'OK', onPress: () => signOut?.() }],
+          );
+        } else {
+          const strikesLeft = 3 - strikes;
+          Alert.alert(
+            `⚠️ Warning! Strike ${strikes}/3`,
+            serverMsg || `Fraud detected (Phone clock manipulation). You have ${strikesLeft} strike${strikesLeft === 1 ? '' : 's'} left before a permanent ban.`,
+            [{ text: 'OK' }],
+          );
+        }
+      } else if (errCode === 'ACCOUNT_BLOCKED') {
         Alert.alert(
-          isBlocked ? 'Account Permanently Banned' : `Fraud Detected — Strike ${strikes}/3`,
-          e?.data?.message || 'Claim rejected due to date/time mismatch.',
-          [{ text: 'OK' }],
+          'Account Blocked!',
+          serverMsg || 'You have exceeded the limit of fraud attempts.',
+          [{ text: 'OK', onPress: () => signOut?.() }],
         );
       } else {
         Alert.alert('Claim Failed', e?.message || 'Something went wrong. Please try again.');
       }
     }
-  }, [isClaiming, claimReward]);
+  }, [isClaiming, claimReward, signOut]);
 
   // Opens the booster modal — blocked during active mining to prevent double-spend
   const handleBoosterTap = useCallback((b: BoosterItem) => {

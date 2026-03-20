@@ -437,16 +437,24 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     isClaimingRef.current = true;
     setIsClaiming(true);
 
-    clearAllTimers();
-    setTimeRemaining(0);
-    setElapsedMs(0);
-    setDisplayedShibBalance(0);
-    setSession(null);
-    sessionRef.current = null;
-    if (currentCacheKey) await storage.removeItem(currentCacheKey);
+    // ─── DO NOT clear session state here ───────────────────────────────────
+    // State is only cleared after the server confirms a successful claim.
+    // Clearing before the API call means fraud / network errors leave the UI
+    // in a blank idle state with no visible feedback to the user.
+    // ────────────────────────────────────────────────────────────────────────
 
     try {
       const res = await api.claimMining({ sessionId: s.pbSessionId, pbId: currentPbId });
+
+      // ── Success: now safe to wipe local session state ──────────────────
+      clearAllTimers();
+      setTimeRemaining(0);
+      setElapsedMs(0);
+      setDisplayedShibBalance(0);
+      setSession(null);
+      sessionRef.current = null;
+      if (currentCacheKey) await storage.removeItem(currentCacheKey);
+
       await refreshBalance();
 
       /* ── Rate Us: increment completed session count ── */
@@ -461,7 +469,6 @@ export function MiningProvider({ children }: { children: ReactNode }) {
           await AsyncStorage.setItem(SESSIONS_COUNT_KEY, String(count));
           const freq = ratePopupFrequencyRef.current || 5;
           const dismissedAt = parseInt(rawDismissedAt || '0', 10) || 0;
-          // Show only if: count hits a multiple of freq AND user hasn't dismissed at this count
           if (count % freq === 0 && count > dismissedAt) {
             setShowRateUs(true);
           }
@@ -470,9 +477,14 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       return safe(res?.reward, 0);
     } catch (e: any) {
-      const errCode = e?.data?.error || e?.message || '';
-      // Re-throw fraud/blocked errors so the UI can show proper alerts
-      if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED') throw e;
+      // e.data is now populated by lib/api.ts (see request() function)
+      const errCode = e?.data?.error || '';
+      if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED') {
+        // Session state is intentionally preserved so the UI remains visible
+        // during the strike warning. The account-blocked path will clear it
+        // via signOut() in AuthContext.
+        throw e;
+      }
       console.warn('[Mining] claimReward error:', e?.message);
       return 0;
     } finally {
