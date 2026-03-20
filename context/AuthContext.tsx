@@ -149,14 +149,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await storage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
     } catch (e: any) {
       console.warn('[Auth] confirmAndLoadUser failed:', e);
-      if (e?.code === 'EMAIL_PERMANENTLY_BANNED' || e?.status === 403) {
-        // This email was permanently blacklisted — sign out and surface the error
+      const errCode = e?.data?.error || e?.code || '';
+      const isHardBlock = e?.status === 403 || errCode === 'ACCOUNT_BLOCKED' || errCode === 'EMAIL_PERMANENTLY_BANNED';
+      if (isHardBlock) {
+        // Hard block (banned or blacklisted) — sign out immediately and surface to UI
         setPbUser(null);
         setUser(null);
         setIsLoading(false);
         try { await firebaseSignOut(auth); } catch {}
-        // Surface the error to auth screen via re-throw so auth.tsx shows it
-        throw e;
+        // Surface a clean error with the right message so auth.tsx can show it
+        const msg = e?.data?.message || e?.message || 'Your account has been permanently disabled.';
+        const cleanErr = Object.assign(new Error(msg), { status: 403, data: e?.data ?? {}, code: errCode });
+        throw cleanErr;
       }
       setPbUser(null);
       setUser(null);
@@ -261,13 +265,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { verified: true };
       }
     } catch (e: any) {
-      if (e?.code === 'EMAIL_PERMANENTLY_BANNED' || e?.status === 403) {
-        Alert.alert(
-          'Account Permanently Banned',
-          e.message || 'This email address is permanently banned and cannot be used to register a new account.',
-          [{ text: 'OK' }]
-        );
-        throw e; // Re-throw so verify-email.tsx can react
+      const errCode = e?.data?.error || e?.code || '';
+      if (e?.status === 403 || errCode === 'ACCOUNT_BLOCKED' || errCode === 'EMAIL_PERMANENTLY_BANNED') {
+        const title = errCode === 'ACCOUNT_BLOCKED' ? 'ACCOUNT BANNED!' : 'Account Permanently Banned';
+        Alert.alert(title, e.message || 'Your account has been permanently disabled.', [{ text: 'OK' }]);
+        throw e;
       }
     }
     return { verified: false };

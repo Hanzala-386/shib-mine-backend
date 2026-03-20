@@ -193,10 +193,22 @@ export default function AuthScreen() {
   }, [email, password, confirmPassword, displayName, referralCode, signUp]);
 
   function handleAuthError(e: any) {
-    const code = e?.code || '';
+    const code = e?.code || e?.data?.error || '';
     if (code === 'EMAIL_NOT_VERIFIED') {
       setShowEmailUnverified(true);
       setErrorMsg('Your email is not verified. Check your inbox for the verification link.');
+      return;
+    }
+    // Hard block — show a modal Alert (not just inline) and do NOT allow retry
+    if (code === 'ACCOUNT_BLOCKED' || e?.status === 403) {
+      const msg = e?.message || e?.data?.message || 'Your account has been permanently disabled due to multiple fraud attempts.';
+      Alert.alert('ACCOUNT BANNED!', msg, [{ text: 'OK' }]);
+      setErrorMsg(''); // Clear inline error — the Alert is sufficient
+      return;
+    }
+    if (code === 'EMAIL_PERMANENTLY_BANNED') {
+      Alert.alert('Account Permanently Banned', e?.message || 'This email is permanently banned.', [{ text: 'OK' }]);
+      setErrorMsg('');
       return;
     }
     const msg =

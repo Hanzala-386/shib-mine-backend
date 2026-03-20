@@ -644,14 +644,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (existing.items?.[0]) {
         let u = existing.items[0];
 
-        // Login blockade: blocked accounts cannot authenticate
-        if (u.status === "blocked") {
-          console.warn(`[auth/sync] Blocked login attempt from banned user: ${u.id} (${email})`);
-          return res.status(403).json({
-            error: "ACCOUNT_BLOCKED",
-            blocked: true,
-            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
-          });
+        // Login blockade: dual-check — auto-heals accounts with >= 3 strikes but status not yet 'blocked'
+        {
+          const isBlocked = u.status === "blocked" || (u.fraud_attempts || 0) >= 3;
+          if (isBlocked) {
+            if (u.status !== "blocked") {
+              await pbPatch(`/api/collections/users/records/${u.id}`, { status: "blocked" }).catch(() => {});
+              console.warn(`[auth/sync] Auto-blocked user ${u.id} (fraud_attempts=${u.fraud_attempts})`);
+            } else {
+              console.warn(`[auth/sync] Blocked login attempt from banned user: ${u.id} (${email})`);
+            }
+            return res.status(403).json({
+              error: "ACCOUNT_BLOCKED",
+              blocked: true,
+              message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+            });
+          }
         }
 
         // Auto-generate referral code if the user was created before this was added
@@ -909,13 +917,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let u = r.items?.[0];
       if (!u) return res.status(404).json({ error: "User not found" });
 
-      // Login blockade: blocked users cannot access the app
-      if (u.status === "blocked") {
-        return res.status(403).json({
-          error: "ACCOUNT_BLOCKED",
-          blocked: true,
-          message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
-        });
+      // Login blockade: dual-check — auto-heals accounts with >= 3 strikes but status not yet 'blocked'
+      {
+        const isBlocked = u.status === "blocked" || (u.fraud_attempts || 0) >= 3;
+        if (isBlocked) {
+          if (u.status !== "blocked") {
+            await pbPatch(`/api/collections/users/records/${u.id}`, { status: "blocked" }).catch(() => {});
+            console.log(`[getUser] Auto-blocked user ${u.id} (fraud_attempts=${u.fraud_attempts})`);
+          }
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+          });
+        }
       }
 
       // Auto-generate referral code if missing
@@ -1020,13 +1035,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (user.code) return res.status(404).json({ error: "User not found" });
       if (!settings) return res.status(503).json({ error: "Settings unavailable" });
 
-      // Guard 0: account must not be blocked
-      if (user.status === "blocked") {
-        return res.status(403).json({
-          error: "ACCOUNT_BLOCKED",
-          blocked: true,
-          message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
-        });
+      // Guard 0: dual-check — status field OR accumulated strikes >= 3 (auto-heals legacy records)
+      {
+        const isBlocked = user.status === "blocked" || (user.fraud_attempts || 0) >= 3;
+        if (isBlocked) {
+          if (user.status !== "blocked") {
+            await pbPatch(`/api/collections/users/records/${pbId}`, { status: "blocked" }).catch(() => {});
+            console.log(`[Guard0/start] Auto-blocked user ${pbId} (fraud_attempts=${user.fraud_attempts})`);
+          }
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+          });
+        }
       }
 
       // Booster cost
@@ -1167,13 +1189,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (userRecord.code)
         return res.status(404).json({ error: "User not found" });
 
-      // Guard 0: account must not be blocked
-      if (userRecord.status === "blocked") {
-        return res.status(403).json({
-          error: "ACCOUNT_BLOCKED",
-          blocked: true,
-          message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
-        });
+      // Guard 0: dual-check — status field OR accumulated strikes >= 3 (auto-heals legacy records)
+      {
+        const isBlocked = userRecord.status === "blocked" || (userRecord.fraud_attempts || 0) >= 3;
+        if (isBlocked) {
+          if (userRecord.status !== "blocked") {
+            await pbPatch(`/api/collections/users/records/${pbId}`, { status: "blocked" }).catch(() => {});
+            console.log(`[Guard0/activate] Auto-blocked user ${pbId} (fraud_attempts=${userRecord.fraud_attempts})`);
+          }
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+          });
+        }
       }
 
       // Calculate effective booster multiplier
@@ -1272,14 +1301,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const { pbId } = req.params;
 
-        // Check account status before returning session data
-        const userCheck = await pbGet(`/api/collections/users/records/${pbId}?fields=id,status`);
-        if (!userCheck.code && userCheck.status === "blocked") {
-          return res.status(403).json({
-            error: "ACCOUNT_BLOCKED",
-            blocked: true,
-            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
-          });
+        // Check account status before returning session data — also fetch fraud_attempts for dual-check
+        const userCheck = await pbGet(`/api/collections/users/records/${pbId}?fields=id,status,fraud_attempts`);
+        if (!userCheck.code) {
+          const isBlocked = userCheck.status === "blocked" || (userCheck.fraud_attempts || 0) >= 3;
+          if (isBlocked) {
+            if (userCheck.status !== "blocked") {
+              await pbPatch(`/api/collections/users/records/${pbId}`, { status: "blocked" }).catch(() => {});
+              console.log(`[Guard0/active] Auto-blocked user ${pbId} (fraud_attempts=${userCheck.fraud_attempts})`);
+            }
+            return res.status(403).json({
+              error: "ACCOUNT_BLOCKED",
+              blocked: true,
+              message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+            });
+          }
         }
 
         const r = await pbGet(
@@ -1338,13 +1374,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (user.code) return res.status(404).json({ error: "User not found" });
       if (!settings) return res.status(503).json({ error: "Settings unavailable" });
 
-      // Guard 0: account must not be blocked
-      if (user.status === "blocked") {
-        return res.status(403).json({
-          error: "ACCOUNT_BLOCKED",
-          blocked: true,
-          message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
-        });
+      // Guard 0: dual-check — status field OR accumulated strikes >= 3 (auto-heals legacy records)
+      {
+        const isBlocked = user.status === "blocked" || (user.fraud_attempts || 0) >= 3;
+        if (isBlocked) {
+          if (user.status !== "blocked") {
+            await pbPatch(`/api/collections/users/records/${pbId}`, { status: "blocked" }).catch(() => {});
+            console.log(`[Guard0/claim] Auto-blocked user ${pbId} (fraud_attempts=${user.fraud_attempts})`);
+          }
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+          });
+        }
       }
 
       // Use server's current_mining_session as canonical session ID.

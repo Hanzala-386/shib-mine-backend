@@ -1,0 +1,45 @@
+Agent, this is a final warning to fix the Fraud & Blocking system. I have tested with account gemiko5312@powpearl.com which has 4 fraud_attempts but is STILL NOT BLOCKED. This means your current code is failing.
+
+DO NOT explain, just implement these EXACT logic fixes in the code:
+
+1. CRITICAL: Server-Side Enforcement (PocketBase Hooks/Service):
+
+You must NOT rely on the frontend to block the user.
+
+In the Claim API/Function, before anything else, fetch the user's latest fraud_attempts from the database.
+
+IF fraud_attempts >= 3, you MUST immediately update status to 'blocked' in the database and return a 403 Forbidden error.
+
+Currently, the user has 4 strikes and is still active—this means your increment logic is working but your Block Logic is missing or being ignored. FIX IT.
+
+2. Mandatory Popup & Reset Logic:
+
+If a fraud is detected (time mismatch):
+
+Step A: Update fraud_attempts = fraud_attempts + 1 in PocketBase.
+
+Step B: Delete/Clear the current_mining_session ID from the user record.
+
+Step C: Send a response back to the UI that triggers a WARNING POPUP: "Strike {count}/3! Your progress is reset."
+
+The UI must then immediately switch back to the 'Start Mining' screen.
+
+3. The 'Auto-SignOut' on Block:
+
+If status == 'blocked', every single API call (Balance refresh, Mining start, etc.) must fail and trigger a forcedSignOut() function in the frontend.
+
+When the user clicks 'OK' on the Banned Popup, clear all local storage/tokens and redirect to the Login page.
+
+4. Login Wall:
+
+Modify the signIn logic. Even if the password is correct, check if record.status === 'blocked'.
+
+If blocked, do not issue a token. Instead, return: "Your account is permanently terminated due to fraud."
+
+5. Verification Task:
+
+Check why gemiko5312@powpearl.com is still active despite having 4 strikes.
+
+Manually trigger the block for this user in your testing and ensure they cannot mine or log in anymore.
+
+Fix the Mining Controller and Auth Context immediately to ensure these database values (status & strikes) actually control the app's behavior.
