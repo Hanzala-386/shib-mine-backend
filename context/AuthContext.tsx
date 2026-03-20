@@ -283,7 +283,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const pb = await api.getUser(fbUser.uid).catch(() => null);
       if (pb) {
-        if (pb.status === 'blocked') { await signOut(); return; }
+        if (pb.status === 'blocked') {
+          Alert.alert('Account Permanently Banned', 'Your account is permanently banned due to multiple fraud attempts.');
+          await signOut(); return;
+        }
         if (pb.is_verified) {
           setPbUser(pb);
           setUser(pbToProfile(pb, fbUser));
@@ -300,6 +303,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (pb) {
         // Sign out blocked accounts immediately
         if (pb.status === 'blocked') {
+          Alert.alert('Account Permanently Banned', 'Your account is permanently banned due to multiple fraud attempts.');
           await signOut();
           return;
         }

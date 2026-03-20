@@ -306,8 +306,9 @@ async function ensureUserSchema() {
     { name: "referral_earnings",  type: "number" },
     { name: "total_claims",       type: "number" },
     { name: "total_wins",         type: "number" },
-    { name: "fraud_attempts",     type: "number" },
-    { name: "status",             type: "text"   },
+    { name: "fraud_attempts",          type: "number" },
+    { name: "status",                  type: "text"   },
+    { name: "current_mining_session",  type: "text"   },
   ];
 
   try {
@@ -705,6 +706,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         referral_earnings: 0,
         total_claims: 0,
         total_wins: 0,
+        fraud_attempts: 0,
+        status: "active",
+        current_mining_session: "",
         is_verified: false,
       });
 
@@ -804,6 +808,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         referral_earnings: 0,
         total_claims: 0,
         total_wins: 0,
+        fraud_attempts: 0,
+        status: "active",
+        current_mining_session: "",
         is_verified: true,
       });
 
@@ -993,6 +1000,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (user.code) return res.status(404).json({ error: "User not found" });
       if (!settings) return res.status(503).json({ error: "Settings unavailable" });
 
+      // Guard 0: account must not be blocked
+      if (user.status === "blocked") {
+        return res.status(403).json({
+          error: "ACCOUNT_BLOCKED",
+          blocked: true,
+          message: "Your account is permanently banned due to multiple fraud attempts.",
+        });
+      }
+
       // Booster cost
       const costKey = `boost_${multiplier}x_cost`;
       const boosterCost = settings[costKey];
@@ -1042,6 +1058,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (session.code)
         return res.status(400).json({ error: session.message });
+
+      // Link session to user as the server-side canonical reference for claim validation
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        current_mining_session: session.id,
+      });
 
       const durationMs = dur * 60 * 1000;
       const rawStart = (session.created || session.start_time || "").replace(" ", "T");
@@ -1126,6 +1147,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (userRecord.code)
         return res.status(404).json({ error: "User not found" });
 
+      // Guard 0: account must not be blocked
+      if (userRecord.status === "blocked") {
+        return res.status(403).json({
+          error: "ACCOUNT_BLOCKED",
+          blocked: true,
+          message: "Your account is permanently banned due to multiple fraud attempts.",
+        });
+      }
+
       // Calculate effective booster multiplier
       let activeMultiplier = 1;
       if (userRecord.booster_expiry) {
@@ -1180,6 +1210,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (session.code)
         return res.status(400).json({ error: session.message });
 
+      // Link this session to the user record — server-side source of truth for claim validation
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        current_mining_session: session.id,
+      });
+
       const durationMs = dur * 60 * 1000;
       // Use PocketBase's server-assigned `created` timestamp as the canonical
       // start time. This is set by PB's own clock — completely tamper-proof.
@@ -1216,6 +1251,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     async (req: Request, res: Response) => {
       try {
         const { pbId } = req.params;
+
+        // Check account status before returning session data
+        const userCheck = await pbGet(`/api/collections/users/records/${pbId}?fields=id,status`);
+        if (!userCheck.code && userCheck.status === "blocked") {
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "Your account is permanently banned due to multiple fraud attempts.",
+          });
+        }
+
         const r = await pbGet(
           `/api/collections/mining_sessions/records?filter=${encodeURIComponent(`user="${pbId}" && claimed_amount=0`)}&sort=-start_time&perPage=1`,
         );
@@ -1255,33 +1301,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ── Mining: Claim ─────────────────────────────────────────────────────────
   // 100% server-authoritative. Client sends only sessionId + pbId.
-  // Server validates: session ownership, not-yet-claimed, time elapsed.
+  // Server validates via user.current_mining_session (tamper-proof), not client's sessionId.
   // Reward is calculated exclusively server-side — no client input trusted.
   app.post("/api/app/mine/claim", async (req: Request, res: Response) => {
     try {
       const { sessionId, pbId } = req.body;
-      if (!sessionId || !pbId)
-        return res.status(400).json({ error: "sessionId and pbId required" });
+      if (!pbId)
+        return res.status(400).json({ error: "pbId required" });
 
-      // Fetch session, settings, and user in parallel
-      const [session, settings, user] = await Promise.all([
-        pbGet(`/api/collections/mining_sessions/records/${sessionId}`),
-        fetchSettings(),
+      // Fetch user and settings first — user.current_mining_session is the canonical reference
+      const [user, settings] = await Promise.all([
         pbGet(`/api/collections/users/records/${pbId}`),
+        fetchSettings(),
       ]);
 
-      if (session.code) return res.status(404).json({ error: "Session not found" });
-      if (!settings) return res.status(503).json({ error: "Settings unavailable" });
       if (user.code) return res.status(404).json({ error: "User not found" });
+      if (!settings) return res.status(503).json({ error: "Settings unavailable" });
 
       // Guard 0: account must not be blocked
       if (user.status === "blocked") {
         return res.status(403).json({
           error: "ACCOUNT_BLOCKED",
           blocked: true,
-          message: "Your account has been suspended due to repeated time fraud attempts.",
+          message: "Your account is permanently banned due to multiple fraud attempts.",
         });
       }
+
+      // Use server's current_mining_session as canonical session ID.
+      // Client's sessionId is accepted only as fallback for legacy sessions.
+      const canonicalSessionId = user.current_mining_session || sessionId;
+      if (!canonicalSessionId)
+        return res.status(400).json({ error: "No active mining session found" });
+
+      const session = await pbGet(`/api/collections/mining_sessions/records/${canonicalSessionId}`);
+      if (session.code) return res.status(404).json({ error: "Session not found" });
 
       // Guard 1: session must belong to this user
       if (session.user !== pbId) {
@@ -1308,15 +1361,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const isBlocked = strikes >= 3;
         await pbPatch(`/api/collections/users/records/${pbId}`, {
           fraud_attempts: strikes,
-          ...(isBlocked ? { status: "blocked" } : {}),
+          ...(isBlocked ? { status: "blocked", current_mining_session: "" } : {}),
         });
         return res.status(400).json({
           error: "FRAUD_DETECTED",
           fraudAttempts: strikes,
           blocked: isBlocked,
           message: isBlocked
-            ? "Your account has been suspended due to repeated time fraud attempts."
-            : `Claim Rejected! Date & Time mismatch detected. Strike ${strikes}/3. Please use automatic date & time settings on your device.`,
+            ? "Your account is permanently banned due to multiple fraud attempts."
+            : `Strike ${strikes}/3! Fraud detected. Changing phone time is not allowed. 3 strikes = Permanent Ban.`,
         });
       }
 
@@ -1339,6 +1392,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         shib_balance: newShib,
         total_claims: newClaims,
+        current_mining_session: "",   // nullify — user can now start a fresh session
+        fraud_attempts: 0,            // reset strike counter after a legitimate claim
       });
 
       // 10% referral commission → goes into referral_balance (must be claimed)

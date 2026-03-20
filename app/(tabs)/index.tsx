@@ -410,15 +410,15 @@ export default function HomeScreen() {
       const errCode = e?.data?.error || '';
       if (errCode === 'ACCOUNT_BLOCKED') {
         Alert.alert(
-          'Account Suspended',
-          e?.data?.message || 'Your account has been suspended due to repeated time fraud attempts.',
+          'Account Permanently Banned',
+          e?.data?.message || 'Your account is permanently banned due to multiple fraud attempts.',
           [{ text: 'OK' }],
         );
       } else if (errCode === 'FRAUD_DETECTED') {
         const strikes = e?.data?.fraudAttempts ?? 0;
         const isBlocked = e?.data?.blocked ?? false;
         Alert.alert(
-          isBlocked ? 'Account Suspended' : `Time Fraud Detected — Strike ${strikes}/3`,
+          isBlocked ? 'Account Permanently Banned' : `Fraud Detected — Strike ${strikes}/3`,
           e?.data?.message || 'Claim rejected due to date/time mismatch.',
           [{ text: 'OK' }],
         );

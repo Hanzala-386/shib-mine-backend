@@ -362,11 +362,11 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       setDisplayedShibBalance(safe(rate * (elapsed / 1000), 0));
     }, 100);
 
-    // Re-sync clock drift every 5 minutes during active mining.
+    // Re-sync clock drift every 60 seconds during active mining.
     // This catches users who change device clock AFTER mining starts.
     driftSyncRef.current = setInterval(() => {
       syncClockDrift().catch(() => {});
-    }, 5 * 60 * 1000);
+    }, 60 * 1000);
   }
 
   // ── Public actions ─────────────────────────────────────────────────────────
