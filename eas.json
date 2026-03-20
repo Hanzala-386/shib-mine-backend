@@ -10,6 +10,9 @@
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleDebug"
+      },
+      "env": {
+        "EXPO_PUBLIC_DOMAIN": "api.webcod.in"
       }
     },
     "preview": {
@@ -18,16 +21,17 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "bd4b4866-f5eb-4c73-9079-f482b80c91a0-00-3ff7f1k27f90r.riker.replit.dev:5000"
+        "EXPO_PUBLIC_DOMAIN": "api.webcod.in"
       }
     },
     "production": {
       "autoIncrement": true,
+      "channel": "production",
       "android": {
-        "buildType": "apk"
+        "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "bd4b4866-f5eb-4c73-9079-f482b80c91a0-00-3ff7f1k27f90r.riker.replit.dev:5000"
+        "EXPO_PUBLIC_DOMAIN": "api.webcod.in"
       }
     }
   },
