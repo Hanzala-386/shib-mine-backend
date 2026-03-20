@@ -122,13 +122,13 @@ async function sendOtpEmail(to: string, otp: string) {
   });
 
   await transporter.sendMail({
-    from: `"SHIB Mine" <support@shibahit.com>`,
+    from: `"Shiba Hit" <support@shibahit.com>`,
     to,
-    subject: "Your SHIB Mine Account Deletion OTP",
-    text: `Your 6-digit security code is: ${otp}\n\nThis code will expire in 5 minutes.\nDo not share this code with anyone.\n\nIf you did not request this, ignore this email.\n\n— SHIB Mine Team\nsupport@shibahit.com`,
+    subject: "Your Shiba Hit Account Deletion OTP",
+    text: `Your 6-digit security code is: ${otp}\n\nThis code will expire in 5 minutes.\nDo not share this code with anyone.\n\nIf you did not request this, ignore this email.\n\n— Shiba Hit Team\nsupport@shibahit.com`,
     html: `
 <div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;background:#111;color:#fff;border-radius:16px;">
-  <h2 style="color:#FF6B00;margin:0 0 6px;font-size:22px;">SHIB Mine</h2>
+  <h2 style="color:#FF6B00;margin:0 0 6px;font-size:22px;">Shiba Hit</h2>
   <p style="color:#999;font-size:13px;margin:0 0 28px;">Account Deletion Request</p>
 
   <p style="color:#ccc;margin:0 0 20px;">Enter the code below inside the app to confirm your account deletion. <strong>Do not click any links</strong> — just type the digits.</p>
@@ -142,7 +142,7 @@ async function sendOtpEmail(to: string, otp: string) {
   <p style="color:#888;font-size:13px;margin:0 0 24px;">If you didn't request this, you can safely ignore this email — your account is safe.</p>
 
   <hr style="border:none;border-top:1px solid #222;margin:0 0 16px;"/>
-  <p style="color:#555;font-size:12px;margin:0;">SHIB Mine &nbsp;&bull;&nbsp; support@shibahit.com</p>
+  <p style="color:#555;font-size:12px;margin:0;">Shiba Hit &nbsp;&bull;&nbsp; support@shibahit.com</p>
 </div>`,
   });
 
@@ -752,6 +752,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error("[/api/app/auth/sync]", e.message);
       res.status(500).json({ error: "Sync failed" });
+    }
+  });
+
+  // ── Check if email exists in PocketBase (for Forgot Password validation) ─
+  app.post("/api/app/auth/check-email", async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+      if (!email) return res.status(400).json({ error: "email required" });
+      const r = await pbGet(
+        `/api/collections/users/records?filter=${encodeURIComponent(`email="${email}"`)}&perPage=1&fields=id,is_verified`,
+      );
+      const found = !!(r.items?.[0]);
+      const verified = found && r.items[0].is_verified;
+      return res.json({ found, verified });
+    } catch (e: any) {
+      console.error("[/api/app/auth/check-email]", e.message);
+      return res.status(500).json({ error: "Failed to check email" });
     }
   });
 

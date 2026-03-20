@@ -9,6 +9,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { router } from 'expo-router';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import Colors from '@/constants/colors';
@@ -107,7 +108,7 @@ const sBar = StyleSheet.create({
 
 /* ── T&C Modal content ── */
 const TC_CONTENT = `1. Platform Nature
-SHIB Mine is a gamified engagement and rewards platform. No device hardware is used for cryptocurrency mining. Virtual SHIB tokens are earned through in-app sessions, rewarded ads, and mini-games.
+Shiba Hit is a gamified engagement and rewards platform. No device hardware is used for cryptocurrency mining. Virtual SHIB tokens are earned through in-app sessions, rewarded ads, and mini-games.
 
 2. Data Collection
 We collect your email address and display name for account management. We do not collect payment data or government ID.
@@ -135,7 +136,7 @@ By creating an account, you confirm you have read and agree to our full Privacy 
 /* ══════════════════════════════════════════════════════════════════════════ */
 export default function AuthScreen() {
   const insets = useSafeAreaInsets();
-  const { signIn, signUp, forgotPassword, resendVerificationEmail } = useAuth();
+  const { signIn, signUp, resendVerificationEmail } = useAuth();
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -283,14 +284,9 @@ export default function AuthScreen() {
     }
   }
 
-  async function handleForgotPassword() {
-    if (!email.trim()) { setErrorMsg('Enter your email address first.'); return; }
-    try {
-      await forgotPassword(email.trim());
-      Alert.alert('Sent', 'Password reset link sent to your email.');
-    } catch (e: any) {
-      setErrorMsg(e?.message || 'Could not send reset email.');
-    }
+  function handleForgotPassword() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    router.push('/forgot-password' as any);
   }
 
   const canContinueTerms = termsScrolled && termsChecked;
@@ -310,7 +306,7 @@ export default function AuthScreen() {
             <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.logoCircle}>
               <MaterialCommunityIcons name="pickaxe" size={36} color="#000" />
             </LinearGradient>
-            <Text style={styles.appName}>SHIB Mine</Text>
+            <Text style={styles.appName}>Shiba Hit</Text>
             <Text style={styles.tagline}>Mine. Earn. Grow.</Text>
           </View>
 

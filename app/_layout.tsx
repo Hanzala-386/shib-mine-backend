@@ -56,6 +56,7 @@ function RootLayoutNav() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="auth" />
         <Stack.Screen name="verify-email" />
+        <Stack.Screen name="forgot-password" />
         <Stack.Screen name="admin" options={{ presentation: "modal" }} />
         <Stack.Screen name="privacy" options={{ headerShown: false }} />
         <Stack.Screen name="terms" options={{ headerShown: false }} />

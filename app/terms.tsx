@@ -8,11 +8,11 @@ import Colors from '@/constants/colors';
 const SECTIONS = [
   {
     title: '1. Acceptance of Terms',
-    body: `By downloading, installing, or using the SHIB Mine application ("the App"), you agree to be bound by these Terms of Service. If you do not agree, do not use the App.`,
+    body: `By downloading, installing, or using the Shiba Hit application ("the App"), you agree to be bound by these Terms of Service. If you do not agree, do not use the App.`,
   },
   {
     title: '2. Nature of the Platform',
-    body: `SHIB Mine is a gamified engagement and rewards platform. It is NOT a cryptocurrency mining service. No device hardware is used for mining. Virtual SHIB tokens are earned through:\n\n• Completing timed in-app engagement sessions.\n• Watching rewarded video advertisements.\n• Participating in in-app mini-games.\n• Referring new users via the referral program.\n\nVirtual rewards do not constitute real cryptocurrency and have no direct monetary value until explicitly approved through our withdrawal reward model.`,
+    body: `Shiba Hit is a gamified engagement and rewards platform. It is NOT a cryptocurrency mining service. No device hardware is used for mining. Virtual SHIB tokens are earned through:\n\n• Completing timed in-app engagement sessions.\n• Watching rewarded video advertisements.\n• Participating in in-app mini-games.\n• Referring new users via the referral program.\n\nVirtual rewards do not constitute real cryptocurrency and have no direct monetary value until explicitly approved through our withdrawal reward model.`,
   },
   {
     title: '3. Eligibility',
@@ -48,7 +48,7 @@ const SECTIONS = [
   },
   {
     title: '11. Fraud Prevention & Account Blacklisting',
-    body: `To protect the integrity of our platform and prevent abuse, we operate a permanent email blacklist for deleted accounts.\n\nUpon account deletion:\n\n• Your registered email address is permanently recorded in a blacklist database before your account data is erased.\n• The blacklisted email address cannot be used to register a new SHIB Mine account, ever.\n• This restriction cannot be reversed or appealed.\n\nThis policy exists to prevent fraudulent exploitation of welcome bonuses (100 SHIB + 500 PT), referral rewards, and withdrawal thresholds. By using this App, you explicitly consent to and acknowledge this policy.\n\nAttempting to circumvent this restriction — through email aliasing, new Firebase accounts, temporary email providers, or any other means — constitutes a material breach of these Terms and will result in permanent ban of all associated accounts.`,
+    body: `To protect the integrity of our platform and prevent abuse, we operate a permanent email blacklist for deleted accounts.\n\nUpon account deletion:\n\n• Your registered email address is permanently recorded in a blacklist database before your account data is erased.\n• The blacklisted email address cannot be used to register a new Shiba Hit account, ever.\n• This restriction cannot be reversed or appealed.\n\nThis policy exists to prevent fraudulent exploitation of welcome bonuses (100 SHIB + 500 PT), referral rewards, and withdrawal thresholds. By using this App, you explicitly consent to and acknowledge this policy.\n\nAttempting to circumvent this restriction — through email aliasing, new Firebase accounts, temporary email providers, or any other means — constitutes a material breach of these Terms and will result in permanent ban of all associated accounts.`,
   },
   {
     title: '12. Changes to Terms',

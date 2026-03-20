@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "SHIB Mine",
+    "name": "Shiba Hit",
     "slug": "shib-mine",
     "owner": "hanzalasha",
     "version": "1.0.0",
@@ -12,7 +12,7 @@
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0a1628"
     },
     "ios": {
       "supportsTablet": false,

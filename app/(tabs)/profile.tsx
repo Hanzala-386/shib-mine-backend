@@ -29,7 +29,7 @@ import Colors from '@/constants/colors';
 
 const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
-const APP_NAME    = 'SHIB Mine';
+const APP_NAME    = 'Shiba Hit';
 
 /* ── helpers ── */
 function formatShib(val: number) {
@@ -739,9 +739,9 @@ export default function ProfileScreen() {
               <Text style={styles.versionNum}>Version {APP_VERSION}</Text>
               <View style={styles.versionDivider} />
               <Text style={styles.versionAbout}>
-                SHIB Mine is a gamified engagement platform that rewards users with virtual SHIB tokens through timed sessions, mini-games, and rewarded ads.{'\n\n'}No device hardware is used for cryptocurrency mining. All rewards are virtual and processed through our reward model.
+                Shiba Hit is a gamified engagement platform that rewards users with virtual SHIB tokens through timed sessions, mini-games, and rewarded ads.{'\n\n'}No device hardware is used for cryptocurrency mining. All rewards are virtual and processed through our reward model.
               </Text>
-              <Text style={styles.versionCopy}>© 2026 SHIB Mine. All rights reserved.</Text>
+              <Text style={styles.versionCopy}>© 2026 Shiba Hit. All rights reserved.</Text>
               <Pressable style={styles.versionClose} onPress={() => setShowVersion(false)}>
                 <Text style={styles.versionCloseText}>Close</Text>
               </Pressable>

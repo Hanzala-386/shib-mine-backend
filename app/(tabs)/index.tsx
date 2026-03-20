@@ -853,7 +853,7 @@ export default function HomeScreen() {
           <Pressable style={rateStyles.card} onPress={(e) => e.stopPropagation()}>
             <LinearGradient colors={['rgba(244,196,48,0.18)', 'rgba(20,14,8,0.98)']} style={rateStyles.gradient}>
               <Text style={rateStyles.stars}>⭐⭐⭐⭐⭐</Text>
-              <Text style={rateStyles.title}>Loving SHIB Mine?</Text>
+              <Text style={rateStyles.title}>Loving Shiba Hit?</Text>
               <Text style={rateStyles.subtitle}>Help us grow by leaving a quick rating on the store!</Text>
               <Pressable
                 style={rateStyles.rateBtn}

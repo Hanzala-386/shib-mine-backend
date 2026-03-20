@@ -1,4 +1,4 @@
-# SHIB Mine - Crypto Mining App
+# Shiba Hit - Crypto Mining App
 
 ## Overview
 A gold & neon orange glassmorphism React Native mobile app for mining SHIB cryptocurrency. Users earn SHIB tokens through 60-minute mining sessions and Power Tokens through a Knife Hit mini-game. Built with Firebase Auth + PocketBase backend and Expo Router.

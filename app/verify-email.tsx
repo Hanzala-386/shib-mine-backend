@@ -98,7 +98,7 @@ export default function VerifyEmailScreen() {
         </Text>
 
         <View style={styles.stepsCard}>
-          <StepRow number="1" text="Open the email from SHIB Mine" />
+          <StepRow number="1" text="Open the email from Shiba Hit" />
           <StepRow number="2" text="Click the verification link" />
           <StepRow number="3" text={"Tap \"I've verified\" below"} />
           <View style={styles.spamNote}>

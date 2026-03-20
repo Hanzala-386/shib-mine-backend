@@ -42,8 +42,8 @@ export default function InviteScreen() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       await Share.share({
-        message: `Join me on SHIB Mine and earn crypto by mining! Use my referral code: ${referralCode}\n\nDownload now and start mining SHIB tokens! 🚀`,
-        title: 'Join SHIB Mine',
+        message: `Join me on Shiba Hit and earn crypto by mining! Use my referral code: ${referralCode}\n\nDownload now and start earning SHIB tokens! 🚀`,
+        title: 'Join Shiba Hit',
       });
     } catch (e) {
       console.error('Share error', e);
