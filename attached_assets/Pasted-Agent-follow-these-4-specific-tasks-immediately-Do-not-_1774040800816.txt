@@ -1,0 +1,43 @@
+Agent, follow these 4 specific tasks immediately. Do not add any extra features or changes outside of this list.
+
+TASK 1: Professional 'Forgot Password' Flow
+
+Currently, the forgot password process is too silent. I need a dedicated, professional-looking Forgot Password Page.
+
+The Flow:
+
+When a user clicks 'Forgot Password' on the login screen, redirect them to this new page.
+
+The page should have an Email Input field and a 'Send Reset Link' button.
+
+Database Validation: When the user enters their email and clicks 'Send', the app must first verify if that email exists in our database.
+
+Action: If the email is found and verified, send the Firebase reset link and show a clear, beautiful success message: 'Reset link sent successfully! Please check your inbox.'
+
+If the email is not found, show a proper error: 'This email is not registered with us.'
+
+TASK 2: App Branding & Name Change
+
+Change the official name of the app from 'Shiba Mine' to 'Shiba Hit'.
+
+This change must be reflected in AndroidManifest.xml, strings.xml, Info.plist, and any UI headers within the app.
+
+TASK 3: App Icon & Splash Screen Implementation
+
+I am providing an image (Size: 2048x2048). You must use this exact image for:
+
+App Icon: Generate all necessary sizes for Android/iOS launchers.
+
+Splash Screen: Use this same icon/logo on the loading screen (Splash Screen) that appears when the app is opened. Ensure it is perfectly centered and looks professional.
+
+TASK 4: Environment & Build Recommendations
+
+Since this is a React Native project, I need your expert recommendation to avoid build errors:
+
+Which Android Studio version is best suited for this specific code?
+
+Which JDK version and Android SDK version have you used or do you recommend for a stable APK build?
+
+Provide the exact versions so I can set up my environment without any 'Build Failed' errors.
+
+Note: Use the provided 2048x2048 image for the icon and splash screen tasks. Do not modify any other logic like OTP or Verification as they are working fine.
