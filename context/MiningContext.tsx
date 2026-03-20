@@ -477,12 +477,18 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       return safe(res?.reward, 0);
     } catch (e: any) {
-      // e.data is now populated by lib/api.ts (see request() function)
+      // e.data is populated by lib/api.ts request() — see err.data = data
       const errCode = e?.data?.error || '';
       if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED') {
-        // Session state is intentionally preserved so the UI remains visible
-        // during the strike warning. The account-blocked path will clear it
-        // via signOut() in AuthContext.
+        // Server has already expired the session and nullified current_mining_session.
+        // Clear local state too — UI resets to "Start Mining", forcing user to wait a full hour again.
+        clearAllTimers();
+        setTimeRemaining(0);
+        setElapsedMs(0);
+        setDisplayedShibBalance(0);
+        setSession(null);
+        sessionRef.current = null;
+        if (currentCacheKey) await storage.removeItem(currentCacheKey);
         throw e;
       }
       console.warn('[Mining] claimReward error:', e?.message);

@@ -1005,7 +1005,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({
           error: "ACCOUNT_BLOCKED",
           blocked: true,
-          message: "Account Blocked! You have exceeded the limit of fraud attempts.",
+          message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
         });
       }
 
@@ -1152,7 +1152,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({
           error: "ACCOUNT_BLOCKED",
           blocked: true,
-          message: "Account Blocked! You have exceeded the limit of fraud attempts.",
+          message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
         });
       }
 
@@ -1258,7 +1258,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(403).json({
             error: "ACCOUNT_BLOCKED",
             blocked: true,
-            message: "Account Blocked! You have exceeded the limit of fraud attempts.",
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
           });
         }
 
@@ -1323,7 +1323,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({
           error: "ACCOUNT_BLOCKED",
           blocked: true,
-          message: "Account Blocked! You have exceeded the limit of fraud attempts.",
+          message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
         });
       }
 
@@ -1356,21 +1356,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const durationSec = (settings.mining_duration_minutes || 60) * 60;
       const elapsed = Date.now() - startMs;
       if (elapsed < durationSec * 1000) {
-        // 3-strike fraud detection
+        // ── 3-strike fraud detection ──────────────────────────────────────────
         const strikes = (user.fraud_attempts || 0) + 1;
         const isBlocked = strikes >= 3;
+
+        // 1. Expire the fraud session immediately — user must restart from scratch.
+        //    claimed_amount = -1 is the "expired/voided" sentinel used throughout the app.
+        await pbPatch(`/api/collections/mining_sessions/records/${session.id}`, {
+          claimed_amount: -1,
+        });
+
+        // 2. Update user: increment strike count, always nullify current session,
+        //    and set status = 'blocked' on the 3rd strike.
         await pbPatch(`/api/collections/users/records/${pbId}`, {
           fraud_attempts: strikes,
-          ...(isBlocked ? { status: "blocked", current_mining_session: "" } : {}),
+          current_mining_session: "",          // always clear — forces fresh start
+          ...(isBlocked ? { status: "blocked" } : {}),
         });
+
         const strikesLeft = 3 - strikes;
         return res.status(400).json({
           error: "FRAUD_DETECTED",
           fraudAttempts: strikes,
           blocked: isBlocked,
           message: isBlocked
-            ? "Account Blocked! You have exceeded the limit of fraud attempts."
-            : `Warning! Fraud detected (Phone clock manipulation). You have ${strikesLeft} strike${strikesLeft === 1 ? "" : "s"} left before a permanent ban.`,
+            ? "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts."
+            : `Cheat Detected! Your phone time does not match our server. This is Strike ${strikes}/3. Your mining progress has been reset. 3 strikes = Permanent Ban.`,
         });
       }
 

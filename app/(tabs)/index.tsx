@@ -415,24 +415,24 @@ export default function HomeScreen() {
         const isBlocked = e?.data?.blocked ?? false;
 
         if (isBlocked) {
-          // Strike 3 → account blocked — sign user out after they dismiss the alert
+          // Strike 3 — account permanently blocked, sign out on dismiss
           Alert.alert(
-            'Account Blocked!',
-            serverMsg || 'You have exceeded the limit of fraud attempts.',
+            'ACCOUNT BANNED!',
+            serverMsg || 'Your account has been permanently disabled due to multiple fraud attempts.',
             [{ text: 'OK', onPress: () => signOut?.() }],
           );
         } else {
-          const strikesLeft = 3 - strikes;
+          // Strike 1 or 2 — session has been reset, user must mine again from scratch
           Alert.alert(
-            `⚠️ Warning! Strike ${strikes}/3`,
-            serverMsg || `Fraud detected (Phone clock manipulation). You have ${strikesLeft} strike${strikesLeft === 1 ? '' : 's'} left before a permanent ban.`,
+            `🚨 Cheat Detected! Strike ${strikes}/3`,
+            serverMsg || `Your phone time does not match our server. This is Strike ${strikes}/3. Your mining progress has been reset. 3 strikes = Permanent Ban.`,
             [{ text: 'OK' }],
           );
         }
       } else if (errCode === 'ACCOUNT_BLOCKED') {
         Alert.alert(
-          'Account Blocked!',
-          serverMsg || 'You have exceeded the limit of fraud attempts.',
+          'ACCOUNT BANNED!',
+          serverMsg || 'Your account has been permanently disabled due to multiple fraud attempts.',
           [{ text: 'OK', onPress: () => signOut?.() }],
         );
       } else {

@@ -284,7 +284,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const pb = await api.getUser(fbUser.uid).catch(() => null);
       if (pb) {
         if (pb.status === 'blocked') {
-          Alert.alert('Account Blocked!', 'You have exceeded the limit of fraud attempts.');
+          Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
           await signOut(); return;
         }
         if (pb.is_verified) {
@@ -303,7 +303,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (pb) {
         // Sign out blocked accounts immediately
         if (pb.status === 'blocked') {
-          Alert.alert('Account Blocked!', 'You have exceeded the limit of fraud attempts.');
+          Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
           await signOut();
           return;
         }
