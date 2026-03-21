@@ -70,6 +70,7 @@ export default function GamesScreen() {
   const [sessionTime,   setSessionTime]   = useState(SESSION_SECONDS);
   const [sessionActive, setSessionActive] = useState(false);
   const [overReason,    setOverReason]    = useState<GameOverReason>('death');
+  const [gameError,     setGameError]     = useState(false);
 
   const TOP    = Platform.OS === 'web' ? 10 : insets.top;
   const HUDTOP = TOP + 4;
@@ -387,8 +388,9 @@ export default function GamesScreen() {
             </Text>
           </View>
         )}
-        onHttpError={(e) => {
-          console.warn('[Games] WebView HTTP error:', e.nativeEvent.statusCode, GAME_URL);
+        onHttpError={(e: any) => {
+          console.warn('[Games] WebView HTTP error:', e.nativeEvent?.statusCode, GAME_URL);
+          setGameError(true);
         }}
         containerStyle={{ flex: 1 }} />
     );
@@ -407,6 +409,21 @@ export default function GamesScreen() {
   return (
     <View style={S.root}>
       {renderGame()}
+
+      {/* ── Game unavailable overlay (HTTP error / 404) ── */}
+      {gameError && (
+        <View style={S.errorOverlay}>
+          <Ionicons name="game-controller-outline" size={64} color={Colors.neonOrange} />
+          <Text style={S.errorTitle}>Game Unavailable</Text>
+          <Text style={S.errorSub}>The game server is temporarily offline.{'\n'}Try again soon!</Text>
+          <Pressable
+            style={S.errorBtn}
+            onPress={() => { setGameError(false); wvRef.current?.reload?.(); }}
+          >
+            <Text style={S.errorBtnTxt}>Retry</Text>
+          </Pressable>
+        </View>
+      )}
 
       {/* ── PT badge (top-right, always visible) ── */}
       <View style={[S.ptBadge, { top: HUDTOP }]} pointerEvents="none">
@@ -563,6 +580,13 @@ const S = StyleSheet.create({
   root:      { flex: 1, backgroundColor: '#000' },
   loader:    { ...StyleSheet.absoluteFillObject, backgroundColor: '#0a1f1c', alignItems: 'center', justifyContent: 'center', gap: 12 },
   loaderTxt: { color: Colors.textMuted, fontFamily: 'Inter_500Medium', fontSize: 14 },
+
+  /* Game error overlay */
+  errorOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: '#0a1f1c', alignItems: 'center', justifyContent: 'center', gap: 14, zIndex: 200, paddingHorizontal: 32 },
+  errorTitle:   { fontFamily: 'Inter_700Bold', fontSize: 22, color: '#fff' },
+  errorSub:     { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textMuted, textAlign: 'center', lineHeight: 22 },
+  errorBtn:     { marginTop: 8, paddingHorizontal: 40, paddingVertical: 12, backgroundColor: Colors.neonOrange, borderRadius: 24 },
+  errorBtnTxt:  { fontFamily: 'Inter_700Bold', fontSize: 15, color: '#fff' },
 
   /* PT badge — top-right */
   ptBadge: { position: 'absolute', right: 14, flexDirection: 'row', alignItems: 'center', gap: 5,

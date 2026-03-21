@@ -1018,7 +1018,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
         power_tokens: user.power_tokens - cost,
         active_booster_multiplier: multiplier,
-        booster_expiry: expiresAt,
+        booster_expires: expiresAt,
       });
 
       if (updated.code) return res.status(400).json({ error: updated.message });
@@ -1090,7 +1090,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         power_tokens: currentPT - totalCost,
         active_booster_multiplier: multiplier,
-        booster_expiry: boosterExpiresAt,
+        booster_expires: boosterExpiresAt,
       });
 
       // 2. Expire any existing unclaimed sessions
@@ -1160,19 +1160,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const user = await pbGet(`/api/collections/users/records/${pbId}`);
         if (user.code) return res.status(404).json({ error: "User not found" });
 
-        const expires = user.booster_expiry ? parseInt(user.booster_expiry) : 0;
+        const expires = user.booster_expires ? parseInt(user.booster_expires) : 0;
         if (expires > Date.now()) {
           return res.json({
             multiplier: user.active_booster_multiplier || 1,
-            expiresAt: user.booster_expiry,
+            expiresAt: user.booster_expires,
           });
         }
 
         // Auto-clear expired booster fields if they were set
-        if (user.active_booster_multiplier !== 1 || user.booster_expiry) {
+        if (user.active_booster_multiplier !== 1 || user.booster_expires) {
           await pbPatch(`/api/collections/users/records/${pbId}`, {
             active_booster_multiplier: 1,
-            booster_expiry: "",
+            booster_expires: "",
           });
         }
 
@@ -1224,8 +1224,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Calculate effective booster multiplier
       let activeMultiplier = 1;
-      if (userRecord.booster_expiry) {
-        const expires = parseInt(userRecord.booster_expiry);
+      if (userRecord.booster_expires) {
+        const expires = parseInt(userRecord.booster_expires);
         if (expires > Date.now()) {
           activeMultiplier = userRecord.active_booster_multiplier || 1;
         }
@@ -2205,7 +2205,7 @@ function formatUser(u: any) {
     is_verified: !!u.is_verified,
     isVerified: !!u.is_verified,
     activeBoosterMultiplier: u.active_booster_multiplier || 1,
-    boosterExpires: u.booster_expiry || "",
+    boosterExpires: u.booster_expires || "",
     fraudAttempts: u.fraud_attempts || 0,
     status: u.status || "",
     created: u.created,

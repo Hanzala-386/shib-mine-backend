@@ -38,8 +38,8 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
 - `active_booster_multiplier` (number), `booster_expires` (text) — booster state
 
 ### mining_sessions collection
-- `user_id`, `start_time`, `duration_ms`, `status`, `expected_reward`
-- `booster_multiplier` (number) — stored at mine start, used at claim
+- `user` (relation to users), `start_time` (date), `claimed_amount` (number), `booster_multiplier` (number), `is_verified` (bool), `ip_address` (text)
+- NO `status`, `duration`, or `reward` fields — status is derived from `claimed_amount === 0`
 
 ### settings collection
 - All admin-configurable values: mining rates, booster costs, ad IDs, withdrawal tiers
@@ -100,6 +100,19 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 - `app/(tabs)/wallet.tsx` — Wallet with BEP-20 + Binance Email withdrawal
 - `app/(tabs)/profile.tsx` — Profile with admin access
 - `server/routes.ts` — All Express routes including OTP, boosters, mining
+
+## CRITICAL: Backend Architecture
+- **Express (port 5000)** runs ONLY in Replit dev environment. `api.webcod.in` hosts PocketBase ONLY.
+- All `/api/app/*` routes return 404 on the published APK. Every Express call MUST have a PocketBase SDK fallback.
+- **PB password pattern**: `SHIB_${firebaseUid}_SECURE` — used for direct PB auth
+- **Auth flow**: Firebase → `confirmAndLoadUser` tries Express → falls back to `pbDirectLogin` → saves PB token to AsyncStorage → restored on next startup
+- **Mining flow**: `startMining`/`claimReward`/`activateBooster`/`startMiningWithBooster` try Express → fall back to direct PB SDK calls
+
+## Tab Bar Layout
+- **Custom tabBar** in `app/(tabs)/_layout.tsx` renders banner ABOVE tab buttons in one absolutely-positioned container
+- Layout from bottom up: `[safe area] [tab buttons ~56px] [banner ~50px] [screen content]`
+- React Navigation measures the combined height and applies correct screen content paddingBottom automatically
+- `StickyBannerAd.tsx` exports `InlineBannerAd` (inline, no absolute positioning) and `BANNER_HEIGHT=50`
 
 ## Ports
 - Frontend (Expo): 8081

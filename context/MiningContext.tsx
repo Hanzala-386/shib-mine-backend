@@ -6,6 +6,186 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
+import { pb } from '@/lib/pocketbase';
+
+// ── PocketBase direct mining (fallback when Express is unreachable) ──────────
+// Mining sessions schema: user (relation), start_time (date),
+// claimed_amount (number), booster_multiplier (number), is_verified (bool)
+
+const PB_DURATION_MS = 60 * 60 * 1000; // 60 minutes
+
+async function pbStartMining(
+  pbId: string,
+  multiplier: number,
+  miningRatePerSec: number,
+  entryCost: number,
+): Promise<{ id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; expectedReward: number; newPowerTokens: number; serverTime: number; miningRatePerSec: number }> {
+  const user = await pb.collection('users').getOne(pbId);
+  const currentPt = Number(user.power_tokens) || 0;
+  if (currentPt < entryCost) throw new Error(`Not enough Power Tokens. Need ${entryCost} PT.`);
+
+  // Deduct PT first (optimistic; session creation may still fail)
+  await pb.collection('users').update(pbId, { power_tokens: currentPt - entryCost });
+
+  const now = new Date();
+  const session = await pb.collection('mining_sessions').create({
+    user: pbId,
+    start_time: now.toISOString(),
+    booster_multiplier: multiplier,
+    claimed_amount: 0,
+    is_verified: false,
+  });
+
+  await pb.collection('users').update(pbId, { current_mining_session: session.id });
+
+  const startTimeMs = now.getTime();
+  return {
+    id: session.id,
+    startTimeMs,
+    endTimeMs: startTimeMs + PB_DURATION_MS,
+    durationMs: PB_DURATION_MS,
+    multiplier,
+    expectedReward: miningRatePerSec * (PB_DURATION_MS / 1000) * multiplier,
+    newPowerTokens: currentPt - entryCost,
+    serverTime: Date.now(),
+    miningRatePerSec,
+  };
+}
+
+async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; serverTime: number } }> {
+  try {
+    const user = await pb.collection('users').getOne(pbId);
+    const sessionId = user.current_mining_session;
+    if (!sessionId) return { session: null };
+
+    const s = await pb.collection('mining_sessions').getOne(sessionId);
+    if ((Number(s.claimed_amount) || 0) > 0) {
+      // already claimed — clear the reference
+      await pb.collection('users').update(pbId, { current_mining_session: null }).catch(() => {});
+      return { session: null };
+    }
+
+    const startTimeMs = new Date(s.start_time).getTime();
+    return {
+      session: {
+        id: s.id,
+        startTimeMs,
+        endTimeMs: startTimeMs + PB_DURATION_MS,
+        durationMs: PB_DURATION_MS,
+        multiplier: Number(s.booster_multiplier) || 1,
+        serverTime: Date.now(),
+      },
+    };
+  } catch {
+    return { session: null };
+  }
+}
+
+async function pbClaimMining(
+  sessionId: string,
+  pbId: string,
+  miningRatePerSec: number,
+): Promise<{ reward: number }> {
+  const s = await pb.collection('mining_sessions').getOne(sessionId);
+  if ((Number(s.claimed_amount) || 0) > 0) throw new Error('Session already claimed.');
+
+  const startTimeMs = new Date(s.start_time).getTime();
+  const multiplier = Number(s.booster_multiplier) || 1;
+  const elapsedMs = Math.min(Date.now() - startTimeMs, PB_DURATION_MS);
+  const reward = miningRatePerSec * (elapsedMs / 1000) * multiplier;
+
+  await pb.collection('mining_sessions').update(sessionId, {
+    claimed_amount: reward,
+    is_verified: true,
+  });
+
+  const user = await pb.collection('users').getOne(pbId);
+  await pb.collection('users').update(pbId, {
+    shib_balance: (Number(user.shib_balance) || 0) + reward,
+    total_claims: (Number(user.total_claims) || 0) + 1,
+    current_mining_session: null,
+  });
+
+  // Referral commission (10%) — best-effort, may fail if referred_by user has different rule
+  if (user.referred_by && reward > 0) {
+    try {
+      const referrer = await pb.collection('users').getFirstListItem(
+        `referral_code="${user.referred_by}"`,
+      );
+      const commission = reward * 0.1;
+      await pb.collection('users').update(referrer.id, {
+        shib_balance: (Number(referrer.shib_balance) || 0) + commission,
+        referral_balance: (Number(referrer.referral_balance) || 0) + commission,
+        referral_earnings: (Number(referrer.referral_earnings) || 0) + commission,
+      }).catch(() => {});
+    } catch { /* non-critical */ }
+  }
+
+  return { reward };
+}
+
+async function pbActivateBooster(
+  pbId: string,
+  multiplier: number,
+  boosterCost: number,
+): Promise<{ success: boolean; multiplier: number; expiresAt: number }> {
+  const user = await pb.collection('users').getOne(pbId);
+  const currentPt = Number(user.power_tokens) || 0;
+  if (currentPt < boosterCost) throw new Error(`Not enough Power Tokens. Need ${boosterCost} PT.`);
+
+  const expiresAt = Date.now() + 3600000; // 1 hour
+  await pb.collection('users').update(pbId, {
+    power_tokens: currentPt - boosterCost,
+    active_booster_multiplier: multiplier,
+    booster_expires: String(expiresAt),
+  });
+
+  return { success: true, multiplier, expiresAt };
+}
+
+async function pbActivateAndMine(
+  pbId: string,
+  multiplier: number,
+  miningRatePerSec: number,
+  miningCost: number,
+  boosterCost: number,
+): Promise<{ id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; boosterExpiresAt: number; expectedReward: number; newPowerTokens: number; serverTime: number; miningRatePerSec: number }> {
+  const totalCost = miningCost + boosterCost;
+  const user = await pb.collection('users').getOne(pbId);
+  const currentPt = Number(user.power_tokens) || 0;
+  if (currentPt < totalCost) throw new Error(`Not enough Power Tokens. Need ${totalCost} PT.`);
+
+  const expiresAt = Date.now() + 3600000; // booster active 1 hour
+  await pb.collection('users').update(pbId, {
+    power_tokens: currentPt - totalCost,
+    active_booster_multiplier: multiplier,
+    booster_expires: String(expiresAt),
+  });
+
+  const now = new Date();
+  const session = await pb.collection('mining_sessions').create({
+    user: pbId,
+    start_time: now.toISOString(),
+    booster_multiplier: multiplier,
+    claimed_amount: 0,
+    is_verified: false,
+  });
+  await pb.collection('users').update(pbId, { current_mining_session: session.id });
+
+  const startTimeMs = now.getTime();
+  return {
+    id: session.id,
+    startTimeMs,
+    endTimeMs: startTimeMs + PB_DURATION_MS,
+    durationMs: PB_DURATION_MS,
+    multiplier,
+    boosterExpiresAt: expiresAt,
+    expectedReward: miningRatePerSec * (PB_DURATION_MS / 1000) * multiplier,
+    newPowerTokens: currentPt - totalCost,
+    serverTime: Date.now(),
+    miningRatePerSec,
+  };
+}
 
 const SESSIONS_COUNT_KEY = 'shib_mine_sessions_v1';
 const RATED_APP_KEY = 'shib_app_rated';
@@ -240,7 +420,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      // No local cache — fetch from server
+      // No local cache — fetch from server (Express then PB fallback)
       if (currentPbId) {
         await fetchFromServer(currentPbId, currentCacheKey);
       }
@@ -270,7 +450,13 @@ export function MiningProvider({ children }: { children: ReactNode }) {
   }
 
   async function fetchFromServer(currentPbId: string, currentCacheKey: string | null) {
-    const res = await api.getActiveMining(currentPbId);
+    // Try Express backend first, then fall back to PocketBase direct
+    let res: any;
+    try {
+      res = await api.getActiveMining(currentPbId);
+    } catch {
+      res = await pbGetActiveMining(currentPbId);
+    }
     if (res?.session) {
       const s = res.session;
       // Sync clock drift from server's response time — free, no extra round-trip
@@ -382,7 +568,13 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     clearAllTimers();
 
     try {
-      const res = await api.startMining({ pbId: currentPbId, multiplier });
+      let res: any;
+      try {
+        res = await api.startMining({ pbId: currentPbId, multiplier });
+      } catch {
+        // Express unreachable — use PocketBase direct
+        res = await pbStartMining(currentPbId, multiplier, miningRateRef.current, miningEntryCost);
+      }
 
       // Sync clock drift immediately from the server response
       if (res?.serverTime && isFinite(res.serverTime)) {
@@ -444,7 +636,16 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     // ────────────────────────────────────────────────────────────────────────
 
     try {
-      const res = await api.claimMining({ sessionId: s.pbSessionId, pbId: currentPbId });
+      let res: any;
+      try {
+        res = await api.claimMining({ sessionId: s.pbSessionId!, pbId: currentPbId });
+      } catch (expressErr: any) {
+        const errCode = expressErr?.data?.error || '';
+        const isHardBlock = errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED';
+        if (isHardBlock) throw expressErr; // don't fall through on fraud
+        // Express unreachable — use PocketBase direct
+        res = await pbClaimMining(s.pbSessionId!, currentPbId, miningRateRef.current);
+      }
 
       // ── Success: now safe to wipe local session state ──────────────────
       clearAllTimers();
@@ -508,9 +709,22 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     const currentPbId = pbIdRef.current;
     if (!currentPbId) return { success: false, error: 'Account not ready. Please wait.' };
     try {
-      const res = await api.activateBooster({ pbId: currentPbId, multiplier });
+      let res: any;
+      try {
+        res = await api.activateBooster({ pbId: currentPbId, multiplier });
+      } catch {
+        // Express unreachable — fetch booster cost from settings then use PB direct
+        const settings = await api.getSettings().catch(() => null);
+        const costMap: Record<number, number> = {
+          2: safe(settings?.boostCosts?.['2x'], 48),
+          4: safe(settings?.boostCosts?.['4x'], 96),
+          6: safe(settings?.boostCosts?.['6x'], 144),
+          10: safe(settings?.boostCosts?.['10x'], 240),
+        };
+        res = await pbActivateBooster(currentPbId, multiplier, costMap[multiplier] ?? 96);
+      }
       if (res?.success) {
-        const expiresAt = parseBoosterTs(res.expiresAt);
+        const expiresAt = parseBoosterTs(res.expiresAt ?? res.boosterExpiresAt);
         const newBooster = { multiplier: safe(res.multiplier, multiplier), expiresAt };
         setActiveBooster(newBooster);
         activeBoosterRef.current = newBooster;
@@ -533,7 +747,24 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     clearAllTimers();
 
     try {
-      const res = await api.activateAndMine({ pbId: currentPbId, multiplier });
+      let res: any;
+      try {
+        res = await api.activateAndMine({ pbId: currentPbId, multiplier });
+      } catch {
+        // Express unreachable — fetch costs from settings then use PB direct
+        const settings = await api.getSettings().catch(() => null);
+        const costMap: Record<number, number> = {
+          2: safe(settings?.boostCosts?.['2x'], 48),
+          4: safe(settings?.boostCosts?.['4x'], 96),
+          6: safe(settings?.boostCosts?.['6x'], 144),
+          10: safe(settings?.boostCosts?.['10x'], 240),
+        };
+        const boosterCost = costMap[multiplier] ?? 96;
+        const miningCost = miningEntryCost;
+        res = await pbActivateAndMine(
+          currentPbId, multiplier, miningRateRef.current, miningCost, boosterCost,
+        );
+      }
 
       // Sync clock drift from server response
       if (res?.serverTime && isFinite(res.serverTime)) {

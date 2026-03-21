@@ -88,11 +88,36 @@ function formatRawPbUser(u: any): PBUser {
     is_verified: !!u.is_verified,
     isVerified: !!u.is_verified,
     activeBoosterMultiplier: u.active_booster_multiplier || 1,
-    boosterExpires: u.booster_expiry || '',
+    boosterExpires: u.booster_expires || u.booster_expiry || '',
     fraudAttempts: u.fraud_attempts || 0,
     status: u.status || 'active',
     created: u.created,
   } as PBUser;
+}
+
+const PB_SESSION_KEY = 'pb_auth_session_v1';
+
+// Saves the PocketBase auth token+model to storage so we don't need to
+// re-authenticate on every app launch.
+async function savePbSession(): Promise<void> {
+  try {
+    if (!pb.authStore.isValid) return;
+    const payload = JSON.stringify({ token: pb.authStore.token, model: pb.authStore.model });
+    await storage.setItem(PB_SESSION_KEY, payload);
+  } catch { /* non-critical */ }
+}
+
+// Restores a previously saved PocketBase session. Called on app startup
+// before Firebase auth resolves, so mining/balance calls succeed immediately.
+export async function restorePbSession(): Promise<void> {
+  try {
+    const raw = await storage.getItem(PB_SESSION_KEY);
+    if (!raw) return;
+    const { token, model } = JSON.parse(raw);
+    if (token && model) {
+      pb.authStore.save(token, model);
+    }
+  } catch { /* non-critical */ }
 }
 
 // Authenticates the PocketBase SDK client as the user, then returns their record.
@@ -100,7 +125,10 @@ function formatRawPbUser(u: any): PBUser {
 async function pbDirectLogin(email: string, firebaseUid: string): Promise<PBUser | null> {
   try {
     const authData = await pb.collection('users').authWithPassword(email, pbPassword(firebaseUid));
-    if (authData?.record) return formatRawPbUser(authData.record);
+    if (authData?.record) {
+      await savePbSession(); // persist auth so app restarts don't re-login
+      return formatRawPbUser(authData.record);
+    }
   } catch { /* login failed — user may not exist in PB yet */ }
   return null;
 }
@@ -128,6 +156,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // Restore PB session first so SDK is authenticated before auth state fires
+    restorePbSession().catch(() => {});
+
     const unsub = onAuthStateChanged(auth, (fbUser) => {
       if (isAuthAction) return;
       handleAuthStateChange(fbUser);

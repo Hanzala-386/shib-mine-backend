@@ -22,7 +22,7 @@ export interface PBUser {
   total_claims: number;
   total_wins: number;
   active_booster_multiplier: number;
-  booster_expiry: string;
+  booster_expires: string;
   fraud_attempts: number;
   is_verified: boolean;
   status: string;
@@ -91,7 +91,7 @@ export class PocketBaseAPI {
         is_verified: false,
         status: 'active',
         active_booster_multiplier: 1,
-        booster_expiry: '',
+        booster_expires: '',
       });
     } catch (e: any) {
       if (e?.status === 400 && e?.data?.firebase_uid) {
