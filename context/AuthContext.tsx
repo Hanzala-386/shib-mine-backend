@@ -13,6 +13,7 @@ import {
   type FirebaseUser,
 } from '@/lib/firebase';
 import { api, type PBUser } from '@/lib/api';
+import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 
 export interface UserProfile {
   uid: string;
@@ -63,6 +64,58 @@ function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
     createdAt: new Date(u.created).getTime(),
     is_verified: u.is_verified,
   };
+}
+
+// ── Direct PocketBase fallback (when Express backend unreachable from device) ──
+// Password pattern is the same one the Express `confirm-verified` route uses.
+function pbPassword(firebaseUid: string) { return `SHIB_${firebaseUid}_SECURE`; }
+
+// Convert raw PocketBase record (snake_case) → PBUser (camelCase) — mirrors
+// the `formatUser()` function in server/routes.ts so both paths produce identical shape.
+function formatRawPbUser(u: any): PBUser {
+  return {
+    pbId: u.id,
+    firebaseUid: u.firebase_uid,
+    email: u.email,
+    displayName: u.display_name || u.name || '',
+    referralCode: u.referral_code || '',
+    referredBy: u.referred_by || '',
+    referralEarnings: u.referral_earnings || 0,
+    shibBalance: u.shib_balance || 0,
+    powerTokens: u.power_tokens ?? 10,
+    totalClaims: u.total_claims || 0,
+    totalWins: u.total_wins || 0,
+    is_verified: !!u.is_verified,
+    isVerified: !!u.is_verified,
+    activeBoosterMultiplier: u.active_booster_multiplier || 1,
+    boosterExpires: u.booster_expiry || '',
+    fraudAttempts: u.fraud_attempts || 0,
+    status: u.status || 'active',
+    created: u.created,
+  } as PBUser;
+}
+
+// Authenticates the PocketBase SDK client as the user, then returns their record.
+// This bypasses the Express backend entirely — works as long as PocketBase is reachable.
+async function pbDirectLogin(email: string, firebaseUid: string): Promise<PBUser | null> {
+  try {
+    const authData = await pb.collection('users').authWithPassword(email, pbPassword(firebaseUid));
+    if (authData?.record) return formatRawPbUser(authData.record);
+  } catch { /* login failed — user may not exist in PB yet */ }
+  return null;
+}
+
+// Reads the authenticated user's own record from PocketBase (requires pbDirectLogin first).
+async function pbGetSelf(): Promise<PBUser | null> {
+  try {
+    if (!pb.authStore.isValid) return null;
+    const model = pb.authStore.model as any;
+    if (!model?.id) return null;
+    const fresh = await pb.collection('users').getOne(model.id);
+    return formatRawPbUser(fresh);
+  } catch {
+    return null;
+  }
 }
 
 // Module-level flag to block onAuthStateChanged during active sign-in/sign-up
@@ -121,43 +174,64 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  // Confirms verification in PB and loads user profile
+  // Confirms verification in PB and loads user profile.
+  // Primary path: Express backend (has admin PB creds, handles fraud checks).
+  // Fallback path: Direct PocketBase auth (used when APK points to PB-only server).
   async function confirmAndLoadUser(fbUser: FirebaseUser): Promise<void> {
     try {
       const cached = await storage.getItem(`shib_pending_${fbUser.uid}`);
       const pending = cached ? JSON.parse(cached) : {};
 
-      const pb = await api.confirmVerified({
-        firebaseUid: fbUser.uid,
-        email: fbUser.email ?? '',
-        displayName: pending.displayName || fbUser.email?.split('@')[0] || '',
-        referralCode: pending.referralCode || generateReferralCode(),
-        referredBy: pending.referredBy || '',
-      });
+      let pbRecord: PBUser | null = null;
+
+      // ── Primary: try Express backend ──────────────────────────────────────
+      try {
+        pbRecord = await api.confirmVerified({
+          firebaseUid: fbUser.uid,
+          email: fbUser.email ?? '',
+          displayName: pending.displayName || fbUser.email?.split('@')[0] || '',
+          referralCode: pending.referralCode || generateReferralCode(),
+          referredBy: pending.referredBy || '',
+        });
+      } catch (expressErr: any) {
+        const errCode = expressErr?.data?.error || expressErr?.code || '';
+        const isHardBlock = expressErr?.status === 403 || errCode === 'ACCOUNT_BLOCKED' || errCode === 'EMAIL_PERMANENTLY_BANNED';
+        if (isHardBlock) throw expressErr; // propagate bans — don't fall through
+
+        // ── Fallback: authenticate directly with PocketBase ────────────────
+        console.warn('[Auth] Express unreachable, trying PocketBase direct login:', expressErr?.message);
+        pbRecord = await pbDirectLogin(fbUser.email ?? '', fbUser.uid);
+      }
 
       if (cached) await storage.removeItem(`shib_pending_${fbUser.uid}`);
 
-      if (pb.status === 'blocked') {
+      if (!pbRecord) {
+        setPbUser(null);
+        setUser(null);
+        setIsLoading(false);
+        return;
+      }
+
+      if (pbRecord.status === 'blocked') {
         setPbUser(null);
         setUser(null);
         setIsLoading(false);
         try { await firebaseSignOut(auth); } catch {}
         return;
       }
-      setPbUser(pb);
-      setUser(pbToProfile(pb, fbUser));
-      await storage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pb, fbUser)));
+
+      setPbUser(pbRecord);
+      setUser(pbToProfile(pbRecord, fbUser));
+      await storage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pbRecord, fbUser)));
     } catch (e: any) {
       console.warn('[Auth] confirmAndLoadUser failed:', e);
       const errCode = e?.data?.error || e?.code || '';
       const isHardBlock = e?.status === 403 || errCode === 'ACCOUNT_BLOCKED' || errCode === 'EMAIL_PERMANENTLY_BANNED';
       if (isHardBlock) {
-        // Hard block (banned or blacklisted) — sign out immediately and surface to UI
         setPbUser(null);
         setUser(null);
         setIsLoading(false);
         try { await firebaseSignOut(auth); } catch {}
-        // Surface a clean error with the right message so auth.tsx can show it
         const msg = e?.data?.message || e?.message || 'Your account has been permanently disabled.';
         const cleanErr = Object.assign(new Error(msg), { status: 403, data: e?.data ?? {}, code: errCode });
         throw cleanErr;
@@ -283,19 +357,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const fbUser = auth.currentUser;
     if (!fbUser) return;
     try {
-      // Don't swallow ACCOUNT_BLOCKED — re-throw it so the catch block can sign out
-      const pb = await api.getUser(fbUser.uid).catch((e: any) => {
+      let pbRecord = await api.getUser(fbUser.uid).catch(async (e: any) => {
         if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) throw e;
-        return null;
+        // Express unreachable → try PocketBase directly
+        return pbGetSelf();
       });
-      if (!pb) return;
-      if (pb.status === 'blocked') {
+      if (!pbRecord) return;
+      if (pbRecord.status === 'blocked') {
         Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
         await signOut(); return;
       }
-      if (pb.is_verified) {
-        setPbUser(pb);
-        setUser(pbToProfile(pb, fbUser));
+      if (pbRecord.is_verified) {
+        setPbUser(pbRecord);
+        setUser(pbToProfile(pbRecord, fbUser));
       }
     } catch (e: any) {
       if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) {
@@ -309,19 +383,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const fbUser = auth.currentUser;
     if (!fbUser) return;
     try {
-      // Don't swallow ACCOUNT_BLOCKED — re-throw it so the catch block can sign out
-      const pb = await api.getUser(fbUser.uid).catch((e: any) => {
+      let pbRecord = await api.getUser(fbUser.uid).catch(async (e: any) => {
         if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) throw e;
-        return null;
+        // Express unreachable → try PocketBase directly
+        return pbGetSelf();
       });
-      if (!pb) return;
-      if (pb.status === 'blocked') {
+      if (!pbRecord) return;
+      if (pbRecord.status === 'blocked') {
         Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
         await signOut();
         return;
       }
-      setPbUser(pb);
-      if (pb.is_verified) setUser(pbToProfile(pb, fbUser));
+      setPbUser(pbRecord);
+      if (pbRecord.is_verified) setUser(pbToProfile(pbRecord, fbUser));
     } catch (e: any) {
       if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) {
         Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');

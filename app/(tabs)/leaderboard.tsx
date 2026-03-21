@@ -8,6 +8,7 @@ import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
+import { POCKETBASE_URL } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 
 /* ── types ── */
@@ -43,6 +44,37 @@ async function fetchJson(path: string) {
   const r = await fetch(url.toString());
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
+}
+
+/* ── PocketBase direct fallback for when Express backend is unreachable ── */
+async function fetchLeaderboard(): Promise<LeaderEntry[]> {
+  try {
+    return await fetchJson('/api/app/leaderboard');
+  } catch {
+    // Fall back: query PocketBase directly
+    try {
+      const url = `${POCKETBASE_URL}/api/collections/users/records?sort=-shib_balance&perPage=100&fields=id,display_name,shib_balance`;
+      const r = await fetch(url);
+      if (!r.ok) return [];
+      const data = await r.json();
+      return (data.items || []).map((u: any, i: number) => ({
+        rank: i + 1,
+        id: u.id,
+        displayName: u.display_name || 'Miner',
+        shibBalance: u.shib_balance || 0,
+      }));
+    } catch {
+      return [];
+    }
+  }
+}
+
+async function fetchMyRank(pbId: string): Promise<MyRank | undefined> {
+  try {
+    return await fetchJson(`/api/app/leaderboard/rank/${pbId}`);
+  } catch {
+    return undefined;
+  }
 }
 
 /* ── Ticker marquee ── */
@@ -214,20 +246,23 @@ export default function LeaderboardScreen() {
 
   const { data: board = [], isLoading: boardLoading } = useQuery<LeaderEntry[]>({
     queryKey: ['/api/app/leaderboard'],
-    queryFn: () => fetchJson('/api/app/leaderboard'),
+    queryFn: fetchLeaderboard,
     staleTime: 60_000,
   });
 
-  const { data: myRank } = useQuery<MyRank>({
+  const { data: myRank } = useQuery<MyRank | undefined>({
     queryKey: ['/api/app/leaderboard/rank', pbId],
-    queryFn: () => fetchJson(`/api/app/leaderboard/rank/${pbId}`),
+    queryFn: () => fetchMyRank(pbId),
     enabled: !!pbId,
     staleTime: 60_000,
   });
 
+  // Ticker is a nice-to-have — no fallback needed, gracefully hides when unavailable
   const { data: ticker = [] } = useQuery<TickerItem[]>({
     queryKey: ['/api/app/withdrawals/approved/recent'],
-    queryFn: () => fetchJson('/api/app/withdrawals/approved/recent'),
+    queryFn: async () => {
+      try { return await fetchJson('/api/app/withdrawals/approved/recent'); } catch { return []; }
+    },
     staleTime: 120_000,
   });
 

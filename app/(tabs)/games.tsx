@@ -378,6 +378,18 @@ export default function GamesScreen() {
             <Text style={S.loaderTxt}>Loading game…</Text>
           </View>
         )}
+        renderError={() => (
+          <View style={S.loader}>
+            <Ionicons name="game-controller-outline" size={56} color={Colors.neonOrange} />
+            <Text style={[S.loaderTxt, { marginTop: 12 }]}>Game server unavailable</Text>
+            <Text style={[S.loaderTxt, { fontSize: 13, color: Colors.textMuted, marginTop: 4 }]}>
+              Please check your connection and try again.
+            </Text>
+          </View>
+        )}
+        onHttpError={(e) => {
+          console.warn('[Games] WebView HTTP error:', e.nativeEvent.statusCode, GAME_URL);
+        }}
         containerStyle={{ flex: 1 }} />
     );
   };

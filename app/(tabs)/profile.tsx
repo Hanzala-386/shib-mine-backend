@@ -115,10 +115,22 @@ export default function ProfileScreen() {
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
   const pbId         = pbUser?.pbId ?? '';
 
-  /* Referral stats */
+  /* Referral stats — try Express first, fall back to data we already have in pbUser */
   const { data: referralStats, refetch: refetchReferralStats } = useQuery({
     queryKey: ['/api/app/user/referral-stats', pbId],
-    queryFn: () => api.getReferralStats(pbId),
+    queryFn: async () => {
+      try {
+        return await api.getReferralStats(pbId);
+      } catch {
+        // Express unreachable — derive basic stats from the already-loaded pbUser record
+        return {
+          referredCount: 0,
+          referralBalance: pbUser?.referralEarnings ?? 0,
+          totalEarnings: pbUser?.referralEarnings ?? 0,
+          referredUsers: [],
+        };
+      }
+    },
     enabled: !!pbId,
     staleTime: 60_000,
   });
