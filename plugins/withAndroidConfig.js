@@ -3,7 +3,7 @@
  *
  * Expo Config Plugin — patches generated Android files on every `npx expo prebuild`.
  *
- *  1. AGP version     — Pins to 8.9.1 (stable with Gradle 8.13)
+ *  1. AGP version     — Pins to 8.10.2 (required for compileSdk 36 / Gradle 8.13)
  *  2. Gradle wrapper  — Updates to Gradle 8.13 (required for compileSdk 35/36 on EAS)
  *  3. Ad adapters     — Adds Unity Ads + AppLovin mediation adapter deps
  *  4. NDK version     — Pins to 26.1.10909125 (stable LTS for RN 0.81)
@@ -20,14 +20,14 @@ const {
 const path = require('path');
 const fs   = require('fs');
 
-/* ─── 1. Root build.gradle — pin AGP to 8.9.1 ───────────────────────────────── */
+/* ─── 1. Root build.gradle — pin AGP to 8.10.2 (supports compileSdk 36) ─────── */
 function withAgpVersion(config) {
   return withProjectBuildGradle(config, (cfg) => {
     let content = cfg.modResults.contents;
 
     content = content.replace(
       /classpath\(["']com\.android\.tools\.build:gradle:[^"']+["']\)/g,
-      'classpath("com.android.tools.build:gradle:8.9.1")'
+      'classpath("com.android.tools.build:gradle:8.10.2")'
     );
 
     cfg.modResults.contents = content;
