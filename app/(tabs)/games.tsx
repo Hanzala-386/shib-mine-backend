@@ -10,7 +10,6 @@ import { useWallet } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
-import { showRewardedAd } from '@/lib/nativeAds';
 import { useAds } from '@/context/AdContext';
 
 function pbHeaders(pbId: string): HeadersInit {
@@ -27,33 +26,10 @@ const BASE        = getApiUrl();
 const GAME_URL    = new URL('/arcade/index.html', BASE).href;
 const GAME_DATA   = (pbId: string) => new URL(`/api/app/game/data/${pbId}`, BASE).href;
 const SYNC_SCORE  = new URL('/api/app/game/sync-score', BASE).href;
-const SETTINGS_URL = new URL('/api/app/settings', BASE).href;
 
 const SESSION_SECONDS = 180; // 3-minute session
 const SCORE_LIMIT     = 2000;
 const SCORE_WARNING   = 1900;
-
-type AdNetwork = 'admob' | 'unity' | 'applovin';
-interface AdSettings {
-  showAds: boolean; activeAdNetwork: string;
-  admobUnitId: string; admobRewardedId: string;
-  applovinRewardedId: string;
-  applovinSdkKey: string; unityGameId: string; unityRewardedId: string;
-}
-const AD_DEFAULT: AdSettings = {
-  showAds: false, activeAdNetwork: '',
-  admobUnitId: '', admobRewardedId: '',
-  applovinRewardedId: '', applovinSdkKey: '', unityGameId: '', unityRewardedId: '',
-};
-function networkOrder(active: string): AdNetwork[] {
-  const k = (active || '').toLowerCase();
-  const prio: AdNetwork | null =
-    k.includes('admob')   ? 'admob'    :
-    k.includes('unity')   ? 'unity'    :
-    (k.includes('applovin') || k.includes('max')) ? 'applovin' : null;
-  const all: AdNetwork[] = ['admob', 'unity', 'applovin'];
-  return prio ? [prio, ...all.filter(n => n !== prio)] : all;
-}
 
 interface GameData {
   power_tokens: number;
@@ -64,7 +40,6 @@ interface GameData {
 
 type Phase = 'game' | 'summary' | 'double_ad' | 'saving' | 'reward';
 type GameOverReason = 'time' | 'score' | 'death';
-const NET_LABEL: Record<AdNetwork, string> = { admob: 'AdMob', unity: 'Unity Ads', applovin: 'AppLovin MAX' };
 
 function formatTime(s: number): string {
   const m = Math.floor(s / 60);
@@ -76,18 +51,14 @@ export default function GamesScreen() {
   const insets = useSafeAreaInsets();
   const { addPowerTokens, powerTokens } = useWallet();
   const { pbUser, refreshBalance } = useAuth();
-  const { showGameInterstitial } = useAds();
+  const { showGameInterstitial, showRewarded } = useAds();
 
   const wvRef           = useRef<any>(null);
-  const adCfg           = useRef<AdSettings>(AD_DEFAULT);
-  const netQueue        = useRef<AdNetwork[]>(['admob', 'unity', 'applovin']);
-  const netIdx          = useRef(0);
   const scoreRef        = useRef(0);           // final score at game-over
   const liveScoreRef    = useRef(0);           // live score during play (from SCORE_UPDATE)
   const pbIdRef         = useRef<string>('');
   const gameDataRef     = useRef<GameData | null>(null);
   const sessionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const adTimerRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const gameOverFiredRef = useRef(false);      // guard against double GAME_OVER
   const warningPulse    = useRef(new Animated.Value(1)).current;
 
@@ -95,8 +66,6 @@ export default function GamesScreen() {
   const [score,         setScore]         = useState(0);
   const [liveScore,     setLiveScore]     = useState(0);
   const [earned,        setEarned]        = useState(0);
-  const [adNet,         setAdNet]         = useState<AdNetwork>('admob');
-  const [adTimer,       setAdTimer]       = useState(0);
   const [gameStats,     setGameStats]     = useState<GameData | null>(null);
   const [sessionTime,   setSessionTime]   = useState(SESSION_SECONDS);
   const [sessionActive, setSessionActive] = useState(false);
@@ -111,17 +80,6 @@ export default function GamesScreen() {
       pbIdRef.current = pbUser.pbId;
     }
   }, [pbUser]);
-
-  /* ── Load ad settings ── */
-  useEffect(() => {
-    fetch(SETTINGS_URL)
-      .then(r => r.json())
-      .then(s => {
-        adCfg.current = { ...AD_DEFAULT, ...s };
-        netQueue.current = networkOrder(s.activeAdNetwork || '');
-      })
-      .catch(() => {});
-  }, []);
 
   /* ── Fetch game data ── */
   const fetchGameData = useCallback(async (pbId: string) => {
@@ -140,27 +98,7 @@ export default function GamesScreen() {
     if (pbId) fetchGameData(pbId);
   }, [pbUser, fetchGameData]);
 
-  /* ── Ad network picker ── */
-  const nextNet = () => {
-    const n = netQueue.current[netIdx.current % netQueue.current.length] as AdNetwork;
-    netIdx.current += 1;
-    return n;
-  };
-
-  /* ── Ad countdown timer ── */
-  const startAdTimer = (s: number) => {
-    setAdTimer(s);
-    if (adTimerRef.current) clearInterval(adTimerRef.current);
-    adTimerRef.current = setInterval(() => {
-      setAdTimer(t => { if (t <= 1) { clearInterval(adTimerRef.current!); return 0; } return t - 1; });
-    }, 1000);
-  };
-  const stopAdTimer = () => {
-    if (adTimerRef.current) { clearInterval(adTimerRef.current); adTimerRef.current = null; }
-    setAdTimer(0);
-  };
   useEffect(() => () => {
-    if (adTimerRef.current) clearInterval(adTimerRef.current);
     if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
   }, []);
 
@@ -324,12 +262,10 @@ export default function GamesScreen() {
     startSessionTimer();
   }, [sendToGame, fetchGameData, startSessionTimer]);
 
-  /* ── DOUBLE (2×) → rewarded ad → add score × 2 PT ── */
+  /* ── DOUBLE (2×) → rewarded ad (AdMob mediation picks network) → add score × 2 PT ── */
   const handleDouble = useCallback(async () => {
-    const net = nextNet();
-    setAdNet(net); setPhase('double_ad'); startAdTimer(5);
-    showRewardedAd(net, adCfg.current as any, async (watched) => {
-      stopAdTimer();
+    setPhase('double_ad');
+    showRewarded(async (watched) => {
       if (!watched) { setPhase('summary'); return; }
       setPhase('saving');
       const pts = Math.min(scoreRef.current * 2, SCORE_LIMIT * 2);
@@ -345,7 +281,7 @@ export default function GamesScreen() {
         setEarned(pts); setPhase('reward');
       }
     });
-  }, [addPowerTokens, fetchGameData, refreshBalance]);
+  }, [addPowerTokens, fetchGameData, refreshBalance, showRewarded]);
 
   /* ── CLAIM → interstitial ad (AdMob → Unity → AppLovin) then add score PT ── */
   const handleClaim = useCallback(async () => {
@@ -559,15 +495,14 @@ export default function GamesScreen() {
         <View style={S.adFull}>
           <View style={S.adCard}>
             <View style={S.adBar}>
-              <Text style={S.adNetTxt}>{NET_LABEL[adNet]}</Text>
-              {adTimer > 0 && <View style={S.timerPill}><Text style={S.timerTxt}>{adTimer}s</Text></View>}
+              <Text style={S.adNetTxt}>Rewarded Video</Text>
             </View>
             <View style={S.adBody}>
               <Ionicons name="gift-outline" size={56} color={Colors.gold} />
               <ActivityIndicator size="large" color={Colors.gold} style={{ marginTop: 4 }} />
-              <Text style={[S.adLabel, { color: Colors.gold }]}>Rewarded Video</Text>
+              <Text style={[S.adLabel, { color: Colors.gold }]}>Loading Ad…</Text>
               <Text style={S.adSub}>Watch to earn {score * 2} PT (2×)</Text>
-              <Text style={S.adHint}>Loading ad · {NET_LABEL[adNet]}</Text>
+              <Text style={S.adHint}>Ad provided by AdMob</Text>
             </View>
           </View>
         </View>

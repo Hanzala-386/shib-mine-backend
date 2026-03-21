@@ -5,15 +5,18 @@ import {
   BannerAdSize,
   nativeSdkAvailable,
   TEST_IDS,
-  ALAdView,
-  ALAdFormat,
   useAds,
-  type BannerProvider,
 } from '@/context/AdContext';
 
 export const BANNER_HEIGHT = 50;
 
-/* ── AdMob banner ─────────────────────────────────────────────────────────── */
+/*
+ * All banners now go through AdMob (react-native-google-mobile-ads).
+ * Unity Ads and AppLovin run as mediation adapters inside AdMob's SDK —
+ * no separate banner component is needed for either network.
+ */
+
+/* ── AdMob banner (with mediation to Unity / AppLovin) ───────────────────── */
 function AdMobBanner({ unitId }: { unitId: string }) {
   if (!nativeSdkAvailable || !BannerAdComponent) return null;
   return (
@@ -27,96 +30,32 @@ function AdMobBanner({ unitId }: { unitId: string }) {
   );
 }
 
-/* ── AppLovin MAX banner (react-native-applovin-max AdView) ─────────────── */
-function AppLovinBanner({ adUnitId }: { adUnitId: string }) {
-  if (!adUnitId || !ALAdView || !ALAdFormat) {
-    console.log('[Banner/AppLovin] Skipped — SDK not available or adUnitId empty');
-    return null;
-  }
-  try {
-    return (
-      <ALAdView
-        adUnitId={adUnitId}
-        adFormat={ALAdFormat?.BANNER ?? 'BANNER'}
-        onAdLoaded={() => console.log('[Banner/AppLovin] Loaded adUnitId=', adUnitId)}
-        onAdLoadFailed={(errorCode: any) => console.warn('[Banner/AppLovin] Failed:', errorCode)}
-        style={{ width: '100%', height: BANNER_HEIGHT }}
-      />
-    );
-  } catch (e: any) {
-    console.warn('[Banner/AppLovin] Render error:', e.message);
-    return null;
-  }
-}
-
-/* ── Unity Ads — no React Native banner component in this SDK; fall through to AdMob ── */
-function UnityBannerFallback({ fallbackUnitId }: { fallbackUnitId: string }) {
-  console.log('[Banner/Unity] No banner component in react-native-unity-ads; showing AdMob fallback');
-  return <AdMobBanner unitId={fallbackUnitId} />;
-}
-
-/* ── Shared banner render helper ──────────────────────────────────────────── */
-function renderBannerForProvider(provider: BannerProvider, admobId: string, applovinId: string) {
-  switch (provider) {
-    case 'unity':
-      return <UnityBannerFallback fallbackUnitId={admobId || TEST_IDS.BANNER} />;
-    case 'applovin':
-      if (applovinId && ALAdView) return <AppLovinBanner adUnitId={applovinId} />;
-      return <AdMobBanner unitId={admobId || TEST_IDS.BANNER} />;
-    case 'admob':
-    default:
-      return <AdMobBanner unitId={admobId || TEST_IDS.BANNER} />;
-  }
-}
-
-/* ── Inline banner — renders in flow (for use between content sections) ───── */
-export function InlineBannerAd() {
-  const { settings, bannerProvider } = useAds();
+/* ── Sticky banner — sits above the bottom tab bar, visible on all screens ── */
+export function StickyBannerAd() {
+  const { settings } = useAds();
   if (Platform.OS === 'web') return null;
-  const banner = renderBannerForProvider(
-    bannerProvider,
-    settings.admobBannerUnitId,
-    settings.applovinBannerId,
-  );
+
+  const unitId = settings.admobBannerUnitId || TEST_IDS.BANNER;
+  const banner = <AdMobBanner unitId={unitId} />;
   if (!banner) return null;
+
   return (
-    <View style={inlineStyles.wrapper} key={`inline-banner-${bannerProvider}`}>
+    <View style={styles.wrapper}>
       {banner}
     </View>
   );
 }
 
-/* ── Main sticky banner component ─────────────────────────────────────────── */
-export function StickyBannerAd() {
-  const { settings, bannerProvider } = useAds();
-
+/* ── Inline banner — renders in content flow (between profile sections) ───── */
+export function InlineBannerAd() {
+  const { settings } = useAds();
   if (Platform.OS === 'web') return null;
 
-  const renderBanner = (provider: BannerProvider) => {
-    switch (provider) {
-      case 'unity':
-        return (
-          <UnityBannerFallback
-            fallbackUnitId={settings.admobBannerUnitId || TEST_IDS.BANNER}
-          />
-        );
-      case 'applovin':
-        if (settings.applovinBannerId && ALAdView) {
-          return <AppLovinBanner adUnitId={settings.applovinBannerId} />;
-        }
-        return <AdMobBanner unitId={settings.admobBannerUnitId || TEST_IDS.BANNER} />;
-      case 'admob':
-      default:
-        return <AdMobBanner unitId={settings.admobBannerUnitId || TEST_IDS.BANNER} />;
-    }
-  };
-
-  const banner = renderBanner(bannerProvider);
-  if (!banner) return null;
+  const unitId = settings.admobBannerUnitId || TEST_IDS.BANNER;
 
   return (
-    <View style={styles.wrapper} key={`banner-${bannerProvider}`}>
-      {banner}
+    <View style={inlineStyles.wrapper}>
+      <AdMobBanner unitId={unitId} />
     </View>
   );
 }

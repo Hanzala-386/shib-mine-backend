@@ -8,7 +8,6 @@ import React, {
 } from 'react';
 import { Platform } from 'react-native';
 import { getApiUrl } from '@/lib/query-client';
-import { configureAds } from '@/lib/AdService';
 
 /* ─── Types ─────────────────────────────────────────────────────────────────── */
 export interface AdSettings {
@@ -17,6 +16,7 @@ export interface AdSettings {
   admobBannerUnitId:     string;
   admobUnitId:           string;
   admobRewardedId:       string;
+  /* Unity / AppLovin IDs are still stored in DB for mediation reference */
   unityGameId:           string;
   unityRewardedId:       string;
   unityInterstitialId:   string;
@@ -63,7 +63,7 @@ const DEFAULT_SETTINGS: AdSettings = {
   applovinInterstitialId: '',
 };
 
-/* ─── AdMob SDK ───────────────────────────────────────────────────────────────── */
+/* ─── AdMob SDK (react-native-google-mobile-ads) ────────────────────────────── */
 let GoogleAds: any            = null;
 let AdEventType: any          = null;
 let RewardedAdEventType: any  = null;
@@ -90,27 +90,20 @@ if (Platform.OS !== 'web') {
   }
 }
 
-/* ─── Unity Ads + AppLovin MAX — loaded via platform-specific module ─────────
- *   lib/native-ads.native.ts → loaded on Android/iOS (requires react-native-unity-ads
- *     and react-native-applovin-max to be linked in the native build)
- *   lib/native-ads.web.ts    → loaded on web (all exports are null stubs)
- * Metro bundler resolves the correct file at build time via the .native/.web suffix.
- * ─────────────────────────────────────────────────────────────────────────────── */
-import {
-  UnityAds,
-  AppLovinMAX,
-  ALInterstitial,
-  ALRewarded,
-  ALAdView as _ALAdView,
-  ALAdFormat as _ALAdFormat,
-} from '@/lib/native-ads';
-
-export const ALAdView   = _ALAdView;
-export const ALAdFormat = _ALAdFormat;
-
+/*
+ * Unity Ads and AppLovin MAX are handled via AdMob Mediation Gradle adapters:
+ *   com.google.ads.mediation:unity     — injected by withAndroidConfig plugin
+ *   com.applovin:applovin-sdk          — injected by withAndroidConfig plugin
+ *   com.google.ads.mediation:applovin  — injected by withAndroidConfig plugin
+ *
+ * AdMob's SDK automatically picks the winning network at runtime.
+ * No direct Unity / AppLovin SDK calls are needed.
+ */
+export const ALAdView   = null;
+export const ALAdFormat = null;
 export { BannerAdComponent, BannerAdSize, nativeSdkAvailable };
 
-/* ─── Banner provider rotation ───────────────────────────────────────────────── */
+/* ─── Banner provider rotation (cosmetic — mediation picks the real network) ── */
 const BANNER_PROVIDERS: BannerProvider[] = ['admob', 'unity', 'applovin'];
 
 /* ─── Context ────────────────────────────────────────────────────────────────── */
@@ -134,18 +127,16 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
   const [isAdLoading, setAdLoading]     = useState(false);
   const [bannerProvider, setBannerProvider] = useState<BannerProvider>('admob');
 
-  const settingsRef    = useRef<AdSettings>(DEFAULT_SETTINGS);
-  const bannerIdxRef   = useRef(0);
-  const gameIntIdxRef  = useRef(0);
-  const rewardedIdxRef = useRef(0);
+  const settingsRef  = useRef<AdSettings>(DEFAULT_SETTINGS);
+  const bannerIdxRef = useRef(0);
 
-  /* ── Banner provider rotation every 30s ── */
+  /* ── Banner provider rotation every 30s (visual only — mediation picks network) ── */
   useEffect(() => {
     if (Platform.OS === 'web') return;
     const id = setInterval(() => {
       bannerIdxRef.current = (bannerIdxRef.current + 1) % BANNER_PROVIDERS.length;
       setBannerProvider(BANNER_PROVIDERS[bannerIdxRef.current]);
-      console.log('[AdContext] Banner rotated to:', BANNER_PROVIDERS[bannerIdxRef.current]);
+      console.log('[AdContext] Banner slot rotated to:', BANNER_PROVIDERS[bannerIdxRef.current]);
     }, 30_000);
     return () => clearInterval(id);
   }, []);
@@ -173,40 +164,7 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
         };
         settingsRef.current = merged;
         setSettings(merged);
-        configureAds({
-          admobBannerId:          merged.admobBannerUnitId,
-          admobInterstitialId:    merged.admobUnitId,
-          admobRewardedId:        merged.admobRewardedId,
-          unityGameId:            merged.unityGameId,
-          unityInterstitialId:    merged.unityInterstitialId,
-          unityRewardedId:        merged.unityRewardedId,
-          applovinSdkKey:         merged.applovinSdkKey,
-          applovinInterstitialId: merged.applovinInterstitialId,
-          applovinBannerId:       merged.applovinBannerId,
-          applovinRewardedId:     merged.applovinRewardedId,
-        });
         console.log('[AdContext] Settings loaded from PocketBase ✓');
-
-        /* Initialize Unity Ads */
-        if (UnityAds && merged.unityGameId) {
-          try {
-            UnityAds.initialize(merged.unityGameId, false);
-            console.log('[AdContext] Unity Ads initializing with gameId:', merged.unityGameId);
-          } catch (e: any) {
-            console.warn('[AdContext] Unity init error:', e.message);
-          }
-        }
-
-        /* Initialize AppLovin MAX */
-        if (AppLovinMAX && merged.applovinSdkKey) {
-          try {
-            AppLovinMAX.initialize(merged.applovinSdkKey)
-              .then(() => console.log('[AdContext] AppLovin MAX initialized ✓'))
-              .catch((e: any) => console.warn('[AdContext] AppLovin init error:', e.message));
-          } catch (e: any) {
-            console.warn('[AdContext] AppLovin init exception:', e.message);
-          }
-        }
       })
       .catch(e => console.warn('[AdContext] Failed to fetch settings:', e));
   }, []);
@@ -219,7 +177,7 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
     }
     GoogleAds().initialize()
       .then((statuses: any[]) => {
-        console.log('[AdContext] AdMob initialized:', JSON.stringify(statuses));
+        console.log('[AdContext] AdMob initialized (mediation ready):', JSON.stringify(statuses));
         setSdkReady(true);
       })
       .catch((e: Error) => {
@@ -232,7 +190,6 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
   function _showAdMobInterstitial(unitId: string, onDone: (shown: boolean) => void) {
     if (!unitId) { onDone(false); return; }
     if (!nativeSdkAvailable || !InterstitialAdClass || !sdkReady) {
-      // No native SDK — proceed immediately (no fake delay in preview/web)
       onDone(true);
       return;
     }
@@ -253,144 +210,10 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  /* ── Unity interstitial / rewarded helper ── */
-  function _tryUnityAd(placementId: string, onSuccess: () => void, onFail: () => void) {
-    // Null check: if SDK or placement ID missing, skip immediately
-    if (!UnityAds || !placementId) {
-      console.log('[Unity] Skipped — SDK not available or placementId empty');
-      onFail(); return;
-    }
-    try {
-      UnityAds.isReady(placementId, (isReady: boolean) => {
-        if (!isReady) {
-          console.log('[Unity] Ad not ready for placement:', placementId);
-          onFail(); return;
-        }
-        let done = false;
-        const onFinish = (pid: string, result: string) => {
-          if (done) return; done = true;
-          UnityAds.removeEventListener('onFinish', onFinish);
-          UnityAds.removeEventListener('onError',  onError);
-          console.log('[Unity] Ad finished, placement:', pid, 'result:', result);
-          onSuccess();
-        };
-        const onError = (error: string, message: string) => {
-          if (done) return; done = true;
-          UnityAds.removeEventListener('onFinish', onFinish);
-          UnityAds.removeEventListener('onError',  onError);
-          console.warn('[Unity] Ad error:', error, message);
-          onFail();
-        };
-        UnityAds.addEventListener('onFinish', onFinish);
-        UnityAds.addEventListener('onError',  onError);
-        UnityAds.show(placementId);
-        console.log('[Unity] Showing ad placement:', placementId);
-      });
-    } catch (e: any) {
-      console.warn('[Unity] Exception:', e.message);
-      onFail();
-    }
-  }
-
-  /* ── AppLovin interstitial helper ── */
-  function _tryAppLovinInterstitial(placementId: string, onSuccess: () => void, onFail: () => void) {
-    // Null check: if SDK or ad unit ID missing, skip immediately
-    if (!AppLovinMAX || !ALInterstitial || !placementId) {
-      console.log('[AppLovin] Interstitial skipped — SDK not available or adUnitId empty');
-      onFail(); return;
-    }
-    try {
-      let done = false;
-      const finish = (succeeded: boolean) => {
-        if (done) return; done = true;
-        try {
-          ALInterstitial.removeAdLoadedEventListener();
-          ALInterstitial.removeAdHiddenEventListener();
-          ALInterstitial.removeAdLoadFailedEventListener();
-          ALInterstitial.removeAdFailedToDisplayEventListener();
-        } catch {}
-        setAdLoading(false);
-        succeeded ? onSuccess() : onFail();
-      };
-      ALInterstitial.addAdLoadedEventListener(() => {
-        console.log('[AppLovin] Interstitial loaded, showing:', placementId);
-        ALInterstitial.showAd(placementId);
-      });
-      ALInterstitial.addAdHiddenEventListener(() => {
-        console.log('[AppLovin] Interstitial hidden');
-        finish(true);
-      });
-      ALInterstitial.addAdLoadFailedEventListener((info: any) => {
-        console.warn('[AppLovin] Interstitial load failed:', info?.code);
-        finish(false);
-      });
-      ALInterstitial.addAdFailedToDisplayEventListener((info: any) => {
-        console.warn('[AppLovin] Interstitial display failed:', info?.code);
-        finish(false);
-      });
-      setAdLoading(true);
-      ALInterstitial.loadAd(placementId);
-      console.log('[AppLovin] Loading interstitial:', placementId);
-    } catch (e: any) {
-      console.warn('[AppLovin] Interstitial exception:', e.message);
-      setAdLoading(false); onFail();
-    }
-  }
-
-  /* ── AppLovin rewarded helper ── */
-  function _tryAppLovinRewarded(placementId: string, onSuccess: () => void, onFail: () => void) {
-    if (!AppLovinMAX || !ALRewarded || !placementId) {
-      console.log('[AppLovin] Rewarded skipped — SDK not available or adUnitId empty');
-      onFail(); return;
-    }
-    try {
-      let done = false; let rewarded = false;
-      const finish = (succeeded: boolean) => {
-        if (done) return; done = true;
-        try {
-          ALRewarded.removeAdLoadedEventListener();
-          ALRewarded.removeAdHiddenEventListener();
-          ALRewarded.removeAdLoadFailedEventListener();
-          ALRewarded.removeAdFailedToDisplayEventListener();
-          ALRewarded.removeAdReceivedRewardEventListener?.();
-        } catch {}
-        setAdLoading(false);
-        succeeded ? onSuccess() : onFail();
-      };
-      ALRewarded.addAdLoadedEventListener(() => {
-        console.log('[AppLovin] Rewarded loaded, showing:', placementId);
-        ALRewarded.showAd(placementId);
-      });
-      ALRewarded.addAdReceivedRewardEventListener?.((info: any) => {
-        console.log('[AppLovin] Reward earned:', JSON.stringify(info));
-        rewarded = true;
-      });
-      ALRewarded.addAdHiddenEventListener(() => {
-        console.log('[AppLovin] Rewarded hidden, rewarded=', rewarded);
-        finish(rewarded);
-      });
-      ALRewarded.addAdLoadFailedEventListener((info: any) => {
-        console.warn('[AppLovin] Rewarded load failed:', info?.code);
-        finish(false);
-      });
-      ALRewarded.addAdFailedToDisplayEventListener((info: any) => {
-        console.warn('[AppLovin] Rewarded display failed:', info?.code);
-        finish(false);
-      });
-      setAdLoading(true);
-      ALRewarded.loadAd(placementId);
-      console.log('[AppLovin] Loading rewarded:', placementId);
-    } catch (e: any) {
-      console.warn('[AppLovin] Rewarded exception:', e.message);
-      setAdLoading(false); onFail();
-    }
-  }
-
   /* ── AdMob rewarded helper ── */
   function _showAdMobRewarded(unitId: string, onDone: (watched: boolean) => void) {
     if (!unitId) { onDone(false); return; }
     if (!nativeSdkAvailable || !RewardedAdClass || !sdkReady) {
-      // No native SDK — proceed immediately
       onDone(true);
       return;
     }
@@ -413,66 +236,27 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  /* ── 3. Game interstitial — rotate AdMob → Unity → AppLovin ── */
+  /* ── 3. Game interstitial — AdMob (mediation picks Unity / AppLovin automatically) ── */
   const showGameInterstitial = useCallback((onDone: (shown: boolean) => void) => {
-    const s   = settingsRef.current;
-    const idx = gameIntIdxRef.current;
-    const NET: BannerProvider[] = ['admob', 'unity', 'applovin'];
-    const network = NET[idx % NET.length];
-    gameIntIdxRef.current = (idx + 1) % NET.length;
-    console.log('[AdContext] Game interstitial via:', network);
-
-    if (network === 'unity') {
-      _tryUnityAd(s.unityInterstitialId, () => onDone(true), () =>
-        _tryAppLovinInterstitial(s.applovinInterstitialId, () => onDone(true), () =>
-          _showAdMobInterstitial(s.admobUnitId || TEST_IDS.INTERSTITIAL, onDone)
-        )
-      );
-    } else if (network === 'applovin') {
-      _tryAppLovinInterstitial(s.applovinInterstitialId, () => onDone(true), () =>
-        _showAdMobInterstitial(s.admobUnitId || TEST_IDS.INTERSTITIAL, onDone)
-      );
-    } else {
-      _showAdMobInterstitial(s.admobUnitId || TEST_IDS.INTERSTITIAL, onDone);
-    }
+    const unitId = settingsRef.current.admobUnitId || TEST_IDS.INTERSTITIAL;
+    console.log('[AdContext] Game interstitial via AdMob mediation, unitId:', unitId);
+    _showAdMobInterstitial(unitId, onDone);
   }, [sdkReady]);
 
-  /* ── 4. Mining/Withdraw — Unity → AppLovin ONLY (NO AdMob per policy) ── */
+  /* ── 4. Mining/Withdraw/Booster interstitial — AdMob mediation (Unity/AppLovin auto-selected) ── */
   const showMiningInterstitial = useCallback((onDone: (shown: boolean) => void) => {
-    const s = settingsRef.current;
-    console.log('[AdContext] Mining interstitial — Unity → AppLovin (no AdMob per policy)');
-    _tryUnityAd(s.unityInterstitialId, () => onDone(true), () =>
-      _tryAppLovinInterstitial(s.applovinInterstitialId, () => onDone(true), () => {
-        console.log('[AdContext] Mining: no Unity/AppLovin available, proceeding without ad');
-        onDone(true);
-      })
-    );
+    const unitId = settingsRef.current.admobUnitId || TEST_IDS.INTERSTITIAL;
+    console.log('[AdContext] Mining interstitial via AdMob mediation, unitId:', unitId);
+    _showAdMobInterstitial(unitId, onDone);
   }, [sdkReady]);
 
   const showInterstitial = showGameInterstitial;
 
-  /* ── 5. Rewarded — rotate AdMob → Unity → AppLovin ── */
+  /* ── 5. Rewarded — AdMob (mediation picks Unity / AppLovin automatically) ── */
   const showRewarded = useCallback((onDone: (watched: boolean) => void) => {
-    const s   = settingsRef.current;
-    const idx = rewardedIdxRef.current;
-    const NET: BannerProvider[] = ['admob', 'unity', 'applovin'];
-    const network = NET[idx % NET.length];
-    rewardedIdxRef.current = (idx + 1) % NET.length;
-    console.log('[AdContext] Rewarded via:', network);
-
-    if (network === 'unity') {
-      _tryUnityAd(s.unityRewardedId, () => onDone(true), () =>
-        _tryAppLovinRewarded(s.applovinRewardedId, () => onDone(true), () =>
-          _showAdMobRewarded(s.admobRewardedId || TEST_IDS.REWARDED, onDone)
-        )
-      );
-    } else if (network === 'applovin') {
-      _tryAppLovinRewarded(s.applovinRewardedId, () => onDone(true), () =>
-        _showAdMobRewarded(s.admobRewardedId || TEST_IDS.REWARDED, onDone)
-      );
-    } else {
-      _showAdMobRewarded(s.admobRewardedId || TEST_IDS.REWARDED, onDone);
-    }
+    const unitId = settingsRef.current.admobRewardedId || TEST_IDS.REWARDED;
+    console.log('[AdContext] Rewarded via AdMob mediation, unitId:', unitId);
+    _showAdMobRewarded(unitId, onDone);
   }, [sdkReady]);
 
   return (
