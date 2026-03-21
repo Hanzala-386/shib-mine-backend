@@ -14,6 +14,9 @@ export const BANNER_HEIGHT = 50;
  * All banners now go through AdMob (react-native-google-mobile-ads).
  * Unity Ads and AppLovin run as mediation adapters inside AdMob's SDK —
  * no separate banner component is needed for either network.
+ *
+ * Layout: StickyBannerAd sits in the NORMAL FLEX FLOW below the tab bar.
+ * Never use position: 'absolute' here — that causes the ad to overlay navigation.
  */
 
 /* ── AdMob banner (with mediation to Unity / AppLovin) ───────────────────── */
@@ -30,18 +33,16 @@ function AdMobBanner({ unitId }: { unitId: string }) {
   );
 }
 
-/* ── Sticky banner — sits above the bottom tab bar, visible on all screens ── */
+/* ── Sticky banner — sits in flex flow BELOW the tab bar ─────────────────── */
 export function StickyBannerAd() {
   const { settings } = useAds();
   if (Platform.OS === 'web') return null;
 
   const unitId = settings.admobBannerUnitId || TEST_IDS.BANNER;
-  const banner = <AdMobBanner unitId={unitId} />;
-  if (!banner) return null;
 
   return (
     <View style={styles.wrapper}>
-      {banner}
+      <AdMobBanner unitId={unitId} />
     </View>
   );
 }
@@ -62,13 +63,9 @@ export function InlineBannerAd() {
 
 const styles = StyleSheet.create({
   wrapper: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
+    width: '100%',
     alignItems: 'center',
     backgroundColor: 'transparent',
-    zIndex: 10,
   },
 });
 

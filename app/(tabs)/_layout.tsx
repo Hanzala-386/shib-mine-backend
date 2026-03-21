@@ -6,7 +6,7 @@ import { Platform, StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import Colors from "@/constants/colors";
-import { StickyBannerAd, BANNER_HEIGHT } from "@/components/StickyBannerAd";
+import { StickyBannerAd } from "@/components/StickyBannerAd";
 
 /* ─── NativeTabs layout (iOS 26+ liquid glass) ──────────────────────────────── */
 function NativeTabLayout() {
@@ -40,8 +40,7 @@ function NativeTabLayout() {
 function ClassicTabLayout() {
   const isIOS = Platform.OS === "ios";
   const isWeb = Platform.OS === "web";
-  /* On native, shift the tab bar up by BANNER_HEIGHT so it floats above the banner */
-  const tabBarBottom = isWeb ? undefined : BANNER_HEIGHT;
+  const isAndroid = Platform.OS === "android";
 
   return (
     <View style={styles.container}>
@@ -51,13 +50,27 @@ function ClassicTabLayout() {
           tabBarActiveTintColor: Colors.gold,
           tabBarInactiveTintColor: Colors.textMuted,
           tabBarStyle: {
-            position: "absolute",
-            backgroundColor: isIOS ? "transparent" : Colors.darkCard,
-            borderTopWidth: isWeb ? 1 : 0,
-            borderTopColor: Colors.darkBorder,
-            elevation: 0,
-            bottom: tabBarBottom,
-            ...(isWeb ? { height: 84 } : {}),
+            /*
+             * Android: NOT absolute — stays in the flex column so the banner
+             * can sit below it without any overlap.
+             * iOS: absolute with BlurView for the glass effect.
+             * Web: relative (same as Android).
+             */
+            ...(isAndroid ? {
+              backgroundColor: Colors.darkCard,
+              borderTopWidth: 0,
+              elevation: 0,
+            } : isIOS ? {
+              position: 'absolute',
+              backgroundColor: 'transparent',
+              borderTopWidth: 0,
+              elevation: 0,
+            } : {
+              height: 84,
+              borderTopWidth: 1,
+              borderTopColor: Colors.darkBorder,
+              backgroundColor: Colors.darkCard,
+            }),
           },
           tabBarBackground: () =>
             isIOS ? (
@@ -107,8 +120,14 @@ function ClassicTabLayout() {
           }}
         />
       </Tabs>
-      {/* Sticky banner sits at the very bottom, below the tab bar */}
-      <StickyBannerAd />
+
+      {/*
+       * Banner sits BELOW the tab bar in normal flex flow.
+       * On Android the tab bar is not absolute, so this naturally stacks under it.
+       * On iOS the NativeTabs layout is used instead (no banner overlap possible).
+       * On web StickyBannerAd returns null.
+       */}
+      {isAndroid && <StickyBannerAd />}
     </View>
   );
 }
