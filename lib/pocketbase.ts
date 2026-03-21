@@ -6,18 +6,26 @@ export const pb = new PocketBase(POCKETBASE_URL);
 
 pb.autoCancellation(false);
 
+/* ── PocketBase record shapes (snake_case matches actual PB field names) ── */
+
 export interface PBUser {
   id: string;
-  uid: string;
+  firebase_uid: string;
   email: string;
-  username: string;
-  displayName: string;
-  referralCode: string;
-  referredBy?: string;
-  shibBalance: number;
-  powerTokens: number;
-  totalClaims: number;
-  totalWins: number;
+  display_name: string;
+  referral_code: string;
+  referred_by?: string;
+  referral_balance: number;
+  referral_earnings: number;
+  shib_balance: number;
+  power_tokens: number;
+  total_claims: number;
+  total_wins: number;
+  active_booster_multiplier: number;
+  booster_expiry: string;
+  fraud_attempts: number;
+  is_verified: boolean;
+  status: string;
   created: string;
 }
 
@@ -64,32 +72,38 @@ export interface PBTransaction {
 
 export class PocketBaseAPI {
   async createUser(data: {
-    uid: string;
+    firebase_uid: string;
     email: string;
-    username: string;
-    displayName: string;
-    referralCode: string;
-    referredBy?: string;
+    display_name: string;
+    referral_code: string;
+    referred_by?: string;
   }): Promise<PBUser> {
     try {
       return await pb.collection('users').create({
         ...data,
-        shibBalance: 0,
-        powerTokens: 10,
-        totalClaims: 0,
-        totalWins: 0,
+        shib_balance: 100,
+        power_tokens: 500,
+        referral_balance: 0,
+        referral_earnings: 0,
+        total_claims: 0,
+        total_wins: 0,
+        fraud_attempts: 0,
+        is_verified: false,
+        status: 'active',
+        active_booster_multiplier: 1,
+        booster_expiry: '',
       });
     } catch (e: any) {
-      if (e?.status === 400 && e?.data?.uid) {
-        return await pb.collection('users').getFirstListItem(`uid="${data.uid}"`);
+      if (e?.status === 400 && e?.data?.firebase_uid) {
+        return await pb.collection('users').getFirstListItem(`firebase_uid="${data.firebase_uid}"`);
       }
       throw e;
     }
   }
 
-  async getUserByUid(uid: string): Promise<PBUser | null> {
+  async getUserByFirebaseUid(firebaseUid: string): Promise<PBUser | null> {
     try {
-      return await pb.collection('users').getFirstListItem(`uid="${uid}"`);
+      return await pb.collection('users').getFirstListItem(`firebase_uid="${firebaseUid}"`);
     } catch {
       return null;
     }
@@ -102,8 +116,8 @@ export class PocketBaseAPI {
   async addShib(id: string, amount: number, description: string, type: string): Promise<PBUser> {
     const user = await pb.collection('users').getOne<PBUser>(id);
     const updated = await pb.collection('users').update<PBUser>(id, {
-      shibBalance: user.shibBalance + amount,
-      totalClaims: type === 'mining_claim' ? user.totalClaims + 1 : user.totalClaims,
+      shib_balance: user.shib_balance + amount,
+      total_claims: type === 'mining_claim' ? user.total_claims + 1 : user.total_claims,
     });
     await this.recordTransaction(user.id, type, amount, 'SHIB', description);
     return updated;
@@ -112,8 +126,8 @@ export class PocketBaseAPI {
   async addPowerTokens(id: string, amount: number, description: string, type: string): Promise<PBUser> {
     const user = await pb.collection('users').getOne<PBUser>(id);
     const updated = await pb.collection('users').update<PBUser>(id, {
-      powerTokens: user.powerTokens + amount,
-      totalWins: type === 'game_reward' ? user.totalWins + 1 : user.totalWins,
+      power_tokens: user.power_tokens + amount,
+      total_wins: type === 'game_reward' ? user.total_wins + 1 : user.total_wins,
     });
     await this.recordTransaction(user.id, type, amount, 'PT', description);
     return updated;
@@ -122,8 +136,8 @@ export class PocketBaseAPI {
   async spendPowerTokens(id: string, amount: number, description: string, type: string): Promise<boolean> {
     try {
       const user = await pb.collection('users').getOne<PBUser>(id);
-      if (user.powerTokens < amount) return false;
-      await pb.collection('users').update(id, { powerTokens: user.powerTokens - amount });
+      if (user.power_tokens < amount) return false;
+      await pb.collection('users').update(id, { power_tokens: user.power_tokens - amount });
       await this.recordTransaction(user.id, type, -amount, 'PT', description);
       return true;
     } catch {
@@ -190,18 +204,20 @@ export class PocketBaseAPI {
 
     try {
       const user = await pb.collection('users').getOne<PBUser>(userId);
-      if (user.referredBy) {
+      if (user.referred_by) {
         const referrer = await pb.collection('users').getFirstListItem<PBUser>(
-          `referralCode="${user.referredBy}"`
+          `referral_code="${user.referred_by}"`
         );
         if (referrer) {
           const commission = Math.floor(reward * 0.1);
           await pb.collection('users').update(referrer.id, {
-            shibBalance: referrer.shibBalance + commission,
+            shib_balance: referrer.shib_balance + commission,
+            referral_earnings: referrer.referral_earnings + commission,
+            referral_balance: referrer.referral_balance + commission,
           });
           await this.recordTransaction(
             referrer.id, 'referral_bonus', commission, 'SHIB',
-            `10% referral commission from ${user.username}`
+            `10% referral commission from ${user.display_name}`
           );
         }
       }
@@ -223,7 +239,7 @@ export class PocketBaseAPI {
 
   async getUserByReferralCode(code: string): Promise<PBUser | null> {
     try {
-      return await pb.collection('users').getFirstListItem<PBUser>(`referralCode="${code}"`);
+      return await pb.collection('users').getFirstListItem<PBUser>(`referral_code="${code}"`);
     } catch {
       return null;
     }
