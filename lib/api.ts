@@ -230,6 +230,7 @@ export interface PBUser {
   created: string;
   activeBoosterMultiplier: number;
   boosterExpires: string;
+  referralBalance: number;
   fraudAttempts: number;
   status: string;
 }

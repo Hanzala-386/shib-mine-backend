@@ -104,6 +104,9 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 ## CRITICAL: Backend Architecture
 - **Express (port 5000)** runs ONLY in Replit dev environment. `api.webcod.in` hosts PocketBase ONLY.
 - All `/api/app/*` routes return 404 on the published APK. Every Express call MUST have a PocketBase SDK fallback.
+- **Game** (`/arcade/index.html`) is now LIVE at `https://api.webcod.in/arcade/index.html` (uploaded to pb_public via SFTP).
+- `games.tsx` fetches game stats and syncs scores **directly via PocketBase SDK** (`pb.collection('users')`) — no Express dependency.
+- Referral count is queried directly via `pb.collection('users').getList(filter: referred_by = "CODE")` as fallback.
 - **PB password pattern**: `SHIB_${firebaseUid}_SECURE` — used for direct PB auth
 - **Auth flow**: Firebase → `confirmAndLoadUser` tries Express → falls back to `pbDirectLogin` → saves PB token to AsyncStorage → restored on next startup
 - **Mining flow**: `startMining`/`claimReward`/`activateBooster`/`startMiningWithBooster` try Express → fall back to direct PB SDK calls

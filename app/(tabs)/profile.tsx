@@ -22,6 +22,7 @@ import {
 } from 'firebase/auth';
 import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { pb } from '@/lib/pocketbase';
 import { useWallet } from '@/context/WalletContext';
 import { useAds } from '@/context/AdContext';
 import { InlineBannerAd } from '@/components/StickyBannerAd';
@@ -115,20 +116,33 @@ export default function ProfileScreen() {
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
   const pbId         = pbUser?.pbId ?? '';
 
-  /* Referral stats — try Express first, fall back to data we already have in pbUser */
+  /* Referral stats — try Express first, fall back to direct PocketBase query */
   const { data: referralStats, refetch: refetchReferralStats } = useQuery({
-    queryKey: ['/api/app/user/referral-stats', pbId],
+    queryKey: ['/api/app/user/referral-stats', pbId, referralCode],
     queryFn: async () => {
       try {
         return await api.getReferralStats(pbId);
       } catch {
-        // Express unreachable — derive basic stats from the already-loaded pbUser record
-        return {
-          referredCount: 0,
-          referralBalance: pbUser?.referralEarnings ?? 0,
-          totalEarnings: pbUser?.referralEarnings ?? 0,
-          referredUsers: [],
-        };
+        // Express unreachable — query PocketBase directly for referral count
+        try {
+          const code = referralCode;
+          const result = await pb.collection('users').getList(1, 1, {
+            filter: code ? `referred_by = "${code}"` : 'id = ""',
+          });
+          return {
+            referredCount:  result.totalItems,
+            referralBalance: pbUser?.referralBalance ?? 0,
+            totalEarnings:   pbUser?.referralEarnings ?? 0,
+            referredUsers:   [],
+          };
+        } catch {
+          return {
+            referredCount:  0,
+            referralBalance: pbUser?.referralBalance ?? 0,
+            totalEarnings:   pbUser?.referralEarnings ?? 0,
+            referredUsers:   [],
+          };
+        }
       }
     },
     enabled: !!pbId,

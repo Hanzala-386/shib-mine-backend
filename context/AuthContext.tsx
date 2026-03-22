@@ -81,6 +81,7 @@ function formatRawPbUser(u: any): PBUser {
     referralCode: u.referral_code || '',
     referredBy: u.referred_by || '',
     referralEarnings: u.referral_earnings || 0,
+    referralBalance: u.referral_balance || 0,
     shibBalance: u.shib_balance || 0,
     powerTokens: u.power_tokens ?? 10,
     totalClaims: u.total_claims || 0,

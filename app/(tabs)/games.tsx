@@ -9,12 +9,9 @@ import * as Haptics from 'expo-haptics';
 import { useWallet } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
+import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
-
-function pbHeaders(pbId: string): HeadersInit {
-  return { 'Content-Type': 'application/json', 'X-PB-ID': pbId };
-}
 
 let WebView: any = null;
 if (Platform.OS !== 'web') {
@@ -24,8 +21,6 @@ if (Platform.OS !== 'web') {
 const { width: SW, height: SH } = Dimensions.get('window');
 const BASE        = getApiUrl();
 const GAME_URL    = new URL('/arcade/index.html', BASE).href;
-const GAME_DATA   = (pbId: string) => new URL(`/api/app/game/data/${pbId}`, BASE).href;
-const SYNC_SCORE  = new URL('/api/app/game/sync-score', BASE).href;
 
 const SESSION_SECONDS = 180; // 3-minute session
 const SCORE_LIMIT     = 2000;
@@ -82,12 +77,19 @@ export default function GamesScreen() {
     }
   }, [pbUser]);
 
-  /* ── Fetch game data ── */
+  /* ── Fetch game data — reads directly from PocketBase users collection ── */
   const fetchGameData = useCallback(async (pbId: string) => {
     if (!pbId) return;
     try {
-      const res = await fetch(GAME_DATA(pbId), { headers: { 'X-PB-ID': pbId } });
-      const data: GameData = await res.json();
+      const record = await pb.collection('users').getOne(pbId, {
+        fields: 'power_tokens,collected_tomatoes,last_session_score,total_accumulated_score',
+      });
+      const data: GameData = {
+        power_tokens:            record.power_tokens ?? 0,
+        collected_tomatoes:      record.collected_tomatoes ?? 0,
+        last_session_score:      record.last_session_score ?? 0,
+        total_accumulated_score: record.total_accumulated_score ?? 0,
+      };
       gameDataRef.current = data;
       setGameStats(data);
       return data;
@@ -174,25 +176,26 @@ export default function GamesScreen() {
     setPhase('summary');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Sync score to server in background
+    // Sync score directly to PocketBase users collection in background
     const pbId = pbIdRef.current;
     if (pbId) {
-      const body: Record<string, number | string> = { pbId, score: s };
-      if (t !== undefined) body.collected_tomatoes = t;
-      fetch(SYNC_SCORE, {
-        method: 'POST',
-        headers: pbHeaders(pbId),
-        body: JSON.stringify(body),
-      })
-        .then(r => r.json())
-        .then(data => {
-          if (data.success) {
-            setGameStats(prev => prev ? {
-              ...prev,
-              last_session_score: Number(data.last_session_score),
-              collected_tomatoes: Number(data.collected_tomatoes),
-            } : prev);
-          }
+      const prev = gameDataRef.current;
+      const newTotalScore   = (prev?.total_accumulated_score ?? 0) + s;
+      const newTomatoes     = (prev?.collected_tomatoes ?? 0) + (t ?? 0);
+      const updatePayload: Record<string, number> = {
+        last_session_score:      s,
+        total_accumulated_score: newTotalScore,
+      };
+      if (t !== undefined) updatePayload.collected_tomatoes = newTomatoes;
+
+      pb.collection('users').update(pbId, updatePayload)
+        .then(() => {
+          setGameStats(prev2 => prev2 ? {
+            ...prev2,
+            last_session_score:      s,
+            total_accumulated_score: newTotalScore,
+            ...(t !== undefined ? { collected_tomatoes: newTomatoes } : {}),
+          } : prev2);
         })
         .catch(() => {});
     }
