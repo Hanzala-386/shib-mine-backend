@@ -18,6 +18,7 @@ import * as Haptics from 'expo-haptics';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { api } from '@/lib/api';
+import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 
 type Step = 'input' | 'success';
@@ -44,7 +45,25 @@ export default function ForgotPasswordScreen() {
     setIsLoading(true);
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-      const { found } = await api.checkEmailExists(trimmed);
+
+      // Check if email is registered — try Express first, fall back to PB SDK
+      let found = false;
+      try {
+        const res = await api.checkEmailExists(trimmed);
+        found = res.found;
+      } catch {
+        try {
+          const res = await pb.collection('users').getList(1, 1, {
+            filter: `email = "${trimmed}"`,
+            fields: 'id',
+          });
+          found = res.totalItems > 0;
+        } catch {
+          // Can't verify — let Firebase handle it gracefully
+          found = true;
+        }
+      }
+
       if (!found) {
         setErrorMsg('This email is not registered with us.');
         return;

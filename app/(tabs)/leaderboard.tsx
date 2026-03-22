@@ -51,18 +51,22 @@ async function fetchLeaderboard(): Promise<LeaderEntry[]> {
   try {
     return await fetchJson('/api/app/leaderboard');
   } catch {
-    // Fall back: query PocketBase directly
+    // PB SDK fallback (authenticated — works even when collection isn't public)
     try {
-      const url = `${POCKETBASE_URL}/api/collections/users/records?sort=-shib_balance&perPage=100&fields=id,display_name,shib_balance`;
-      const r = await fetch(url);
-      if (!r.ok) return [];
-      const data = await r.json();
-      return (data.items || []).map((u: any, i: number) => ({
-        rank: i + 1,
-        id: u.id,
-        displayName: u.display_name || 'Miner',
-        shibBalance: u.shib_balance || 0,
-      }));
+      const res = await pb.collection('users').getList(1, 100, {
+        sort: '-shib_balance',
+        fields: 'id,display_name,shib_balance',
+      });
+      return (res.items || []).map((u: any, i: number) => {
+        let name: string = u.display_name || 'Miner';
+        if (name.includes('@')) name = name.split('@')[0];
+        return {
+          rank: i + 1,
+          id: u.id,
+          displayName: name,
+          shibBalance: u.shib_balance || 0,
+        };
+      });
     } catch {
       return [];
     }

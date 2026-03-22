@@ -1,0 +1,46 @@
+URGENT: Critical Backend & Logic Failure Audit - Immediate Action Required
+"Hi,
+
+The game UI is stable, but the entire App-to-Database ecosystem is failing. I have attached screenshots of multiple HTTP 404 errors, logic bypasses, and broken syncs. Since my SMTP and VPS are verified and live, these are strictly code-level/API configuration issues.
+
+I need these 6 points fixed immediately. Do not send a build until you've verified these against the PRODUCTION API (https://api.webcod.in):
+
+Broken Data Mapping (power_token_per_click): The values set in the PocketBase settings collection are not reflecting in the app. The app is likely using hardcoded defaults or failing to fetch the settings record. Ensure the app pulls live data for every click value.
+
+Fraud & Mining Logic Bypass: Our anti-fraud system is non-functional.
+
+Users are able to claim rewards even after manipulating local device time.
+
+The current_mining_session (Relation), fraud_attempts (Number), and status (Select) fields are not being updated or checked during the claim process.
+
+Fix: The app MUST validate the session against the server time before allowing a claim. If it's a mismatch, increment fraud_attempts.
+
+Leaderboard & Withdrawal History (HTTP 404): [Ref: Attached Screenshot]
+
+The Top Players section is empty (0 players ranked).
+
+Live Withdrawals are not showing.
+
+Withdrawal Button returns a 404.
+
+Issue: You are likely calling local/non-existent endpoints. Map these to the PocketBase users (sorted by rank) and withdrawals collections correctly.
+
+Referral Tracking Failure: Referral counts are not updating. If the field is missing, create it now. The app must increment the referrer's count and balance upon a successful new user sign-up.
+
+Auth System Failures (Firebase & OTP): [Ref: Attached Screenshot]
+
+Forget Password: Returning HTTP 404.
+
+New Account: Showing 'Too many requests' error.
+
+Issue: Our Firebase is perfect. This error usually happens when the backend proxy or the API call is looped or misconfigured. Fix the Auth provider integration.
+
+Account Deletion & SMTP Logic: [Ref: Attached Screenshot]
+
+'Delete Account' returns HTTP 404. Request is not reaching the server.
+
+Once deleted, the email MUST be added to the deleted_emails collection to prevent re-registration.
+
+SMTP is ALREADY verified on my end (Brevo details: smtp-relay.brevo.com | Port 587). The failure to send OTP is a code logic error, not a server error.
+
+Final Note: You have full access to the database. If a field is missing, create it. If a path is wrong, fix it. I will not accept 'server error' as an excuse when the SMTP test is successful. I need a fully synced APK where the leaderboard, claims, and auth work via the production API."

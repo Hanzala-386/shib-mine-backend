@@ -33,6 +33,47 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
+const BREVO_KEY = process.env.EXPO_PUBLIC_BREVO_API_KEY ?? '';
+
+/* ── PB fallback: generate OTP, store in otp_codes, send via Brevo REST ── */
+async function pbSendDeleteOtp(pbId: string, email: string): Promise<void> {
+  const otp = String(Math.floor(100000 + Math.random() * 900000));
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
+    .toISOString()
+    .replace('T', ' ')
+    .replace(/\.\d{3}Z$/, '');
+
+  // Clear any existing OTPs for this user
+  try {
+    const existing = await pb.collection('otp_codes').getList(1, 20, {
+      filter: `user = "${pbId}"`,
+      fields: 'id',
+    });
+    for (const rec of existing.items) {
+      await pb.collection('otp_codes').delete(rec.id).catch(() => {});
+    }
+  } catch { /* non-critical */ }
+
+  // Store new OTP in PocketBase
+  await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
+
+  // Send email via Brevo REST API
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'api-key': BREVO_KEY },
+    body: JSON.stringify({
+      sender: { name: 'Shiba Hit', email: 'a52a39001@smtp-brevo.com' },
+      to: [{ email }],
+      subject: 'Your Account Deletion Code — Shiba Hit',
+      textContent: `Your 6-digit code to confirm account deletion is:\n\n${otp}\n\nThis code expires in 5 minutes.\n\nIf you did not request this, please ignore this email.\n\n— Shiba Hit Team`,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Email delivery failed (${res.status}). ${body}`);
+  }
+}
+
 /* ── helpers ── */
 function formatShib(val: number) {
   if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(2)}M`;
@@ -275,7 +316,12 @@ export default function ProfileScreen() {
     if (!pbId || !email) return;
     setIsRequestingOtp(true);
     try {
-      await api.requestDeleteOtp(pbId, email);
+      try {
+        await api.requestDeleteOtp(pbId, email);
+      } catch {
+        // PB fallback: create OTP record + send via Brevo REST API
+        await pbSendDeleteOtp(pbId, email);
+      }
       setOtpCode('');
       setOtpError('');
       setShowConfirmDeleteModal(false);
@@ -297,7 +343,12 @@ export default function ProfileScreen() {
     setIsRequestingOtp(true);
     setOtpError('');
     try {
-      await api.requestDeleteOtp(pbId, email);
+      try {
+        await api.requestDeleteOtp(pbId, email);
+      } catch {
+        // PB fallback: create OTP record + send via Brevo REST API
+        await pbSendDeleteOtp(pbId, email);
+      }
       setOtpCode('');
       setResendCountdown(60);
       const id = setInterval(() => {
