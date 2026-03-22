@@ -109,6 +109,8 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 - `games.tsx` fetches game stats and syncs scores **directly via PocketBase SDK** (`pb.collection('users')`) — no Express dependency.
 - The game's JS files do NOT call PocketBase — all bridge logic (score sync, PT awards, AdMob) is in the RN app.
 - Referral count is queried directly via `pb.collection('users').getList(filter: referred_by = "CODE")` as fallback.
+- **Settings** (`AdminContext.tsx`) now tries Express first → falls back to `pb.collection('settings').getList()` with `formatPbSettings()` mapper (snake_case → camelCase). Mining rates, boost costs, and ad IDs all load from PocketBase directly on device.
+- **Dead code removed**: `PocketBaseAPI` class and `PBMiningSession`/`PBSettings`/`PBTransaction` interfaces removed from `lib/pocketbase.ts` (all used wrong field names and were unused).
 - **PB password pattern**: `SHIB_${firebaseUid}_SECURE` — used for direct PB auth
 - **Auth flow**: Firebase → `confirmAndLoadUser` tries Express → falls back to `pbDirectLogin` → saves PB token to AsyncStorage → restored on next startup
 - **Mining flow**: `startMining`/`claimReward`/`activateBooster`/`startMiningWithBooster` try Express → fall back to direct PB SDK calls

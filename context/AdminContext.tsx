@@ -2,6 +2,49 @@ import React, { createContext, useContext, useState, useEffect, useMemo, ReactNo
 import storage from '@/lib/storage';
 import { api, type AppSettings } from '@/lib/api';
 import { configureAds } from '@/lib/AdService';
+import { pb } from '@/lib/pocketbase';
+
+// Maps raw PocketBase settings record (snake_case) → AppSettings (camelCase)
+// Mirrors the formatSettings logic in server/routes.ts so both paths produce identical shape.
+function formatPbSettings(s: any): AppSettings {
+  return {
+    id: s.id ?? '',
+    miningRatePerSec:      s.mining_rate_per_sec      ?? 0.01736,
+    powerTokenPerClick:    s.power_token_per_click    ?? 24,
+    miningDurationMinutes: s.mining_duration_minutes  ?? 60,
+    tokensPerRound:        s.tokens_per_round         ?? 3,
+    boostCosts: {
+      '2x':  s.boost_2x_cost  ?? 200,
+      '4x':  s.boost_4x_cost  ?? 400,
+      '6x':  s.boost_6x_cost  ?? 600,
+      '10x': s.boost_10x_cost ?? 800,
+    },
+    minWithdrawal1:          s.min_withdrawal_1          ?? 100,
+    minWithdrawal2:          s.min_withdrawal_2          ?? 1000,
+    minWithdrawal3:          s.min_withdrawal_3          ?? 8000,
+    showAds:                 s.show_ads                  ?? false,
+    activeAdNetwork:         s.active_ad_network         ?? '',
+    admobUnitId:             s.admob_unit_id             ?? '',
+    admobBannerUnitId:       s.admob_banner_unit_id      ?? '',
+    admobRewardedId:         s.admob_rewarded_id         ?? '',
+    unityGameId:             s.unity_game_id             ?? '',
+    unityRewardedId:         s.unity_rewarded_id         ?? '',
+    unityInterstitialId:     s.unity_interstitial_id     ?? '',
+    applovinSdkKey:          s.applovin_sdk_key          ?? '',
+    applovinRewardedId:      s.applovin_rewarded_id      ?? '',
+    applovinBannerId:        s.applovin_banner_id        ?? '',
+    applovinInterstitialId:  s.applovin_interstitial_id  ?? '',
+    appStoreLink:            s.app_store_link            ?? '',
+    playStoreUrl:            s.play_store_url ?? s.app_store_link ?? '',
+    ratePopupFrequency:      s.rate_popup_frequency      ?? 5,
+  };
+}
+
+async function fetchSettingsFromPb(): Promise<AppSettings> {
+  const res = await pb.collection('settings').getList(1, 1);
+  if (!res.items[0]) throw new Error('No settings record found');
+  return formatPbSettings(res.items[0]);
+}
 
 export type { AppSettings };
 
@@ -61,8 +104,14 @@ export function AdminProvider({ children }: { children: ReactNode }) {
         setSettings(DEFAULT_SETTINGS);
       }
 
-      // Fetch live from server
-      const fresh = await api.getSettings();
+      // Fetch live — try Express first, fall back to PocketBase SDK directly
+      let fresh: AppSettings;
+      try {
+        fresh = await api.getSettings();
+      } catch {
+        console.warn('[Admin] Express unreachable, fetching settings direct from PocketBase');
+        fresh = await fetchSettingsFromPb();
+      }
       setSettings(fresh);
       applyAdsConfig(fresh);
       await storage.setItem(CACHE_KEY, JSON.stringify(fresh));
