@@ -8,7 +8,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useWallet } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
-import { getApiUrl } from '@/lib/query-client';
 import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
@@ -19,8 +18,8 @@ if (Platform.OS !== 'web') {
 }
 
 const { width: SW, height: SH } = Dimensions.get('window');
-const BASE        = getApiUrl();
-const GAME_URL    = new URL('/arcade/index.html', BASE).href;
+// Game is hosted on shared hosting (different domain from the PocketBase API)
+const GAME_URL = 'https://webcod.in/arcade/index.html';
 
 const SESSION_SECONDS = 180; // 3-minute session
 const SCORE_LIMIT     = 2000;
