@@ -170,7 +170,23 @@ export default function ProfileScreen() {
 
     const doTransfer = async () => {
       try {
-        const result = await api.claimReferral(pbId);
+        let result: { success: boolean; claimed: number; newShibBalance: number };
+        try {
+          result = await api.claimReferral(pbId);
+        } catch {
+          // PB SDK fallback: move referral_balance → shib_balance directly
+          const userRec = await pb.collection('users').getOne(pbId, {
+            fields: 'id,referral_balance,shib_balance',
+          });
+          const balance = userRec.referral_balance || 0;
+          if (balance <= 0) throw new Error('No referral rewards to claim');
+          const newShib = (userRec.shib_balance || 0) + balance;
+          await pb.collection('users').update(pbId, {
+            shib_balance: newShib,
+            referral_balance: 0,
+          });
+          result = { success: true, claimed: balance, newShibBalance: newShib };
+        }
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setShowClaimModal(false);
         claimAnim.setValue(0);
@@ -309,7 +325,25 @@ export default function ProfileScreen() {
     setIsDeleting(true);
     try {
       // 1. Verify OTP + delete PocketBase record
-      await api.confirmDelete(pbId, otpCode);
+      try {
+        await api.confirmDelete(pbId, otpCode);
+      } catch {
+        // PB SDK fallback: validate OTP and delete user directly
+        const records = await pb.collection('otp_codes').getList(1, 10, {
+          filter: `user = "${pbId}"`,
+        });
+        const otpRecord = (records.items || []).find(
+          (r: any) => String(r.code).trim() === String(otpCode).trim()
+        );
+        if (!otpRecord) throw new Error('Invalid OTP. Please try again.');
+        if (new Date(otpRecord.expires_at) < new Date()) {
+          await pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
+          throw new Error('OTP has expired. Please request a new one.');
+        }
+        // Consume OTP and delete user
+        await pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
+        await pb.collection('users').delete(pbId);
+      }
       // 2. Delete Firebase account
       await deleteUser(firebaseUser!);
       // 3. Navigate away

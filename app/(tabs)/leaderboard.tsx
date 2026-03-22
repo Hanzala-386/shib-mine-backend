@@ -8,7 +8,7 @@ import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
-import { POCKETBASE_URL } from '@/lib/pocketbase';
+import { POCKETBASE_URL, pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 
 /* ── types ── */
@@ -73,7 +73,25 @@ async function fetchMyRank(pbId: string): Promise<MyRank | undefined> {
   try {
     return await fetchJson(`/api/app/leaderboard/rank/${pbId}`);
   } catch {
-    return undefined;
+    // PB fallback: fetch full sorted list and find user's position
+    try {
+      const url = `${POCKETBASE_URL}/api/collections/users/records?sort=-shib_balance&perPage=200&fields=id,display_name,shib_balance`;
+      const r = await fetch(url);
+      if (!r.ok) return undefined;
+      const data = await r.json();
+      const items: any[] = data.items || [];
+      const idx = items.findIndex(u => u.id === pbId);
+      if (idx < 0) return undefined;
+      const u = items[idx];
+      return {
+        rank: idx + 1,
+        id: u.id,
+        displayName: u.display_name || 'Miner',
+        shibBalance: u.shib_balance || 0,
+      };
+    } catch {
+      return undefined;
+    }
   }
 }
 
@@ -257,11 +275,36 @@ export default function LeaderboardScreen() {
     staleTime: 60_000,
   });
 
-  // Ticker is a nice-to-have — no fallback needed, gracefully hides when unavailable
+  // Ticker: try Express, then query PocketBase withdrawals collection directly
   const { data: ticker = [] } = useQuery<TickerItem[]>({
     queryKey: ['/api/app/withdrawals/approved/recent'],
     queryFn: async () => {
-      try { return await fetchJson('/api/app/withdrawals/approved/recent'); } catch { return []; }
+      try {
+        return await fetchJson('/api/app/withdrawals/approved/recent');
+      } catch {
+        // PB fallback: query completed withdrawals directly
+        try {
+          const res = await pb.collection('withdrawals').getList(1, 10, {
+            filter: 'status = "completed"',
+            sort: '-created',
+            expand: 'user',
+          });
+          return (res.items || []).map((w: any) => {
+            const uname: string = w.expand?.user?.display_name || 'Miner';
+            const masked = uname.length > 2
+              ? uname.slice(0, 2) + '***'
+              : uname + '***';
+            return {
+              id: w.id,
+              maskedName: masked,
+              method: w.method || 'BEP-20',
+              amount: w.amount || 0,
+            };
+          });
+        } catch {
+          return [];
+        }
+      }
     },
     staleTime: 120_000,
   });

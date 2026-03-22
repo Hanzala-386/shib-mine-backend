@@ -11,6 +11,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
+import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 
 export default function InviteScreen() {
@@ -23,7 +24,43 @@ export default function InviteScreen() {
 
   const { data: stats } = useQuery({
     queryKey: ['/api/app/user/referral-stats', pbId],
-    queryFn: () => api.getReferralStats(pbId),
+    queryFn: async () => {
+      try {
+        return await api.getReferralStats(pbId);
+      } catch {
+        // PB SDK fallback: query referred users and user balances directly
+        try {
+          const code = user?.referralCode ?? pbUser?.referralCode ?? '';
+          const [refRes, meRes] = await Promise.all([
+            pb.collection('users').getList(1, 200, {
+              filter: code ? `referred_by = "${code}"` : 'id = ""',
+              fields: 'id,email,created,total_claims',
+            }),
+            pb.collection('users').getOne(pbId, {
+              fields: 'id,referral_balance,referral_earnings',
+            }),
+          ]);
+          return {
+            referredCount: refRes.totalItems,
+            totalEarnings: meRes.referral_earnings || 0,
+            referralBalance: meRes.referral_balance || 0,
+            referredUsers: (refRes.items || []).map((u: any) => ({
+              id: u.id,
+              email: u.email,
+              joined: u.created,
+              claims: u.total_claims || 0,
+            })),
+          };
+        } catch {
+          return {
+            referredCount: 0,
+            totalEarnings: pbUser?.referralEarnings ?? 0,
+            referralBalance: pbUser?.referralBalance ?? 0,
+            referredUsers: [],
+          };
+        }
+      }
+    },
     enabled: !!pbId,
     staleTime: 30_000,
   });
