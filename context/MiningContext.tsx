@@ -133,7 +133,16 @@ async function pbClaimMining(
       new Error(shouldBlock
         ? 'Account blocked after repeated clock manipulation attempts.'
         : 'Invalid claim time detected. Please do not modify your device clock.'),
-      { data: { error: shouldBlock ? 'ACCOUNT_BLOCKED' : 'FRAUD_DETECTED' } },
+      {
+        data: {
+          error:         shouldBlock ? 'ACCOUNT_BLOCKED' : 'FRAUD_DETECTED',
+          fraudAttempts: fraudAttempts,
+          blocked:       shouldBlock,
+          message:       shouldBlock
+            ? 'Your account has been permanently disabled due to multiple fraud attempts.'
+            : `Your phone time does not match our server. This is Strike ${fraudAttempts}/3. Your mining progress has been reset. 3 strikes = Permanent Ban.`,
+        },
+      },
     );
   }
 

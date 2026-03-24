@@ -125,7 +125,7 @@ export default function WalletScreen() {
       />
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 16), paddingBottom: 120 }]}
+        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 16), paddingBottom: insets.bottom + 140 }]}
       >
         <Animated.View entering={FadeInDown.delay(100).springify()}>
           <Text style={styles.pageTitle}>Wallet</Text>

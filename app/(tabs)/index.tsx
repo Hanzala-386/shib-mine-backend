@@ -654,9 +654,8 @@ export default function HomeScreen() {
         {status === 'ready_to_claim' && (
           <Animated.View entering={FadeInDown.delay(50).springify()} style={styles.actionsArea}>
             <Pressable
-              style={({ pressed }) => [styles.actionBtn, { opacity: (pressed || isClaiming) ? 0.6 : 1 }]}
+              style={({ pressed }) => [styles.actionBtn, { opacity: pressed ? 0.8 : 1 }]}
               onPress={handleClaim}
-              disabled={isClaiming}
             >
               <LinearGradient
                 colors={[Colors.gold, Colors.neonOrange]}

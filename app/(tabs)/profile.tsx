@@ -25,7 +25,7 @@ import { useAuth } from '@/context/AuthContext';
 import { pb } from '@/lib/pocketbase';
 import { useWallet } from '@/context/WalletContext';
 import { useAds } from '@/context/AdContext';
-import { InlineBannerAd } from '@/components/StickyBannerAd';
+import { InlineBannerAd, BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
@@ -33,7 +33,9 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-const BREVO_KEY = process.env.EXPO_PUBLIC_BREVO_API_KEY ?? '';
+// Fallback to hardcoded key so it works even when the env var doesn't load in the cached Metro bundle
+const BREVO_KEY = process.env.EXPO_PUBLIC_BREVO_API_KEY
+  || 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-JyPzK9RXNM1BUrIj';
 
 /* ── PB fallback: generate OTP, store in otp_codes, send via Brevo REST ── */
 // Returns the generated OTP so the caller can store it in-memory as a fallback.
@@ -499,7 +501,7 @@ export default function ProfileScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.scroll, {
           paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 16),
-          paddingBottom: 120,
+          paddingBottom: insets.bottom + BANNER_HEIGHT + 90,
         }]}
       >
         {/* ── Avatar + name header ── */}

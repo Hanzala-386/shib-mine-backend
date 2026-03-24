@@ -9,6 +9,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
 import { POCKETBASE_URL, pb } from '@/lib/pocketbase';
+import { BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import Colors from '@/constants/colors';
 
 /* ── types ── */
@@ -378,11 +379,16 @@ export default function LeaderboardScreen() {
         }
         ListFooterComponent={<View style={{ height: 24 }} />}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0) + 100 }}
+        contentContainerStyle={{
+          paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0) + BANNER_HEIGHT + 110,
+        }}
       />
 
-      {/* Fixed withdrawal ticker at bottom */}
-      <View style={[styles.tickerFixed, { paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0) + (Platform.OS === 'web' ? 84 : 80) }]}>
+      {/* Fixed withdrawal ticker — sits above the sticky banner ad on native */}
+      <View style={[styles.tickerFixed, {
+        bottom: Platform.OS === 'web' ? 84 : BANNER_HEIGHT,
+        paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0),
+      }]}>
         <WithdrawalTicker items={ticker} />
       </View>
     </View>
