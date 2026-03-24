@@ -713,12 +713,20 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     try {
       let res: any;
       try {
-        res = await api.claimMining({ sessionId: s.pbSessionId!, pbId: currentPbId });
+        // Wrap Express call with 8-second timeout — on the physical device the
+        // remote URL can hang for 30-90s before TCP gives up, leaving the button
+        // stuck on "Claiming..." indefinitely. 8s is ample for a healthy server;
+        // if it hasn't responded by then we fall through to the PocketBase SDK.
+        const expressCall = api.claimMining({ sessionId: s.pbSessionId!, pbId: currentPbId });
+        const expressTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('EXPRESS_TIMEOUT')), 8000)
+        );
+        res = await Promise.race([expressCall, expressTimeout]);
       } catch (expressErr: any) {
         const errCode = expressErr?.data?.error || '';
         const isHardBlock = errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED';
         if (isHardBlock) throw expressErr; // don't fall through on fraud
-        // Express unreachable — use PocketBase direct
+        // Express unreachable or timed out — use PocketBase direct
         res = await pbClaimMining(s.pbSessionId!, currentPbId, miningRateRef.current);
       }
 

@@ -1760,7 +1760,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/app/withdrawals/approved/recent", async (_req: Request, res: Response) => {
     try {
       const r = await pbGet(
-        `/api/collections/withdrawals/records?filter=${encodeURIComponent(`status="completed"`)}&sort=-created&perPage=10&expand=user`,
+        `/api/collections/withdrawals/records?filter=${encodeURIComponent(`status="completed" || status="approved"`)}&sort=-created&perPage=10&expand=user`,
       );
       res.json(
         (r.items || []).map((w: any) => {

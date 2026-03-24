@@ -35,7 +35,7 @@ const APP_NAME    = 'Shiba Hit';
 
 // Fallback to hardcoded key so it works even when the env var doesn't load in the cached Metro bundle
 const BREVO_KEY = process.env.EXPO_PUBLIC_BREVO_API_KEY
-  || 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-JyPzK9RXNM1BUrIj';
+  || 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-N9VMePFXzvROgxUP';
 
 /* ── PB fallback: generate OTP, store in otp_codes, send via Brevo REST ── */
 // Returns the generated OTP so the caller can store it in-memory as a fallback.
@@ -176,14 +176,22 @@ export default function ProfileScreen() {
         // Express unreachable — query PocketBase directly for referral count
         try {
           const code = referralCode;
-          const result = await pb.collection('users').getList(1, 1, {
+          const result = await pb.collection('users').getList(1, 50, {
             filter: code ? `referred_by = "${code}"` : 'id = ""',
+            fields: 'id,display_name,email,created,total_claims',
+            sort: '-created',
           });
+          const referredUsers = (result.items || []).map((u: any) => ({
+            id: u.id,
+            email: u.display_name || u.email || 'Miner',
+            joined: u.created || '',
+            claims: u.total_claims || 0,
+          }));
           return {
             referredCount:  result.totalItems,
             referralBalance: pbUser?.referralBalance ?? 0,
             totalEarnings:   pbUser?.referralEarnings ?? 0,
-            referredUsers:   [],
+            referredUsers,
           };
         } catch {
           return {

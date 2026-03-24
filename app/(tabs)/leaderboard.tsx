@@ -290,7 +290,7 @@ export default function LeaderboardScreen() {
         // PB fallback: query completed withdrawals directly
         try {
           const res = await pb.collection('withdrawals').getList(1, 10, {
-            filter: 'status = "completed"',
+            filter: 'status = "completed" || status = "approved"',
             sort: '-created',
             expand: 'user',
           });
@@ -380,14 +380,14 @@ export default function LeaderboardScreen() {
         ListFooterComponent={<View style={{ height: 24 }} />}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
-          paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0) + BANNER_HEIGHT + 110,
+          paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0) + BANNER_HEIGHT + 56 + 80,
         }}
       />
 
-      {/* Fixed withdrawal ticker — sits above the sticky banner ad on native */}
+      {/* Fixed withdrawal ticker — sits above the full tab bar (banner+buttons) */}
+      {/* Tab bar total height = BANNER_HEIGHT(50) + 56 + insets.bottom */}
       <View style={[styles.tickerFixed, {
-        bottom: Platform.OS === 'web' ? 84 : BANNER_HEIGHT,
-        paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0),
+        bottom: Platform.OS === 'web' ? 84 : BANNER_HEIGHT + 56 + insets.bottom,
       }]}>
         <WithdrawalTicker items={ticker} />
       </View>
