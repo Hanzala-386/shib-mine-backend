@@ -33,14 +33,17 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-// Fallback to hardcoded key so it works even when the env var doesn't load in the cached Metro bundle
-const BREVO_KEY = process.env.EXPO_PUBLIC_BREVO_API_KEY
-  || 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-N9VMePFXzvROgxUP';
+// Brevo REST API key — hardcoded directly (no env var) to guarantee it is always
+// present in the bundled code. Using process.env here is unsafe because Metro can
+// inline undefined env vars as the literal string "undefined" which is truthy,
+// causing the || fallback to never fire and Brevo to receive "undefined" as the key.
+const BREVO_API_KEY = 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-N9VMePFXzvROgxUP';
+const BREVO_SENDER  = 'a52a39001@smtp-brevo.com';
 
-/* ── PB fallback: generate OTP, store in otp_codes, send via Brevo REST ── */
-// Returns the generated OTP so the caller can store it in-memory as a fallback.
-// Attempts to persist it in otp_codes (may fail if PB rules block create).
-// Always sends the email via Brevo regardless of PB persistence.
+/* ── Send deletion OTP via Brevo REST API ─────────────────────────────────── */
+// Generates a 6-digit OTP, stores it in PocketBase (best-effort), and emails it.
+// Returns the OTP string so the caller can keep it in React state as a fallback
+// for verification if the otp_codes PB collection is unreachable.
 async function pbSendDeleteOtp(pbId: string, email: string): Promise<string> {
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
@@ -48,9 +51,8 @@ async function pbSendDeleteOtp(pbId: string, email: string): Promise<string> {
     .replace('T', ' ')
     .replace(/\.\d{3}Z$/, '');
 
-  // Best-effort: clear old OTPs and store new one in PocketBase.
-  // If the collection rules block this (admin-only), we fall through gracefully.
-  // The in-memory OTP returned by this function acts as the source of truth.
+  // Store OTP in PocketBase — best-effort (collection rules may block for some users).
+  // The in-memory OTP returned below is always the authoritative verification source.
   try {
     const existing = await pb.collection('otp_codes').getList(1, 20, {
       filter: `user = "${pbId}"`,
@@ -60,23 +62,35 @@ async function pbSendDeleteOtp(pbId: string, email: string): Promise<string> {
       await pb.collection('otp_codes').delete(rec.id).catch(() => {});
     }
     await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
-  } catch { /* PB rules may block this — in-memory OTP is the authoritative fallback */ }
+  } catch { /* PB rules may block — in-memory OTP handles verification */ }
 
-  // Send email via Brevo REST API
-  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'api-key': BREVO_KEY },
-    body: JSON.stringify({
-      sender: { name: 'Shiba Hit', email: 'a52a39001@smtp-brevo.com' },
-      to: [{ email }],
-      subject: 'Your Account Deletion Code — Shiba Hit',
-      textContent: `Your 6-digit code to confirm account deletion is:\n\n${otp}\n\nThis code expires in 5 minutes.\n\nIf you did not request this, please ignore this email.\n\n— Shiba Hit Team`,
-    }),
+  // ── Send via Brevo Transactional Email REST API ─────────────────────────
+  // Headers must match Brevo's requirements exactly:
+  //   api-key   → the xsmtpsib-... key (NO "Bearer" prefix)
+  //   content-type → application/json
+  const brevoHeaders: Record<string, string> = {
+    'api-key':      BREVO_API_KEY,
+    'content-type': 'application/json',
+  };
+
+  const brevoBody = JSON.stringify({
+    sender:      { name: 'Shiba Hit', email: BREVO_SENDER },
+    to:          [{ email }],
+    subject:     'Your Account Deletion Code — Shiba Hit',
+    textContent: `Your 6-digit code to confirm account deletion is:\n\n${otp}\n\nThis code expires in 5 minutes.\n\nIf you did not request this, please ignore this email.\n\n— Shiba Hit Team`,
   });
+
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method:  'POST',
+    headers: brevoHeaders,
+    body:    brevoBody,
+  });
+
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`Email delivery failed (${res.status}). ${body}`);
   }
+
   return otp;
 }
 
