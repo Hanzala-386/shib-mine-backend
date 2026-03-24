@@ -6,7 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
-import { pb } from '@/lib/pocketbase';
+import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 
 // ── PocketBase direct mining (fallback when Express is unreachable) ──────────
 // Mining sessions schema: user (relation), start_time (date),
@@ -81,15 +81,35 @@ async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: 
   }
 }
 
+/**
+ * Fetches the current time from the PocketBase server using the HTTP Date response header.
+ * This is the authoritative clock for fraud detection — the phone's system clock is untrusted.
+ * Falls back to Date.now() only if the PocketBase server is completely unreachable.
+ */
+async function getServerTimeMs(): Promise<number> {
+  try {
+    const res = await fetch(`${POCKETBASE_URL}/api/health`);
+    const dateHeader = res.headers.get('date') || res.headers.get('Date');
+    if (dateHeader) {
+      const t = new Date(dateHeader).getTime();
+      if (!isNaN(t)) return t;
+    }
+  } catch { /* fall back to device time */ }
+  return Date.now();
+}
+
 async function pbClaimMining(
   sessionId: string,
   pbId: string,
   miningRatePerSec: number,
 ): Promise<{ reward: number }> {
-  // Fetch session and user together
-  const [s, user] = await Promise.all([
-    pb.collection('mining_sessions').getOne(sessionId),
-    pb.collection('users').getOne(pbId),
+  // Fetch session and user together; also grab server time from PB's Date header
+  const [[s, user], serverNowMs] = await Promise.all([
+    Promise.all([
+      pb.collection('mining_sessions').getOne(sessionId),
+      pb.collection('users').getOne(pbId),
+    ]),
+    getServerTimeMs(),
   ]);
 
   // ── Anti-fraud: block banned accounts immediately ──────────────────────────
@@ -105,14 +125,13 @@ async function pbClaimMining(
     throw new Error('Session already claimed.');
   }
 
-  // ── Anti-fraud: use server start_time, not device clock ───────────────────
-  // The session's start_time is stored in PocketBase at session creation time.
-  // Using it (not Date.now()) prevents users from back-dating their device clock
-  // to make a 5-minute session appear as a full 60-minute session.
+  // ── Anti-fraud: use SERVER clock, not device clock ────────────────────────
+  // start_time was recorded by PocketBase when the session was created.
+  // serverNowMs comes from PocketBase's HTTP Date header — immune to phone-clock manipulation.
   const startTimeMs = new Date(s.start_time).getTime();
   if (isNaN(startTimeMs)) throw new Error('Invalid session start time.');
 
-  const nowMs = Date.now();
+  const nowMs = serverNowMs;
   const elapsedMs = nowMs - startTimeMs;
 
   // Grace window: allow up to 5 minutes beyond the nominal mining duration
@@ -704,44 +723,41 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     isClaimingRef.current = true;
     setIsClaiming(true);
 
-    // ─── DO NOT clear session state here ───────────────────────────────────
-    // State is only cleared after the server confirms a successful claim.
-    // Clearing before the API call means fraud / network errors leave the UI
-    // in a blank idle state with no visible feedback to the user.
-    // ────────────────────────────────────────────────────────────────────────
-
-    try {
-      let res: any;
-      try {
-        // Wrap Express call with 8-second timeout — on the physical device the
-        // remote URL can hang for 30-90s before TCP gives up, leaving the button
-        // stuck on "Claiming..." indefinitely. 8s is ample for a healthy server;
-        // if it hasn't responded by then we fall through to the PocketBase SDK.
-        const expressCall = api.claimMining({ sessionId: s.pbSessionId!, pbId: currentPbId });
-        const expressTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('EXPRESS_TIMEOUT')), 8000)
-        );
-        res = await Promise.race([expressCall, expressTimeout]);
-      } catch (expressErr: any) {
-        const errCode = expressErr?.data?.error || '';
-        const isHardBlock = errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED';
-        if (isHardBlock) throw expressErr; // don't fall through on fraud
-        // Express unreachable or timed out — use PocketBase direct
-        res = await pbClaimMining(s.pbSessionId!, currentPbId, miningRateRef.current);
-      }
-
-      // ── Success: now safe to wipe local session state ──────────────────
+    // ── Always resets local session state, regardless of outcome ──────────
+    const resetLocalSession = () => {
       clearAllTimers();
       setTimeRemaining(0);
       setElapsedMs(0);
       setDisplayedShibBalance(0);
       setSession(null);
       sessionRef.current = null;
-      if (currentCacheKey) await storage.removeItem(currentCacheKey);
+      storage.removeItem(currentCacheKey ?? '').catch(() => {});
+    };
 
-      await refreshBalance();
+    // ── The actual claim work — Express first (4s), then PB SDK ───────────
+    const doActualClaim = async (): Promise<number> => {
+      let res: any;
+      try {
+        // Express gets 4 seconds. On device it's almost always unreachable —
+        // the short timeout ensures PocketBase SDK is tried immediately.
+        const expressCall    = api.claimMining({ sessionId: s.pbSessionId!, pbId: currentPbId });
+        const expressTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('EXPRESS_TIMEOUT')), 4000)
+        );
+        res = await Promise.race([expressCall, expressTimeout]);
+      } catch (expressErr: any) {
+        const errCode = expressErr?.data?.error || '';
+        const isHardBlock = errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED';
+        if (isHardBlock) throw expressErr;
+        // Express unreachable / timed out → PocketBase SDK (uses server clock via Date header)
+        res = await pbClaimMining(s.pbSessionId!, currentPbId, miningRateRef.current);
+      }
 
-      /* ── Rate Us: increment completed session count ── */
+      // ── Success path ────────────────────────────────────────────────────
+      resetLocalSession();
+      refreshBalance().catch(() => {});
+
+      // Rate Us: increment completed-session counter (non-critical, best-effort)
       try {
         const [rawCount, hasRated, rawDismissedAt] = await Promise.all([
           AsyncStorage.getItem(SESSIONS_COUNT_KEY),
@@ -753,35 +769,48 @@ export function MiningProvider({ children }: { children: ReactNode }) {
           await AsyncStorage.setItem(SESSIONS_COUNT_KEY, String(count));
           const freq = ratePopupFrequencyRef.current || 5;
           const dismissedAt = parseInt(rawDismissedAt || '0', 10) || 0;
-          if (count % freq === 0 && count > dismissedAt) {
-            setShowRateUs(true);
-          }
+          if (count % freq === 0 && count > dismissedAt) setShowRateUs(true);
         }
       } catch { /* non-critical */ }
 
       return safe(res?.reward, 0);
+    };
+
+    try {
+      // ── 10-second HARD CAP on the entire operation ─────────────────────
+      // If Express (4 s) + PocketBase SDK both stall due to network issues,
+      // the button still unfreezes within 10 s and the user sees a clear message.
+      const hardTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(
+          Object.assign(new Error('Request timed out after 10 seconds.'), {
+            data: { error: 'CLAIM_TIMEOUT' },
+          })
+        ), 10000)
+      );
+
+      return await Promise.race([doActualClaim(), hardTimeout]);
+
     } catch (e: any) {
-      // e.data is populated by lib/api.ts request() — see err.data = data
       const errCode = e?.data?.error || '';
 
-      // For any fraud or session-expiry error: clear local state so UI returns to "Start Mining"
-      if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED') {
-        clearAllTimers();
-        setTimeRemaining(0);
-        setElapsedMs(0);
-        setDisplayedShibBalance(0);
-        setSession(null);
-        sessionRef.current = null;
-        try { if (currentCacheKey) await storage.removeItem(currentCacheKey); } catch { /* ignore */ }
+      if (errCode === 'CLAIM_TIMEOUT') {
+        // Network stall: reset so user can start a new session
+        resetLocalSession();
+        throw e; // handleClaim shows "try again" message
+      }
 
-        // Only re-throw fraud/blocked so handleClaim can show alert;
-        // SESSION_EXPIRED returns 0 (user just needs to start fresh, no strike shown)
+      if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED') {
+        resetLocalSession();
         if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED') throw e;
         console.warn('[Mining] Session expired/voided — reset to idle');
         return 0;
       }
+
+      // Any other error (e.g. "already claimed"): reset session, return 0
       console.warn('[Mining] claimReward error:', e?.message);
+      resetLocalSession();
       return 0;
+
     } finally {
       isClaimingRef.current = false;
       setIsClaiming(false);

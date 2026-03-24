@@ -422,10 +422,10 @@ export default function HomeScreen() {
             [{ text: 'OK', onPress: () => signOut?.() }],
           );
         } else {
-          // Strike 1 or 2 — session has been reset, user must mine again from scratch
+          // Strike 1 or 2 — session reset, user must mine again from scratch
           Alert.alert(
-            `🚨 Cheat Detected! Strike ${strikes}/3`,
-            serverMsg || `Your phone time does not match our server. This is Strike ${strikes}/3. Your mining progress has been reset. 3 strikes = Permanent Ban.`,
+            `Claim Rejected — Strike ${strikes}/3`,
+            serverMsg || `Time manipulation detected. 0 SHIB credited. Your mining session has been reset.\n\nStrike ${strikes}/3 — 3 strikes results in a permanent ban.`,
             [{ text: 'OK' }],
           );
         }
@@ -434,6 +434,13 @@ export default function HomeScreen() {
           'ACCOUNT BANNED!',
           serverMsg || 'Your account has been permanently disabled due to multiple fraud attempts.',
           [{ text: 'OK', onPress: () => signOut?.() }],
+        );
+      } else if (errCode === 'CLAIM_TIMEOUT') {
+        // Network stall — session already reset by claimReward
+        Alert.alert(
+          'Connection Timeout',
+          'The server took too long to respond. Your session has been reset — please start a new mining session.',
+          [{ text: 'OK' }],
         );
       } else {
         Alert.alert('Claim Failed', e?.message || 'Something went wrong. Please try again.');
