@@ -36,14 +36,19 @@ const APP_NAME    = 'Shiba Hit';
 const BREVO_KEY = process.env.EXPO_PUBLIC_BREVO_API_KEY ?? '';
 
 /* ── PB fallback: generate OTP, store in otp_codes, send via Brevo REST ── */
-async function pbSendDeleteOtp(pbId: string, email: string): Promise<void> {
+// Returns the generated OTP so the caller can store it in-memory as a fallback.
+// Attempts to persist it in otp_codes (may fail if PB rules block create).
+// Always sends the email via Brevo regardless of PB persistence.
+async function pbSendDeleteOtp(pbId: string, email: string): Promise<string> {
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
     .toISOString()
     .replace('T', ' ')
     .replace(/\.\d{3}Z$/, '');
 
-  // Clear any existing OTPs for this user
+  // Best-effort: clear old OTPs and store new one in PocketBase.
+  // If the collection rules block this (admin-only), we fall through gracefully.
+  // The in-memory OTP returned by this function acts as the source of truth.
   try {
     const existing = await pb.collection('otp_codes').getList(1, 20, {
       filter: `user = "${pbId}"`,
@@ -52,10 +57,8 @@ async function pbSendDeleteOtp(pbId: string, email: string): Promise<void> {
     for (const rec of existing.items) {
       await pb.collection('otp_codes').delete(rec.id).catch(() => {});
     }
-  } catch { /* non-critical */ }
-
-  // Store new OTP in PocketBase
-  await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
+    await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
+  } catch { /* PB rules may block this — in-memory OTP is the authoritative fallback */ }
 
   // Send email via Brevo REST API
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -72,6 +75,7 @@ async function pbSendDeleteOtp(pbId: string, email: string): Promise<void> {
     const body = await res.text().catch(() => '');
     throw new Error(`Email delivery failed (${res.status}). ${body}`);
   }
+  return otp;
 }
 
 /* ── helpers ── */
@@ -152,6 +156,9 @@ export default function ProfileScreen() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [otpError, setOtpError] = useState('');
   const [resendCountdown, setResendCountdown] = useState(0);
+  // In-memory OTP: stored when PocketBase collection rules block otp_codes.create.
+  // The email is always sent via Brevo; this is the local copy for verification.
+  const [localOtp, setLocalOtp] = useState<string>('');
 
   const miningCount  = pbUser?.totalClaims ?? 0;
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
@@ -318,9 +325,11 @@ export default function ProfileScreen() {
     try {
       try {
         await api.requestDeleteOtp(pbId, email);
+        setLocalOtp(''); // Express handled it — clear any stale in-memory OTP
       } catch {
-        // PB fallback: create OTP record + send via Brevo REST API
-        await pbSendDeleteOtp(pbId, email);
+        // PB fallback: send via Brevo REST API; store OTP in-memory for verification
+        const generatedOtp = await pbSendDeleteOtp(pbId, email);
+        setLocalOtp(generatedOtp);
       }
       setOtpCode('');
       setOtpError('');
@@ -345,9 +354,11 @@ export default function ProfileScreen() {
     try {
       try {
         await api.requestDeleteOtp(pbId, email);
+        setLocalOtp('');
       } catch {
-        // PB fallback: create OTP record + send via Brevo REST API
-        await pbSendDeleteOtp(pbId, email);
+        // PB fallback: send via Brevo REST API; refresh in-memory OTP
+        const generatedOtp = await pbSendDeleteOtp(pbId, email);
+        setLocalOtp(generatedOtp);
       }
       setOtpCode('');
       setResendCountdown(60);
@@ -374,30 +385,59 @@ export default function ProfileScreen() {
     }
     setOtpError('');
     setIsDeleting(true);
+    const email = (firebaseUser?.email || user?.email || '').toLowerCase().trim();
     try {
-      // 1. Verify OTP + delete PocketBase record
+      // 1. Verify OTP + delete PocketBase user record
       try {
         await api.confirmDelete(pbId, otpCode);
       } catch {
-        // PB SDK fallback: validate OTP and delete user directly
-        const records = await pb.collection('otp_codes').getList(1, 10, {
-          filter: `user = "${pbId}"`,
-        });
-        const otpRecord = (records.items || []).find(
-          (r: any) => String(r.code).trim() === String(otpCode).trim()
-        );
-        if (!otpRecord) throw new Error('Invalid OTP. Please try again.');
-        if (new Date(otpRecord.expires_at) < new Date()) {
-          await pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
-          throw new Error('OTP has expired. Please request a new one.');
+        // PB SDK fallback — try otp_codes collection first (works after rule patch)
+        let verified = false;
+        try {
+          const records = await pb.collection('otp_codes').getList(1, 10, {
+            filter: `user = "${pbId}"`,
+          });
+          const otpRecord = (records.items || []).find(
+            (r: any) => String(r.code).trim() === String(otpCode).trim()
+          );
+          if (otpRecord) {
+            if (new Date(otpRecord.expires_at) < new Date()) {
+              await pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
+              throw new Error('OTP has expired. Please request a new one.');
+            }
+            await pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
+            verified = true;
+          }
+        } catch (pbOtpErr: any) {
+          if (pbOtpErr?.message?.includes('OTP has expired')) throw pbOtpErr;
+          // Collection may still be admin-only — fall through to in-memory check
         }
-        // Consume OTP and delete user
-        await pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
+
+        // Ultimate fallback: compare against the in-memory OTP generated by pbSendDeleteOtp
+        if (!verified) {
+          if (!localOtp) throw new Error('Session expired. Please request a new OTP code.');
+          if (String(otpCode).trim() !== String(localOtp).trim()) {
+            throw new Error('Invalid OTP. Please try again.');
+          }
+          verified = true;
+        }
+
+        // Delete the PocketBase user record
         await pb.collection('users').delete(pbId);
       }
-      // 2. Delete Firebase account
+
+      // 2. Blacklist the email in deleted_emails (prevent re-registration)
+      if (email) {
+        try {
+          await pb.collection('deleted_emails').create({ email });
+        } catch { /* non-critical — admin may add manually */ }
+      }
+
+      // 3. Delete Firebase account
       await deleteUser(firebaseUser!);
-      // 3. Navigate away
+
+      // 4. Clear in-memory OTP and navigate away
+      setLocalOtp('');
       setShowOtpModal(false);
       Alert.alert('Account Deleted', 'Your account has been permanently deleted. Goodbye!', [
         { text: 'OK', onPress: () => signOut() },

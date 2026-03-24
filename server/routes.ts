@@ -199,21 +199,67 @@ async function checkAndIncrementDailyEmailLimit(): Promise<{ allowed: boolean; m
 async function ensureOtpCollection() {
   try {
     const check = await pbGet("/api/collections/otp_codes");
-    if (!check.code) return; // already exists
     const token = await getAdminToken();
-    await pbHttp("POST", "/api/collections", {
-      name: "otp_codes",
-      type: "base",
-      fields: [
-        { name: "user",       type: "relation", required: true, collectionId: "", options: { collectionId: "users", cascadeDelete: false, maxSelect: 1 } },
-        { name: "code",       type: "text",     required: true },
-        { name: "expires_at", type: "date",     required: true },
-      ],
-    }, token);
-    console.log("[otp_codes] Collection created in PocketBase");
+    if (check.code) {
+      // Collection does not exist — create it
+      await pbHttp("POST", "/api/collections", {
+        name: "otp_codes",
+        type: "base",
+        fields: [
+          { name: "user",       type: "relation", required: true, options: { collectionId: "_pb_users_auth_", cascadeDelete: false, maxSelect: 1 } },
+          { name: "code",       type: "text",     required: true },
+          { name: "expires_at", type: "date",     required: true },
+        ],
+        listRule:   "user = @request.auth.id",
+        viewRule:   "user = @request.auth.id",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: "user = @request.auth.id",
+      }, token);
+      console.log("[otp_codes] Collection created with correct API rules");
+    } else {
+      // Collection exists — always patch rules so authenticated users can CRUD their own OTPs
+      await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule:   "user = @request.auth.id",
+        viewRule:   "user = @request.auth.id",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: "user = @request.auth.id",
+      }, token);
+      console.log("[otp_codes] API rules patched — authenticated users can manage their own OTPs");
+    }
   } catch (e: any) {
-    console.warn("[otp_codes] Could not auto-create collection:", e.message,
-      "\n→ Please create it manually in PocketBase admin with fields: user (relation→users), code (text), expires_at (date)");
+    console.warn("[otp_codes] Could not setup collection:", e.message);
+  }
+}
+
+// ─── Patch users + leaderboard-related collection rules ──────────────────────
+async function ensureCollectionRules() {
+  try {
+    const token = await getAdminToken();
+    // Allow authenticated users to LIST the users collection (needed for leaderboard)
+    // View/update/delete stay scoped to own record for privacy
+    const usersCol = await pbGet("/api/collections/users");
+    if (!usersCol.code) {
+      await pbHttp("PATCH", `/api/collections/${usersCol.id}`, {
+        listRule: "@request.auth.id != \"\"",
+      }, token);
+      console.log("[users] listRule patched — authenticated users can list for leaderboard");
+    }
+    // Allow any authenticated user to CREATE a deleted_emails record (for client-side deletion flow)
+    const deCol = await pbGet("/api/collections/deleted_emails");
+    if (!deCol.code) {
+      await pbHttp("PATCH", `/api/collections/${deCol.id}`, {
+        listRule:   null,
+        viewRule:   null,
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[deleted_emails] createRule patched — authenticated users can add blacklisted emails");
+    }
+  } catch (e: any) {
+    console.warn("[ensureCollectionRules] Patch failed:", e.message);
   }
 }
 
@@ -350,6 +396,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureOtpCollection())
     .then(() => ensureDailyUsageCollection())
     .then(() => ensureDeletedEmailsCollection())
+    .then(() => ensureCollectionRules())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────

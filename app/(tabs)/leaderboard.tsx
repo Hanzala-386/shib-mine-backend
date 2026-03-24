@@ -77,14 +77,14 @@ async function fetchMyRank(pbId: string): Promise<MyRank | undefined> {
   try {
     return await fetchJson(`/api/app/leaderboard/rank/${pbId}`);
   } catch {
-    // PB fallback: fetch full sorted list and find user's position
+    // PB fallback: use SDK (sends auth token automatically)
     try {
-      const url = `${POCKETBASE_URL}/api/collections/users/records?sort=-shib_balance&perPage=200&fields=id,display_name,shib_balance`;
-      const r = await fetch(url);
-      if (!r.ok) return undefined;
-      const data = await r.json();
-      const items: any[] = data.items || [];
-      const idx = items.findIndex(u => u.id === pbId);
+      const res = await pb.collection('users').getList(1, 500, {
+        sort: '-shib_balance',
+        fields: 'id,display_name,shib_balance',
+      });
+      const items = res.items || [];
+      const idx = items.findIndex((u: any) => u.id === pbId);
       if (idx < 0) return undefined;
       const u = items[idx];
       return {

@@ -86,27 +86,72 @@ async function pbClaimMining(
   pbId: string,
   miningRatePerSec: number,
 ): Promise<{ reward: number }> {
-  const s = await pb.collection('mining_sessions').getOne(sessionId);
-  if ((Number(s.claimed_amount) || 0) > 0) throw new Error('Session already claimed.');
+  // Fetch session and user together
+  const [s, user] = await Promise.all([
+    pb.collection('mining_sessions').getOne(sessionId),
+    pb.collection('users').getOne(pbId),
+  ]);
 
+  // ── Anti-fraud: block banned accounts immediately ──────────────────────────
+  const userStatus = (user.status || '').toLowerCase();
+  if (userStatus === 'blocked' || userStatus === 'banned') {
+    throw Object.assign(new Error('Account is blocked due to suspicious activity.'), {
+      data: { error: 'ACCOUNT_BLOCKED' },
+    });
+  }
+
+  // ── Anti-fraud: reject double-claims ──────────────────────────────────────
+  if ((Number(s.claimed_amount) || 0) > 0) {
+    throw new Error('Session already claimed.');
+  }
+
+  // ── Anti-fraud: use server start_time, not device clock ───────────────────
+  // The session's start_time is stored in PocketBase at session creation time.
+  // Using it (not Date.now()) prevents users from back-dating their device clock
+  // to make a 5-minute session appear as a full 60-minute session.
   const startTimeMs = new Date(s.start_time).getTime();
+  if (isNaN(startTimeMs)) throw new Error('Invalid session start time.');
+
+  const nowMs = Date.now();
+  const elapsedMs = nowMs - startTimeMs;
+
+  // Grace window: allow up to 5 minutes beyond the nominal mining duration
+  const GRACE_MS = 5 * 60 * 1000;
+
+  // Suspicious if claimed impossibly early (< 30 s) or impossibly late (> duration + grace)
+  const isSuspicious = elapsedMs < 30_000 || elapsedMs > PB_DURATION_MS + GRACE_MS;
+  if (isSuspicious) {
+    const fraudAttempts = (Number(user.fraud_attempts) || 0) + 1;
+    const shouldBlock   = fraudAttempts >= 3;
+    await pb.collection('users').update(pbId, {
+      fraud_attempts: fraudAttempts,
+      ...(shouldBlock ? { status: 'blocked' } : {}),
+    }).catch(() => {});
+    // Mark session so it can't be retried
+    await pb.collection('mining_sessions').update(sessionId, { claimed_amount: -1 }).catch(() => {});
+    throw Object.assign(
+      new Error(shouldBlock
+        ? 'Account blocked after repeated clock manipulation attempts.'
+        : 'Invalid claim time detected. Please do not modify your device clock.'),
+      { data: { error: shouldBlock ? 'ACCOUNT_BLOCKED' : 'FRAUD_DETECTED' } },
+    );
+  }
+
   const multiplier = Number(s.booster_multiplier) || 1;
-  const elapsedMs = Math.min(Date.now() - startTimeMs, PB_DURATION_MS);
-  const reward = miningRatePerSec * (elapsedMs / 1000) * multiplier;
+  const reward = miningRatePerSec * (Math.min(elapsedMs, PB_DURATION_MS) / 1000) * multiplier;
 
   await pb.collection('mining_sessions').update(sessionId, {
     claimed_amount: reward,
     is_verified: true,
   });
 
-  const user = await pb.collection('users').getOne(pbId);
   await pb.collection('users').update(pbId, {
     shib_balance: (Number(user.shib_balance) || 0) + reward,
     total_claims: (Number(user.total_claims) || 0) + 1,
     current_mining_session: null,
   });
 
-  // Referral commission (10%) — best-effort, may fail if referred_by user has different rule
+  // Referral commission (10%) — best-effort
   if (user.referred_by && reward > 0) {
     try {
       const referrer = await pb.collection('users').getFirstListItem(
@@ -325,13 +370,34 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
   // ── Load settings once ────────────────────────────────────────────────────
   useEffect(() => {
-    api.getSettings().then((s) => {
-      if (s?.miningRatePerSec) setMiningRatePerSec(safe(s.miningRatePerSec, 0.01736));
-      if (s?.miningDurationMinutes) setDurationMinutes(safe(s.miningDurationMinutes, 60));
-      if (s?.powerTokenPerClick) setMiningEntryCost(safe(s.powerTokenPerClick, 24));
-      if (s?.ratePopupFrequency) ratePopupFrequencyRef.current = s.ratePopupFrequency;
-      if (s?.playStoreUrl) playStoreUrlRef.current = s.playStoreUrl;
-    }).catch(() => {});
+    (async () => {
+      let s: any = null;
+      try {
+        s = await api.getSettings();
+      } catch {
+        // Express unreachable — fall back to PocketBase directly
+        try {
+          const res = await pb.collection('settings').getList(1, 1);
+          const raw = res.items[0];
+          if (raw) {
+            // Map snake_case PB fields → camelCase AppSettings shape
+            s = {
+              miningRatePerSec:      raw.mining_rate_per_sec,
+              miningDurationMinutes: raw.mining_duration_minutes,
+              powerTokenPerClick:    raw.power_token_per_click,
+              ratePopupFrequency:    raw.rate_popup_frequency,
+              playStoreUrl:          raw.play_store_url ?? raw.app_store_link,
+            };
+          }
+        } catch { /* keep defaults */ }
+      }
+      if (!s) return;
+      if (s.miningRatePerSec)      setMiningRatePerSec(safe(s.miningRatePerSec, 0.01736));
+      if (s.miningDurationMinutes) setDurationMinutes(safe(s.miningDurationMinutes, 60));
+      if (s.powerTokenPerClick)    setMiningEntryCost(safe(s.powerTokenPerClick, 24));
+      if (s.ratePopupFrequency)    ratePopupFrequencyRef.current = s.ratePopupFrequency;
+      if (s.playStoreUrl)          playStoreUrlRef.current = s.playStoreUrl;
+    })();
   }, []);
 
   // ── Restore session on sign-in (local cache first, then server) ──────────
