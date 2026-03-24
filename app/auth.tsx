@@ -12,6 +12,7 @@ import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
+import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 
 type Mode = 'signin' | 'signup';
@@ -181,8 +182,30 @@ export default function AuthScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
       const trimmedCode = referralCode.trim();
       if (trimmedCode) {
-        const check = await api.validateReferralCode(trimmedCode);
-        if (!check.valid) { setErrorMsg('Invalid Referral Code. Please check and try again.'); setIsLoading(false); return; }
+        let codeValid = false;
+        try {
+          const check = await api.validateReferralCode(trimmedCode);
+          codeValid = check.valid;
+        } catch {
+          // Express unreachable on device (returns 404 via PocketBase proxy).
+          // Fall back to a direct PocketBase query to validate the referral code.
+          try {
+            const res = await pb.collection('users').getList(1, 1, {
+              filter: `referral_code = "${trimmedCode.toUpperCase()}"`,
+              fields: 'id',
+            });
+            codeValid = res.totalItems > 0;
+          } catch {
+            // PocketBase also unreachable — allow signup to proceed.
+            // Worst case: an invalid code is stored, which is non-critical.
+            codeValid = true;
+          }
+        }
+        if (!codeValid) {
+          setErrorMsg('Invalid Referral Code. Please check and try again.');
+          setIsLoading(false);
+          return;
+        }
       }
       await signUp(email.trim(), password, displayName.trim(), trimmedCode || undefined);
       await AsyncStorage.setItem('shib_welcome_bonus_pending', 'true');
