@@ -38,8 +38,8 @@ const APP_NAME    = 'Shiba Hit';
    identically in dev, Expo Go, and the production APK (no Express dependency).
    OTP is stored in PocketBase otp_codes; in-memory localOtp is the fallback.
 ──────────────────────────────────────────────────────────────────────────── */
-const BREVO_API_KEY = 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-Vw2ZH0wPTNPWBoby';
-const BREVO_SENDER  = 'a52a39001@smtp-brevo.com';
+const BREVO_API_KEY = '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';
+const BREVO_SENDER  = 'support@shibahit.com';
 
 async function sendDeleteOtp(pbId: string, email: string): Promise<string> {
   const otp = String(Math.floor(100000 + Math.random() * 900000));
