@@ -33,12 +33,24 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-// Brevo REST API key — hardcoded directly (no env var) to guarantee it is always
-// present in the bundled code. Using process.env here is unsafe because Metro can
-// inline undefined env vars as the literal string "undefined" which is truthy,
-// causing the || fallback to never fire and Brevo to receive "undefined" as the key.
-const BREVO_API_KEY = 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-N9VMePFXzvROgxUP';
-const BREVO_SENDER  = 'a52a39001@smtp-brevo.com';
+// Brevo sender address — this never changes between key rotations.
+const BREVO_SENDER = 'a52a39001@smtp-brevo.com';
+
+// Fetches the Brevo API key from PocketBase settings at runtime.
+// The Express backend syncs SMTP_KEY → PB settings.brevo_api_key on every restart,
+// so you only need to update the SMTP_KEY secret + restart the server — no APK rebuild.
+async function getBrevoApiKey(): Promise<string> {
+  try {
+    const res = await pb.collection('settings').getList(1, 1, {
+      fields: 'brevo_api_key',
+    });
+    const key = (res.items?.[0] as any)?.brevo_api_key ?? '';
+    if (key && typeof key === 'string' && key.startsWith('xsmtpsib')) {
+      return key;
+    }
+  } catch { /* PB unreachable — fall through */ }
+  throw new Error('Brevo API key not available. Please contact support.');
+}
 
 /* ── Send deletion OTP via Brevo REST API ─────────────────────────────────── */
 // Generates a 6-digit OTP, stores it in PocketBase (best-effort), and emails it.
@@ -64,12 +76,15 @@ async function pbSendDeleteOtp(pbId: string, email: string): Promise<string> {
     await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
   } catch { /* PB rules may block — in-memory OTP handles verification */ }
 
+  // ── Fetch API key from PocketBase at runtime (synced from SMTP_KEY secret) ──
+  const brevoApiKey = await getBrevoApiKey();
+
   // ── Send via Brevo Transactional Email REST API ─────────────────────────
   // Headers must match Brevo's requirements exactly:
   //   api-key   → the xsmtpsib-... key (NO "Bearer" prefix)
   //   content-type → application/json
   const brevoHeaders: Record<string, string> = {
-    'api-key':      BREVO_API_KEY,
+    'api-key':      brevoApiKey,
     'content-type': 'application/json',
   };
 
