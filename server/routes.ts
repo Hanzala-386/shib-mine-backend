@@ -96,21 +96,14 @@ async function pbDelete(path: string) {
 }
 
 // ─── Brevo SMTP mailer ─────────────────────────────────────────────────────
-// Credentials from Replit Secrets (trimmed to remove any accidental whitespace):
-//   SMTP_USER = a52a39001@smtp-brevo.com   (the Brevo SMTP login)
-//   SMTP_KEY  = xsmtpsib-...               (the Brevo SMTP password/key)
+const BREVO_SMTP_USER = "a52a39001@smtp-brevo.com";
+const BREVO_SMTP_PASS = "xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-Vw2ZH0wPTNPWBoby";
 
 async function sendOtpEmail(to: string, otp: string) {
-  // Detect which secret holds the email vs the key by checking content
-  const rawA = (process.env.SMTP_USER || "").trim();
-  const rawB = (process.env.SMTP_KEY  || "").trim();
+  const smtpUser = BREVO_SMTP_USER;
+  const smtpPass = BREVO_SMTP_PASS;
 
-  // The Brevo SMTP login is always an email address (contains @)
-  // The Brevo SMTP password is the xsmtpsib-... key (starts with xsmtpsib or is long)
-  const smtpUser = rawA.includes("@") ? rawA : rawB;
-  const smtpPass = rawA.includes("@") ? rawB : rawA;
-
-  console.log(`[SMTP] resolved user=${smtpUser} | key-len=${smtpPass.length} | key-starts=${smtpPass.substring(0,9)}`);
+  console.log(`[SMTP] user=${smtpUser} | key-ends=${smtpPass.slice(-12)}`);
 
   const transporter = nodemailer.createTransport({
     host: "smtp-relay.brevo.com",

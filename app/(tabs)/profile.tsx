@@ -33,62 +33,26 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-// ── Permanent Delete Account — Brevo credentials ────────────────────────────
-// Verified working key (tested in Brevo panel). Hardcoded so it is baked into
-// the APK bundle and works on any device without any server dependency.
-const BREVO_API_KEY = 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-Vw2ZH0wPTNPWBoby';
-const BREVO_SENDER  = 'a52a39001@smtp-brevo.com';
-
-/* ── Permanent Delete Account — OTP via Brevo REST API ─────────────────────
-   Generates a 6-digit OTP, stores it in PocketBase otp_codes (best-effort),
-   and emails it via Brevo's transactional API.
-   Returns the OTP so the caller can use it as the in-memory verification source.
+/* ── Permanent Delete Account — OTP via SMTP (Express backend) ──────────────
+   Calls the Express /api/auth/request-delete-otp endpoint which uses Brevo
+   SMTP (smtp-relay.brevo.com:587) — the same path PocketBase uses, which is
+   confirmed working. OTP is stored in PocketBase otp_codes by Express.
 ──────────────────────────────────────────────────────────────────────────── */
-async function sendDeleteOtp(pbId: string, email: string): Promise<string> {
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
-  const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
-    .toISOString()
-    .replace('T', ' ')
-    .replace(/\.\d{3}Z$/, '');
-
-  // Store OTP in PocketBase otp_codes — best-effort.
-  // In-memory OTP is always the authoritative verification source.
-  try {
-    const existing = await pb.collection('otp_codes').getList(1, 20, {
-      filter: `user = "${pbId}"`,
-      fields: 'id',
-    });
-    for (const rec of existing.items) {
-      await pb.collection('otp_codes').delete(rec.id).catch(() => {});
-    }
-    await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
-  } catch { /* collection rules may block — in-memory OTP handles verification */ }
-
-  // ── DIRECT Brevo REST API call — no Express, no backend dependency ──────
-  console.log('[PermanentDelete] Attempting to send OTP via Brevo REST... email=' + email);
-
-  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method:  'POST',
-    headers: {
-      'api-key':      BREVO_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      sender:      { name: 'Shiba Hit', email: BREVO_SENDER },
-      to:          [{ email }],
-      subject:     'Your Permanent Account Deletion Code — Shiba Hit',
-      textContent: `Your 6-digit code to permanently delete your account is:\n\n${otp}\n\nThis code expires in 5 minutes.\n\nIf you did not request this, please ignore this email.\n\n— Shiba Hit Team`,
-    }),
+async function requestDeleteOtpViaExpress(pbId: string, email: string): Promise<void> {
+  console.log('[PermanentDelete] Sending OTP via Express SMTP... email=' + email);
+  const url = new URL('/api/auth/request-delete-otp', getApiUrl());
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pbId, email }),
   });
-
+  const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    console.log('[PermanentDelete] Brevo response error:', res.status, body);
-    throw new Error(`Email delivery failed (${res.status}). ${body}`);
+    const msg = body?.error || `Email delivery failed (${res.status})`;
+    console.log('[PermanentDelete] Express SMTP error:', res.status, body);
+    throw new Error(msg);
   }
-
-  console.log('[PermanentDelete] OTP sent successfully via Brevo REST ✓');
-  return otp;
+  console.log('[PermanentDelete] OTP sent successfully via Express SMTP ✓');
 }
 
 /* ── helpers ── */
@@ -344,9 +308,8 @@ export default function ProfileScreen() {
     if (!pbId || !email) return;
     setIsRequestingOtp(true);
     try {
-      // DIRECT Brevo REST API — no Express backend involved
-      const generatedOtp = await sendDeleteOtp(pbId, email);
-      setLocalOtp(generatedOtp);
+      await requestDeleteOtpViaExpress(pbId, email);
+      setLocalOtp('');
       setOtpCode('');
       setOtpError('');
       setShowConfirmDeleteModal(false);
@@ -368,9 +331,8 @@ export default function ProfileScreen() {
     setIsRequestingOtp(true);
     setOtpError('');
     try {
-      // DIRECT Brevo REST API — no Express backend involved
-      const generatedOtp = await sendDeleteOtp(pbId, email);
-      setLocalOtp(generatedOtp);
+      await requestDeleteOtpViaExpress(pbId, email);
+      setLocalOtp('');
       setOtpCode('');
       setResendCountdown(60);
       const id = setInterval(() => {
