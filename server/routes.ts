@@ -235,12 +235,14 @@ async function ensureCollectionRules() {
     const usersCol = await pbGet("/api/collections/users");
     if (!usersCol.code) {
       await pbHttp("PATCH", `/api/collections/${usersCol.id}`, {
-        // Anyone can list (needed for leaderboard when authenticated)
+        // Anyone authenticated can list (needed for leaderboard)
         listRule: "@request.auth.id != \"\"",
-        // Allow public creation so APK can create PB user directly when Express is unreachable
+        // Allow public creation so APK can create PB user directly when Express unreachable
         createRule: "",
+        // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
+        deleteRule: "@request.auth.id = id",
       }, token);
-      console.log("[users] listRule + createRule patched — public create enabled for APK fallback");
+      console.log("[users] listRule + createRule + deleteRule patched — self-delete enabled for APK");
     }
     // Allow any authenticated user to CREATE a deleted_emails record (for client-side deletion flow)
     const deCol = await pbGet("/api/collections/deleted_emails");
