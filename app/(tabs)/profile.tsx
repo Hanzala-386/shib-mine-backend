@@ -64,27 +64,30 @@ async function sendDeleteOtp(pbId: string, email: string): Promise<string> {
     await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
   } catch { /* collection rules may block — in-memory OTP handles verification */ }
 
-  // Send via Brevo Transactional Email REST API.
-  // api-key header takes the xsmtpsib key directly — no "Bearer" prefix.
+  // ── DIRECT Brevo REST API call — no Express, no backend dependency ──────
+  console.log('[PermanentDelete] Attempting to send OTP via Brevo REST... email=' + email);
+
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method:  'POST',
     headers: {
       'api-key':      BREVO_API_KEY,
-      'content-type': 'application/json',
+      'Content-Type': 'application/json',
     },
     body: JSON.stringify({
       sender:      { name: 'Shiba Hit', email: BREVO_SENDER },
       to:          [{ email }],
-      subject:     'Your Account Deletion Code — Shiba Hit',
-      textContent: `Your 6-digit code to confirm account deletion is:\n\n${otp}\n\nThis code expires in 5 minutes.\n\nIf you did not request this, please ignore this email.\n\n— Shiba Hit Team`,
+      subject:     'Your Permanent Account Deletion Code — Shiba Hit',
+      textContent: `Your 6-digit code to permanently delete your account is:\n\n${otp}\n\nThis code expires in 5 minutes.\n\nIf you did not request this, please ignore this email.\n\n— Shiba Hit Team`,
     }),
   });
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
+    console.log('[PermanentDelete] Brevo response error:', res.status, body);
     throw new Error(`Email delivery failed (${res.status}). ${body}`);
   }
 
+  console.log('[PermanentDelete] OTP sent successfully via Brevo REST ✓');
   return otp;
 }
 
@@ -341,14 +344,9 @@ export default function ProfileScreen() {
     if (!pbId || !email) return;
     setIsRequestingOtp(true);
     try {
-      try {
-        await api.requestDeleteOtp(pbId, email);
-        setLocalOtp(''); // Express handled it — clear any stale in-memory OTP
-      } catch {
-        // PB fallback: send via Brevo REST API; store OTP in-memory for verification
-        const generatedOtp = await sendDeleteOtp(pbId, email);
-        setLocalOtp(generatedOtp);
-      }
+      // DIRECT Brevo REST API — no Express backend involved
+      const generatedOtp = await sendDeleteOtp(pbId, email);
+      setLocalOtp(generatedOtp);
       setOtpCode('');
       setOtpError('');
       setShowConfirmDeleteModal(false);
@@ -370,14 +368,9 @@ export default function ProfileScreen() {
     setIsRequestingOtp(true);
     setOtpError('');
     try {
-      try {
-        await api.requestDeleteOtp(pbId, email);
-        setLocalOtp('');
-      } catch {
-        // PB fallback: send via Brevo REST API; refresh in-memory OTP
-        const generatedOtp = await sendDeleteOtp(pbId, email);
-        setLocalOtp(generatedOtp);
-      }
+      // DIRECT Brevo REST API — no Express backend involved
+      const generatedOtp = await sendDeleteOtp(pbId, email);
+      setLocalOtp(generatedOtp);
       setOtpCode('');
       setResendCountdown(60);
       const id = setInterval(() => {
@@ -807,7 +800,7 @@ export default function ProfileScreen() {
             <MenuItem icon="log-out-outline" label="Sign Out" danger onPress={handleSignOut} testID="btn-signout" />
             <MenuItem
               icon="trash-outline"
-              label="Delete Account"
+              label="Permanent Delete Account"
               danger
               onPress={handleInitiateDelete}
               testID="btn-delete-account"
@@ -994,7 +987,7 @@ export default function ProfileScreen() {
           <Pressable style={[styles.versionCard, { padding: 0 }]} onPress={(e) => e.stopPropagation()}>
             <LinearGradient colors={['rgba(220,38,38,0.20)', 'rgba(18,10,5,0.99)']} style={[styles.versionGradient, { gap: 12 }]}>
               <Ionicons name="warning" size={48} color={Colors.error} />
-              <Text style={[styles.versionAppName, { color: Colors.error }]}>Delete Account</Text>
+              <Text style={[styles.versionAppName, { color: Colors.error }]}>Permanent Delete Account</Text>
 
               {/* Email badge */}
               <View style={deleteModalStyles.emailBadge}>
