@@ -33,26 +33,54 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-/* ── Permanent Delete Account — OTP via SMTP (Express backend) ──────────────
-   Calls the Express /api/auth/request-delete-otp endpoint which uses Brevo
-   SMTP (smtp-relay.brevo.com:587) — the same path PocketBase uses, which is
-   confirmed working. OTP is stored in PocketBase otp_codes by Express.
+/* ── Permanent Delete Account — OTP via Brevo REST API ──────────────────────
+   Uses the Brevo transactional email REST API with an absolute URL so it works
+   identically in dev, Expo Go, and the production APK (no Express dependency).
+   OTP is stored in PocketBase otp_codes; in-memory localOtp is the fallback.
 ──────────────────────────────────────────────────────────────────────────── */
-async function requestDeleteOtpViaExpress(pbId: string, email: string): Promise<void> {
-  console.log('[PermanentDelete] Sending OTP via Express SMTP... email=' + email);
-  const url = new URL('/api/auth/request-delete-otp', getApiUrl());
-  const res = await fetch(url.toString(), {
+const BREVO_API_KEY = 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-Vw2ZH0wPTNPWBoby';
+const BREVO_SENDER  = 'a52a39001@smtp-brevo.com';
+
+async function sendDeleteOtp(pbId: string, email: string): Promise<string> {
+  const otp = String(Math.floor(100000 + Math.random() * 900000));
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
+    .toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+
+  // Store OTP in PocketBase — best-effort (verification also checks in-memory)
+  try {
+    const existing = await pb.collection('otp_codes').getList(1, 20, {
+      filter: `user = "${pbId}"`, fields: 'id',
+    });
+    for (const rec of existing.items) {
+      await pb.collection('otp_codes').delete(rec.id).catch(() => {});
+    }
+    await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
+  } catch { /* collection rules may block; in-memory OTP is the fallback */ }
+
+  console.log('[PermanentDelete] Sending OTP via Brevo REST API... email=' + email);
+  // Absolute URL — works in APK, Expo Go, and web preview
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pbId, email }),
+    headers: {
+      'api-key': BREVO_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { name: 'Shiba Hit', email: BREVO_SENDER },
+      to: [{ email }],
+      subject: 'Your Permanent Account Deletion Code — Shiba Hit',
+      textContent: `Your 6-digit code is:\n\n${otp}\n\nExpires in 5 minutes. Do not share this code.\n\n— Shiba Hit Team`,
+    }),
   });
-  const body = await res.json().catch(() => ({}));
+
   if (!res.ok) {
-    const msg = body?.error || `Email delivery failed (${res.status})`;
-    console.log('[PermanentDelete] Express SMTP error:', res.status, body);
-    throw new Error(msg);
+    const body = await res.text().catch(() => '');
+    console.log('[PermanentDelete] Brevo REST error:', res.status, body);
+    throw new Error(`Email delivery failed (${res.status}). ${body}`);
   }
-  console.log('[PermanentDelete] OTP sent successfully via Express SMTP ✓');
+
+  console.log('[PermanentDelete] OTP sent via Brevo REST ✓');
+  return otp;
 }
 
 /* ── helpers ── */
@@ -308,8 +336,8 @@ export default function ProfileScreen() {
     if (!pbId || !email) return;
     setIsRequestingOtp(true);
     try {
-      await requestDeleteOtpViaExpress(pbId, email);
-      setLocalOtp('');
+      const generatedOtp = await sendDeleteOtp(pbId, email);
+      setLocalOtp(generatedOtp);
       setOtpCode('');
       setOtpError('');
       setShowConfirmDeleteModal(false);
@@ -331,8 +359,8 @@ export default function ProfileScreen() {
     setIsRequestingOtp(true);
     setOtpError('');
     try {
-      await requestDeleteOtpViaExpress(pbId, email);
-      setLocalOtp('');
+      const generatedOtp = await sendDeleteOtp(pbId, email);
+      setLocalOtp(generatedOtp);
       setOtpCode('');
       setResendCountdown(60);
       const id = setInterval(() => {
