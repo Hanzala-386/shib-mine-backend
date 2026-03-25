@@ -388,50 +388,6 @@ async function ensureUserSchema() {
   }
 }
 
-// ─── Sync Brevo API key from SMTP_KEY env secret → PocketBase settings ──────
-// Runs on every server restart so the device always gets the latest key from PB.
-// The frontend reads brevo_api_key from PocketBase at runtime — no hardcoding.
-async function syncBrevoKeyToSettings() {
-  try {
-    const rawA = (process.env.SMTP_USER || "").trim();
-    const rawB = (process.env.SMTP_KEY  || "").trim();
-    // SMTP_KEY is the xsmtpsib-... key (doesn't contain @)
-    const brevoKey = rawA.includes("@") ? rawB : rawA;
-    if (!brevoKey || !brevoKey.startsWith("xsmtpsib")) {
-      console.warn("[syncBrevo] SMTP_KEY not set or unrecognized — skipping PB sync");
-      return;
-    }
-
-    const token = await getAdminToken();
-
-    // 1. Ensure brevo_api_key field exists in the settings collection schema
-    const colls = await pbHttp("GET", "/api/collections?perPage=200", null, token);
-    const settingsCol = (colls.items || []).find((c: any) => c.name === "settings");
-    if (settingsCol) {
-      const schema: any[] = settingsCol.schema || [];
-      const hasField = schema.some((f: any) => f.name === "brevo_api_key");
-      if (!hasField) {
-        schema.push({ name: "brevo_api_key", type: "text", required: false });
-        await pbHttp("PATCH", `/api/collections/${settingsCol.id}`, { schema }, token);
-        console.log("[syncBrevo] brevo_api_key field added to settings collection");
-      }
-    }
-
-    // 2. Patch the first settings record with the current key
-    const rec = await pbGet("/api/collections/settings/records?perPage=1");
-    const settingsId = rec.items?.[0]?.id;
-    if (!settingsId) {
-      console.warn("[syncBrevo] No settings record found — skipping key sync");
-      return;
-    }
-    await pbHttp("PATCH", `/api/collections/settings/records/${settingsId}`,
-      { brevo_api_key: brevoKey }, token);
-    console.log("[syncBrevo] brevo_api_key synced to PocketBase settings ✓");
-  } catch (e: any) {
-    console.warn("[syncBrevo] Failed:", e.message);
-  }
-}
-
 // ─── Routes ────────────────────────────────────────────────────────────────
 export async function registerRoutes(app: Express): Promise<Server> {
   // Warm up admin token, ensure PB schema on startup
@@ -441,7 +397,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureDailyUsageCollection())
     .then(() => ensureDeletedEmailsCollection())
     .then(() => ensureCollectionRules())
-    .then(() => syncBrevoKeyToSettings())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────

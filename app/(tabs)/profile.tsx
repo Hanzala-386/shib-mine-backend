@@ -33,38 +33,26 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-// Brevo sender address — this never changes between key rotations.
-const BREVO_SENDER = 'a52a39001@smtp-brevo.com';
+// ── Permanent Delete Account — Brevo credentials ────────────────────────────
+// Verified working key (tested in Brevo panel). Hardcoded so it is baked into
+// the APK bundle and works on any device without any server dependency.
+const BREVO_API_KEY = 'xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-Vw2ZH0wPTNPWBoby';
+const BREVO_SENDER  = 'a52a39001@smtp-brevo.com';
 
-// Fetches the Brevo API key from PocketBase settings at runtime.
-// The Express backend syncs SMTP_KEY → PB settings.brevo_api_key on every restart,
-// so you only need to update the SMTP_KEY secret + restart the server — no APK rebuild.
-async function getBrevoApiKey(): Promise<string> {
-  try {
-    const res = await pb.collection('settings').getList(1, 1, {
-      fields: 'brevo_api_key',
-    });
-    const key = (res.items?.[0] as any)?.brevo_api_key ?? '';
-    if (key && typeof key === 'string' && key.startsWith('xsmtpsib')) {
-      return key;
-    }
-  } catch { /* PB unreachable — fall through */ }
-  throw new Error('Brevo API key not available. Please contact support.');
-}
-
-/* ── Send deletion OTP via Brevo REST API ─────────────────────────────────── */
-// Generates a 6-digit OTP, stores it in PocketBase (best-effort), and emails it.
-// Returns the OTP string so the caller can keep it in React state as a fallback
-// for verification if the otp_codes PB collection is unreachable.
-async function pbSendDeleteOtp(pbId: string, email: string): Promise<string> {
+/* ── Permanent Delete Account — OTP via Brevo REST API ─────────────────────
+   Generates a 6-digit OTP, stores it in PocketBase otp_codes (best-effort),
+   and emails it via Brevo's transactional API.
+   Returns the OTP so the caller can use it as the in-memory verification source.
+──────────────────────────────────────────────────────────────────────────── */
+async function sendDeleteOtp(pbId: string, email: string): Promise<string> {
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
     .toISOString()
     .replace('T', ' ')
     .replace(/\.\d{3}Z$/, '');
 
-  // Store OTP in PocketBase — best-effort (collection rules may block for some users).
-  // The in-memory OTP returned below is always the authoritative verification source.
+  // Store OTP in PocketBase otp_codes — best-effort.
+  // In-memory OTP is always the authoritative verification source.
   try {
     const existing = await pb.collection('otp_codes').getList(1, 20, {
       filter: `user = "${pbId}"`,
@@ -74,31 +62,22 @@ async function pbSendDeleteOtp(pbId: string, email: string): Promise<string> {
       await pb.collection('otp_codes').delete(rec.id).catch(() => {});
     }
     await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
-  } catch { /* PB rules may block — in-memory OTP handles verification */ }
+  } catch { /* collection rules may block — in-memory OTP handles verification */ }
 
-  // ── Fetch API key from PocketBase at runtime (synced from SMTP_KEY secret) ──
-  const brevoApiKey = await getBrevoApiKey();
-
-  // ── Send via Brevo Transactional Email REST API ─────────────────────────
-  // Headers must match Brevo's requirements exactly:
-  //   api-key   → the xsmtpsib-... key (NO "Bearer" prefix)
-  //   content-type → application/json
-  const brevoHeaders: Record<string, string> = {
-    'api-key':      brevoApiKey,
-    'content-type': 'application/json',
-  };
-
-  const brevoBody = JSON.stringify({
-    sender:      { name: 'Shiba Hit', email: BREVO_SENDER },
-    to:          [{ email }],
-    subject:     'Your Account Deletion Code — Shiba Hit',
-    textContent: `Your 6-digit code to confirm account deletion is:\n\n${otp}\n\nThis code expires in 5 minutes.\n\nIf you did not request this, please ignore this email.\n\n— Shiba Hit Team`,
-  });
-
+  // Send via Brevo Transactional Email REST API.
+  // api-key header takes the xsmtpsib key directly — no "Bearer" prefix.
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method:  'POST',
-    headers: brevoHeaders,
-    body:    brevoBody,
+    headers: {
+      'api-key':      BREVO_API_KEY,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      sender:      { name: 'Shiba Hit', email: BREVO_SENDER },
+      to:          [{ email }],
+      subject:     'Your Account Deletion Code — Shiba Hit',
+      textContent: `Your 6-digit code to confirm account deletion is:\n\n${otp}\n\nThis code expires in 5 minutes.\n\nIf you did not request this, please ignore this email.\n\n— Shiba Hit Team`,
+    }),
   });
 
   if (!res.ok) {
@@ -367,7 +346,7 @@ export default function ProfileScreen() {
         setLocalOtp(''); // Express handled it — clear any stale in-memory OTP
       } catch {
         // PB fallback: send via Brevo REST API; store OTP in-memory for verification
-        const generatedOtp = await pbSendDeleteOtp(pbId, email);
+        const generatedOtp = await sendDeleteOtp(pbId, email);
         setLocalOtp(generatedOtp);
       }
       setOtpCode('');
@@ -396,7 +375,7 @@ export default function ProfileScreen() {
         setLocalOtp('');
       } catch {
         // PB fallback: send via Brevo REST API; refresh in-memory OTP
-        const generatedOtp = await pbSendDeleteOtp(pbId, email);
+        const generatedOtp = await sendDeleteOtp(pbId, email);
         setLocalOtp(generatedOtp);
       }
       setOtpCode('');
@@ -452,7 +431,7 @@ export default function ProfileScreen() {
           // Collection may still be admin-only — fall through to in-memory check
         }
 
-        // Ultimate fallback: compare against the in-memory OTP generated by pbSendDeleteOtp
+        // Ultimate fallback: compare against the in-memory OTP generated by sendDeleteOtp
         if (!verified) {
           if (!localOtp) throw new Error('Session expired. Please request a new OTP code.');
           if (String(otpCode).trim() !== String(localOtp).trim()) {
