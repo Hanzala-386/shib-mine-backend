@@ -17,7 +17,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
-import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 
 type Step = 'input' | 'success';
@@ -44,24 +43,8 @@ export default function ForgotPasswordScreen() {
     setIsLoading(true);
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-
-      // Check if email is registered — PocketBase SDK only (works on VPS)
-      let found = false;
-      try {
-        const res = await pb.collection('users').getList(1, 1, {
-          filter: `email = "${trimmed}"`,
-          fields: 'id',
-        });
-        found = res.totalItems > 0;
-      } catch {
-        // Network error or rule blocks — let Firebase handle gracefully
-        found = true;
-      }
-
-      if (!found) {
-        setErrorMsg('This email is not registered with us.');
-        return;
-      }
+      // Send Firebase password reset directly — works on APK without any server.
+      // Firebase handles the "account not found" case silently (security best practice).
       await sendPasswordResetEmail(auth, trimmed);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setStep('success');

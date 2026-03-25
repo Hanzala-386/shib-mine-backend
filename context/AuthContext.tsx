@@ -230,9 +230,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const isHardBlock = expressErr?.status === 403 || errCode === 'ACCOUNT_BLOCKED' || errCode === 'EMAIL_PERMANENTLY_BANNED';
         if (isHardBlock) throw expressErr; // propagate bans — don't fall through
 
-        // ── Fallback: authenticate directly with PocketBase ────────────────
+        // ── Fallback 1: authenticate directly with PocketBase ─────────────
         console.warn('[Auth] Express unreachable, trying PocketBase direct login:', expressErr?.message);
         pbRecord = await pbDirectLogin(fbUser.email ?? '', fbUser.uid);
+
+        // ── Fallback 2: PB user doesn't exist yet — create it directly ────
+        // This happens when the APK cannot reach Express (which normally creates
+        // the PB record). We replicate the same record Express would create.
+        if (!pbRecord) {
+          console.warn('[Auth] PB user not found — creating directly via PB SDK');
+          try {
+            const pass = pbPassword(fbUser.uid);
+            const code = pending.referralCode || generateReferralCode();
+            await pb.collection('users').create({
+              email:            fbUser.email ?? '',
+              password:         pass,
+              passwordConfirm:  pass,
+              emailVisibility:  false,
+              firebase_uid:     fbUser.uid,
+              display_name:     pending.displayName || (fbUser.email ?? '').split('@')[0],
+              referral_code:    code,
+              referred_by:      pending.referredBy || '',
+              shib_balance:     100,
+              power_tokens:     500,
+              referral_balance: 0,
+              referral_earnings: 0,
+              total_claims:     0,
+              total_wins:       0,
+              fraud_attempts:   0,
+              status:           'active',
+              is_verified:      true,
+            });
+            // Now log in with the freshly created account
+            pbRecord = await pbDirectLogin(fbUser.email ?? '', fbUser.uid);
+            console.warn('[Auth] PB user created and logged in directly ✓');
+          } catch (createErr: any) {
+            console.warn('[Auth] PB direct creation failed:', createErr?.message);
+          }
+        }
       }
 
       if (cached) await storage.removeItem(`shib_pending_${fbUser.uid}`);
