@@ -27,10 +27,9 @@ async function pbStartMining(
   // Deduct PT first (optimistic; session creation may still fail)
   await pb.collection('users').update(pbId, { power_tokens: currentPt - entryCost });
 
-  const now = new Date();
   const session = await pb.collection('mining_sessions').create({
     user: pbId,
-    start_time: now.toISOString(),
+    start_time: new Date().toISOString(),
     booster_multiplier: multiplier,
     claimed_amount: 0,
     is_verified: false,
@@ -38,7 +37,12 @@ async function pbStartMining(
 
   await pb.collection('users').update(pbId, { current_mining_session: session.id });
 
-  const startTimeMs = now.getTime();
+  // Use PocketBase's server-assigned `created` field as the authoritative start time.
+  // This is set by PocketBase's own clock — immune to device clock manipulation.
+  const rawCreated = ((session as any).created || (session as any).start_time || '').replace(' ', 'T');
+  const parsedCreated = rawCreated.endsWith('Z') ? rawCreated : rawCreated + 'Z';
+  const startTimeMs = new Date(parsedCreated).getTime() || Date.now();
+
   return {
     id: session.id,
     startTimeMs,
@@ -47,7 +51,7 @@ async function pbStartMining(
     multiplier,
     expectedReward: miningRatePerSec * (PB_DURATION_MS / 1000) * multiplier,
     newPowerTokens: currentPt - entryCost,
-    serverTime: Date.now(),
+    serverTime: startTimeMs, // PB's timestamp = server time
     miningRatePerSec,
   };
 }
@@ -65,7 +69,10 @@ async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: 
       return { session: null };
     }
 
-    const startTimeMs = new Date(s.start_time).getTime();
+    // Use PocketBase's `created` field (server-set) as canonical start time
+    const rawCreated = ((s as any).created || s.start_time || '').replace(' ', 'T');
+    const parsedCreated = rawCreated.endsWith('Z') ? rawCreated : rawCreated + 'Z';
+    const startTimeMs = new Date(parsedCreated).getTime() || Date.now();
     return {
       session: {
         id: s.id,
@@ -73,7 +80,7 @@ async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: 
         endTimeMs: startTimeMs + PB_DURATION_MS,
         durationMs: PB_DURATION_MS,
         multiplier: Number(s.booster_multiplier) || 1,
-        serverTime: Date.now(),
+        serverTime: startTimeMs,
       },
     };
   } catch {
@@ -126,9 +133,11 @@ async function pbClaimMining(
   }
 
   // ── Anti-fraud: use SERVER clock, not device clock ────────────────────────
-  // start_time was recorded by PocketBase when the session was created.
-  // serverNowMs comes from PocketBase's HTTP Date header — immune to phone-clock manipulation.
-  const startTimeMs = new Date(s.start_time).getTime();
+  // Use PocketBase's `created` field (server-set) as canonical start time —
+  // immune to device clock manipulation. Fall back to start_time for older sessions.
+  const rawCreated = ((s as any).created || s.start_time || '').replace(' ', 'T');
+  const parsedCreated = rawCreated.endsWith('Z') ? rawCreated : rawCreated + 'Z';
+  const startTimeMs = new Date(parsedCreated).getTime();
   if (isNaN(startTimeMs)) throw new Error('Invalid session start time.');
 
   const nowMs = serverNowMs;
@@ -235,17 +244,20 @@ async function pbActivateAndMine(
     booster_expires: String(expiresAt),
   });
 
-  const now = new Date();
   const session = await pb.collection('mining_sessions').create({
     user: pbId,
-    start_time: now.toISOString(),
+    start_time: new Date().toISOString(),
     booster_multiplier: multiplier,
     claimed_amount: 0,
     is_verified: false,
   });
   await pb.collection('users').update(pbId, { current_mining_session: session.id });
 
-  const startTimeMs = now.getTime();
+  // Use PocketBase's server-assigned `created` field as the authoritative start time.
+  const rawCreated = ((session as any).created || (session as any).start_time || '').replace(' ', 'T');
+  const parsedCreated = rawCreated.endsWith('Z') ? rawCreated : rawCreated + 'Z';
+  const startTimeMs = new Date(parsedCreated).getTime() || Date.now();
+
   return {
     id: session.id,
     startTimeMs,
@@ -255,7 +267,7 @@ async function pbActivateAndMine(
     boosterExpiresAt: expiresAt,
     expectedReward: miningRatePerSec * (PB_DURATION_MS / 1000) * multiplier,
     newPowerTokens: currentPt - totalCost,
-    serverTime: Date.now(),
+    serverTime: startTimeMs, // PB's timestamp = server time
     miningRatePerSec,
   };
 }
@@ -825,15 +837,19 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       try {
         res = await api.activateBooster({ pbId: currentPbId, multiplier });
       } catch {
-        // Express unreachable — fetch booster cost from settings then use PB direct
-        const settings = await api.getSettings().catch(() => null);
+        // Express unreachable — read booster costs directly from PocketBase settings
+        let pbSettings: any = null;
+        try {
+          const settingsRes = await pb.collection('settings').getList(1, 1);
+          pbSettings = settingsRes.items[0] ?? null;
+        } catch { /* keep null */ }
         const costMap: Record<number, number> = {
-          2: safe(settings?.boostCosts?.['2x'], 48),
-          4: safe(settings?.boostCosts?.['4x'], 96),
-          6: safe(settings?.boostCosts?.['6x'], 144),
-          10: safe(settings?.boostCosts?.['10x'], 240),
+          2:  safe(pbSettings?.boost_2x_cost,  200),
+          4:  safe(pbSettings?.boost_4x_cost,  400),
+          6:  safe(pbSettings?.boost_6x_cost,  600),
+          10: safe(pbSettings?.boost_10x_cost, 800),
         };
-        res = await pbActivateBooster(currentPbId, multiplier, costMap[multiplier] ?? 96);
+        res = await pbActivateBooster(currentPbId, multiplier, costMap[multiplier] ?? 400);
       }
       if (res?.success) {
         const expiresAt = parseBoosterTs(res.expiresAt ?? res.boosterExpiresAt);
@@ -863,15 +879,20 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       try {
         res = await api.activateAndMine({ pbId: currentPbId, multiplier });
       } catch {
-        // Express unreachable — fetch costs from settings then use PB direct
-        const settings = await api.getSettings().catch(() => null);
+        // Express unreachable — read booster + mining costs directly from PocketBase settings
+        let pbSettings: any = null;
+        try {
+          const settingsRes = await pb.collection('settings').getList(1, 1);
+          pbSettings = settingsRes.items[0] ?? null;
+        } catch { /* keep null */ }
         const costMap: Record<number, number> = {
-          2: safe(settings?.boostCosts?.['2x'], 48),
-          4: safe(settings?.boostCosts?.['4x'], 96),
-          6: safe(settings?.boostCosts?.['6x'], 144),
-          10: safe(settings?.boostCosts?.['10x'], 240),
+          2:  safe(pbSettings?.boost_2x_cost,  200),
+          4:  safe(pbSettings?.boost_4x_cost,  400),
+          6:  safe(pbSettings?.boost_6x_cost,  600),
+          10: safe(pbSettings?.boost_10x_cost, 800),
         };
-        const boosterCost = costMap[multiplier] ?? 96;
+        const boosterCost = costMap[multiplier] ?? 400;
+        // miningEntryCost is already loaded from PB settings (power_token_per_click)
         const miningCost = miningEntryCost;
         res = await pbActivateAndMine(
           currentPbId, multiplier, miningRateRef.current, miningCost, boosterCost,

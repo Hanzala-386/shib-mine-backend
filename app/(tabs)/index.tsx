@@ -516,7 +516,14 @@ export default function HomeScreen() {
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 16) }]}
+        contentContainerStyle={[
+          styles.scroll,
+          {
+            paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 16),
+            // Tab bar (~56px) + AdMob banner (~50px) + safe-area bottom + buffer
+            paddingBottom: insets.bottom + 160,
+          },
+        ]}
       >
         {/* Header */}
         <Animated.View entering={FadeInDown.delay(100).springify()}>
