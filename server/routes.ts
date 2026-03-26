@@ -300,6 +300,69 @@ async function blacklistEmail(email: string): Promise<void> {
   }
 }
 
+// ─── Ensure public_referrals collection exists (for APK referral validation) ─
+// This collection is publicly readable so the APK can validate referral codes
+// without a PocketBase auth session (which doesn't exist yet at sign-up time).
+async function ensurePublicReferralsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/public_referrals");
+    if (check.code) {
+      // Collection does not exist — create it.
+      // Use 'schema' (not 'fields') — this PocketBase version uses the pre-v0.22 API.
+      await pbHttp("POST", "/api/collections", {
+        name: "public_referrals",
+        type: "base",
+        schema: [
+          { name: "code",    type: "text", required: true,  options: {} },
+          { name: "user_id", type: "text", required: true,  options: {} },
+        ],
+        listRule:   "",
+        viewRule:   "",
+        createRule: "",
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[public_referrals] Collection created with public rules");
+    }
+    // Always ensure it has a public listRule and open createRule
+    const col = await pbGet("/api/collections/public_referrals");
+    if (!col.code) {
+      await pbHttp("PATCH", `/api/collections/${col.id}`, {
+        listRule:   "",   // public — anyone can query referral codes
+        viewRule:   "",
+        createRule: "",   // public — APK fallback can insert without auth
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[public_referrals] Rules patched — public list/create enabled");
+    }
+    // Backfill any existing users whose code is not yet in public_referrals
+    const existing = await pbGet(
+      `/api/collections/users/records?perPage=200&fields=id,referral_code`,
+    );
+    const items: any[] = existing.items || [];
+    let backfilled = 0;
+    for (const u of items) {
+      if (!u.referral_code) continue;
+      const dup = await pbGet(
+        `/api/collections/public_referrals/records?filter=${encodeURIComponent(`code="${u.referral_code}"`)}&perPage=1`,
+        token,
+      );
+      if (!(dup.items?.[0])) {
+        await pbHttp("POST", "/api/collections/public_referrals/records", {
+          code: u.referral_code,
+          user_id: u.id,
+        }, token).catch(() => {});
+        backfilled++;
+      }
+    }
+    if (backfilled > 0) console.log(`[public_referrals] Backfilled ${backfilled} existing users`);
+  } catch (e: any) {
+    console.warn("[public_referrals] Setup failed:", e.message);
+  }
+}
+
 /** Returns true if the email is permanently blacklisted (previously deleted account) */
 async function isEmailBlacklisted(email: string): Promise<boolean> {
   try {
@@ -395,6 +458,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureDailyUsageCollection())
     .then(() => ensureDeletedEmailsCollection())
     .then(() => ensureCollectionRules())
+    .then(() => ensurePublicReferralsCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
@@ -781,6 +845,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error(`[auth/sync] PB user creation FAILED. email=${email} | PB error: ${detail}`);
         return res.status(400).json({ error: created.message, detail: created.data });
       }
+
+      // Register referral code in public_referrals (publicly queryable for APK validation)
+      pbHttp("POST", "/api/collections/public_referrals/records", {
+        code: code,
+        user_id: created.id,
+      }).catch(() => {});
 
       // Give referrer 30 Power Tokens immediately on successful signup
       if (referrerPbId) {

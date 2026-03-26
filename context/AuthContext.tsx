@@ -242,7 +242,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           try {
             const pass = pbPassword(fbUser.uid);
             const code = pending.referralCode || generateReferralCode();
-            await pb.collection('users').create({
+            const createdRecord = await pb.collection('users').create({
               email:            fbUser.email ?? '',
               password:         pass,
               passwordConfirm:  pass,
@@ -261,6 +261,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               status:           'active',
               is_verified:      true,
             });
+            // Register referral code in public_referrals (publicly queryable for APK validation)
+            // createRule is "" so this works without auth
+            pb.collection('public_referrals').create({
+              code: code,
+              user_id: createdRecord.id,
+            }).catch(() => {});
             // Now log in with the freshly created account
             pbRecord = await pbDirectLogin(fbUser.email ?? '', fbUser.uid);
             console.warn('[Auth] PB user created and logged in directly ✓');

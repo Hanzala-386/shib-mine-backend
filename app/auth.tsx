@@ -188,16 +188,16 @@ export default function AuthScreen() {
           codeValid = check.valid;
         } catch {
           // Express unreachable on device (returns 404 via PocketBase proxy).
-          // Fall back to a direct PocketBase query to validate the referral code.
+          // Fall back to public_referrals collection — listRule is "" so it works
+          // without a PocketBase session (the user has no session yet at sign-up).
           try {
-            const res = await pb.collection('users').getList(1, 1, {
-              filter: `referral_code = "${trimmedCode.toUpperCase()}"`,
+            const res = await pb.collection('public_referrals').getList(1, 1, {
+              filter: `code = "${trimmedCode.toUpperCase()}"`,
               fields: 'id',
             });
             codeValid = res.totalItems > 0;
           } catch {
             // PocketBase also unreachable — allow signup to proceed.
-            // Worst case: an invalid code is stored, which is non-critical.
             codeValid = true;
           }
         }
