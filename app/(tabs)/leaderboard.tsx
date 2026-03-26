@@ -103,6 +103,8 @@ async function fetchMyRank(pbId: string): Promise<MyRank | undefined> {
 /* ── Ticker marquee ── */
 const ITEM_W = 230;
 const TICKER_H = 46;
+// Full visual height of the WithdrawalTicker widget (label row + track + border + padding)
+const TICKER_TOTAL_H = TICKER_H + 28; // 46 track + 28 (label ~16px + paddingVertical 8 + border 1 + gap 3)
 
 function WithdrawalTicker({ items }: { items: TickerItem[] }) {
   const translateX = useRef(new Animated.Value(0)).current;
@@ -316,6 +318,9 @@ export default function LeaderboardScreen() {
 
   const topPad = insets.top + (Platform.OS === 'web' ? 67 : 0);
 
+  // Total height of the custom tab bar (banner ad + tab buttons + safe area bottom)
+  const tabBarH = Platform.OS === 'web' ? 84 : BANNER_HEIGHT + 56 + insets.bottom;
+
   return (
     <View style={styles.container}>
       <LinearGradient
@@ -380,15 +385,14 @@ export default function LeaderboardScreen() {
         ListFooterComponent={<View style={{ height: 24 }} />}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
-          paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0) + BANNER_HEIGHT + 56 + 80,
+          // Padding = tabBar (banner+buttons+insets) + ticker height + buffer
+          // Ensures the last player row is fully visible above the fixed ticker
+          paddingBottom: tabBarH + TICKER_TOTAL_H + 24,
         }}
       />
 
-      {/* Fixed withdrawal ticker — sits above the full tab bar (banner+buttons) */}
-      {/* Tab bar total height = BANNER_HEIGHT(50) + 56 + insets.bottom */}
-      <View style={[styles.tickerFixed, {
-        bottom: Platform.OS === 'web' ? 84 : BANNER_HEIGHT + 56 + insets.bottom,
-      }]}>
+      {/* Fixed withdrawal ticker — anchored directly above the tab bar */}
+      <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
         <WithdrawalTicker items={ticker} />
       </View>
     </View>
@@ -424,7 +428,9 @@ const styles = StyleSheet.create({
   emptyDesc:  { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted, textAlign: 'center', lineHeight: 20 },
 
   tickerFixed: {
-    position: 'absolute', left: 0, right: 0, bottom: 0,
+    position: 'absolute', left: 0, right: 0,
     backgroundColor: Colors.darkBg,
+    zIndex: 10,
+    elevation: 10,
   },
 });
