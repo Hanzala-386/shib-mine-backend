@@ -237,12 +237,18 @@ async function ensureCollectionRules() {
       await pbHttp("PATCH", `/api/collections/${usersCol.id}`, {
         // Anyone authenticated can list (needed for leaderboard)
         listRule: "@request.auth.id != \"\"",
+        // A user can view their own record — needed so pbGetSelf() works in APK
+        viewRule: "@request.auth.id = id",
         // Allow public creation so APK can create PB user directly when Express unreachable
         createRule: "",
+        // CRITICAL: allow a user to update their own record.
+        // Without this, pbStartMining / pbClaimMining / pbActivateBooster balance writes all fail
+        // silently in the APK because the PB SDK authenticates as a regular user, not admin.
+        updateRule: "@request.auth.id = id",
         // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
         deleteRule: "@request.auth.id = id",
       }, token);
-      console.log("[users] listRule + createRule + deleteRule patched — self-delete enabled for APK");
+      console.log("[users] listRule + viewRule + createRule + updateRule + deleteRule patched — APK self-CRUD enabled");
     }
     // Allow any authenticated user to CREATE a deleted_emails record (for client-side deletion flow)
     const deCol = await pbGet("/api/collections/deleted_emails");
@@ -258,6 +264,39 @@ async function ensureCollectionRules() {
     }
   } catch (e: any) {
     console.warn("[ensureCollectionRules] Patch failed:", e.message);
+  }
+}
+
+// ─── Patch mining_sessions collection rules for APK SDK access ───────────────
+// Express uses an admin token and can always read/write mining_sessions.
+// The APK fallback uses the PB SDK authenticated as a regular user, so the
+// collection rules MUST allow the record owner to create and update sessions.
+// Without this patch, pbStartMining (create) and pbClaimMining (update) both
+// fail with 403 Forbidden — the claim silently returns 0 with no UI feedback.
+async function ensureMiningSessionsRules() {
+  try {
+    const token = await getAdminToken();
+    const col = await pbGet("/api/collections/mining_sessions");
+    if (col.code) {
+      console.warn("[mining_sessions] Collection not found — skipping rules patch");
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${col.id}`, {
+      // User can list/view only their own sessions
+      listRule:   "user = @request.auth.id",
+      viewRule:   "user = @request.auth.id",
+      // Any authenticated user can open a new session (APK pbStartMining)
+      createRule: "@request.auth.id != \"\"",
+      // CRITICAL: user can update their own session.
+      // This is the rule that was missing — pbClaimMining's update call was returning
+      // 403, causing the claim to silently fail in every APK build.
+      updateRule: "user = @request.auth.id",
+      // No user deletion — sessions are permanent audit records
+      deleteRule: null,
+    }, token);
+    console.log("[mining_sessions] Rules patched — APK can create + claim sessions via PB SDK");
+  } catch (e: any) {
+    console.warn("[mining_sessions] Rules patch failed:", e.message);
   }
 }
 
@@ -459,6 +498,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureDeletedEmailsCollection())
     .then(() => ensureCollectionRules())
     .then(() => ensurePublicReferralsCollection())
+    .then(() => ensureMiningSessionsRules())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
