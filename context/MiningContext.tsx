@@ -143,32 +143,45 @@ async function pbClaimMining(
   const nowMs = serverNowMs;
   const elapsedMs = nowMs - startTimeMs;
 
-  // Grace window: allow up to 5 minutes beyond the nominal mining duration
-  const GRACE_MS = 5 * 60 * 1000;
+  // ── Fraud detection: only flag claims that are IMPOSSIBLY EARLY ────────────
+  // Minimum: 55 minutes (5-min grace for network latency / slow UI).
+  // There is NO upper bound — users who come back after 70 min, 2 hours, or even
+  // a day should always receive their reward (capped at 60 min).
+  // Penalising late claimers was the bug that was rejecting legitimate sessions.
+  const MIN_CLAIM_MS = 55 * 60 * 1000;  // 55 minutes
+  const MAX_CLAIM_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (session replay protection only)
 
-  // Suspicious if claimed impossibly early (< 30 s) or impossibly late (> duration + grace)
-  const isSuspicious = elapsedMs < 30_000 || elapsedMs > PB_DURATION_MS + GRACE_MS;
-  if (isSuspicious) {
-    const fraudAttempts = (Number(user.fraud_attempts) || 0) + 1;
+  const tooEarly = elapsedMs < MIN_CLAIM_MS;
+  const tooOld   = elapsedMs > MAX_CLAIM_MS; // extremely stale — potential replay
+
+  if (tooEarly || tooOld) {
+    const fraudAttempts = tooEarly ? (Number(user.fraud_attempts) || 0) + 1 : (Number(user.fraud_attempts) || 0);
     const shouldBlock   = fraudAttempts >= 3;
-    await pb.collection('users').update(pbId, {
-      fraud_attempts: fraudAttempts,
-      ...(shouldBlock ? { status: 'blocked' } : {}),
-    }).catch(() => {});
+    if (tooEarly) {
+      await pb.collection('users').update(pbId, {
+        fraud_attempts: fraudAttempts,
+        ...(shouldBlock ? { status: 'blocked' } : {}),
+      }).catch(() => {});
+    }
     // Mark session so it can't be retried
     await pb.collection('mining_sessions').update(sessionId, { claimed_amount: -1 }).catch(() => {});
+    const minutesElapsed = Math.round(elapsedMs / 60000);
     throw Object.assign(
       new Error(shouldBlock
         ? 'Account blocked after repeated clock manipulation attempts.'
-        : 'Invalid claim time detected. Please do not modify your device clock.'),
+        : tooOld
+          ? 'Session too old — please start a new mining session.'
+          : 'Claim submitted too early. Please wait for the full 60-minute session.'),
       {
         data: {
           error:         shouldBlock ? 'ACCOUNT_BLOCKED' : 'FRAUD_DETECTED',
-          fraudAttempts: fraudAttempts,
+          fraudAttempts,
           blocked:       shouldBlock,
           message:       shouldBlock
             ? 'Your account has been permanently disabled due to multiple fraud attempts.'
-            : `Your phone time does not match our server. This is Strike ${fraudAttempts}/3. Your mining progress has been reset. 3 strikes = Permanent Ban.`,
+            : tooOld
+              ? 'Session expired. Start a new mining session.'
+              : `Strike ${fraudAttempts}/3! Only ${minutesElapsed} minutes elapsed (need 55+). Mining progress reset. 3 strikes = permanent ban.`,
         },
       },
     );

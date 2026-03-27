@@ -1560,7 +1560,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const startMs = new Date(parsedStartMs).getTime();
       const durationSec = (settings.mining_duration_minutes || 60) * 60;
       const elapsed = Date.now() - startMs;
-      if (elapsed < durationSec * 1000) {
+      // 5-minute grace so a claim arriving fractionally early due to network delay is accepted.
+      // There is no upper bound — late claimers (70 min, 2 hrs, etc.) always get their reward.
+      const graceSec = 5 * 60;
+      if (elapsed < (durationSec - graceSec) * 1000) {
         // ── 3-strike fraud detection ──────────────────────────────────────────
         // Re-read fraud_attempts fresh to avoid race conditions
         const currentStrikes = user.fraud_attempts || 0;
