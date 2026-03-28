@@ -225,6 +225,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           referralCode: pending.referralCode || generateReferralCode(),
           referredBy: pending.referredBy || '',
         });
+        // Express handled the PB admin writes, but the PB SDK is still unauthenticated.
+        // Authenticate it in the background so all PB-direct SDK calls (mining, boosters,
+        // claim) work in the web preview exactly as they do in the APK.
+        pbDirectLogin(fbUser.email ?? '', fbUser.uid).catch(() => {});
       } catch (expressErr: any) {
         const errCode = expressErr?.data?.error || expressErr?.code || '';
         const isHardBlock = expressErr?.status === 403 || errCode === 'ACCOUNT_BLOCKED' || errCode === 'EMAIL_PERMANENTLY_BANNED';
