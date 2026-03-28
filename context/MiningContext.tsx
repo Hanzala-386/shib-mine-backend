@@ -18,8 +18,19 @@ async function pbStartMining(
   pbId: string,
   multiplier: number,
   miningRatePerSec: number,
-  entryCost: number,
 ): Promise<{ id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; expectedReward: number; newPowerTokens: number; serverTime: number; miningRatePerSec: number }> {
+  // Fetch the authoritative mining cost from PocketBase settings — never rely on
+  // the React state value (miningEntryCost) which may be stale or default (24) if
+  // settings haven't loaded yet when the user taps Start.
+  let entryCost = 24;
+  try {
+    const settingsRes = await pb.collection('settings').getList(1, 1);
+    const raw = settingsRes.items[0];
+    if (raw && raw.power_token_per_click) {
+      entryCost = Number(raw.power_token_per_click) || 24;
+    }
+  } catch { /* keep fallback */ }
+
   const user = await pb.collection('users').getOne(pbId);
   const currentPt = Number(user.power_tokens) || 0;
   if (currentPt < entryCost) throw new Error(`Not enough Power Tokens. Need ${entryCost} PT.`);
@@ -472,17 +483,17 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
   // Syncs clockDrift with the server. Can be seeded with a serverTime already
   // in a network response to avoid an extra round-trip.
+  // Uses PocketBase's /api/health Date header — works in APK without Express.
   async function syncClockDrift(knownServerTime?: number): Promise<void> {
     try {
-      const t0 = Date.now();
-      let serverTime = knownServerTime;
-      if (!serverTime) {
-        const res = await api.getServerTime();
-        serverTime = res?.serverTime;
+      if (knownServerTime && isFinite(knownServerTime)) {
+        clockDriftRef.current = knownServerTime - Date.now();
+        return;
       }
+      const t0 = Date.now();
+      const serverTime = await getServerTimeMs(); // PB /api/health Date header
       if (serverTime && isFinite(serverTime)) {
-        // If we made a round-trip, estimate RTT and mid-point correction
-        const rtt = knownServerTime ? 0 : (Date.now() - t0);
+        const rtt = Date.now() - t0;
         clockDriftRef.current = serverTime - Date.now() + Math.floor(rtt / 2);
       }
     } catch { /* non-critical — keep last known drift */ }
@@ -550,31 +561,29 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
   async function verifyWithServer(currentPbId: string, currentCacheKey: string | null) {
     try {
-      const res = await api.getActiveMining(currentPbId);
-      // Sync drift from background verification
+      // Always go PB direct — Express is unreachable on-device
+      const res = await pbGetActiveMining(currentPbId);
       if (res?.session?.serverTime && isFinite(res.session.serverTime)) {
         clockDriftRef.current = res.session.serverTime - Date.now();
       }
       if (!res?.session) {
-        // Server says no session — only clear if we're in ready_to_claim (server confirmed)
         const current = sessionRef.current;
-        if (current?.status === 'ready_to_claim') return; // Keep local until user claims
+        if (current?.status === 'ready_to_claim') return;
         if (currentCacheKey) await storage.removeItem(currentCacheKey);
         setSession(null);
         sessionRef.current = null;
         clearAllTimers();
       }
-      // If server has a session, we trust local cache for timer continuity
     } catch { /* ignore — stay with local state */ }
   }
 
   async function fetchFromServer(currentPbId: string, currentCacheKey: string | null) {
-    // Try Express backend first, then fall back to PocketBase direct
+    // Go directly to PocketBase SDK — Express is unreachable from the APK
     let res: any;
     try {
-      res = await api.getActiveMining(currentPbId);
-    } catch {
       res = await pbGetActiveMining(currentPbId);
+    } catch {
+      res = { session: null };
     }
     if (res?.session) {
       const s = res.session;
@@ -687,13 +696,9 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     clearAllTimers();
 
     try {
-      let res: any;
-      try {
-        res = await api.startMining({ pbId: currentPbId, multiplier });
-      } catch {
-        // Express unreachable — use PocketBase direct
-        res = await pbStartMining(currentPbId, multiplier, miningRateRef.current, miningEntryCost);
-      }
+      // Go directly to PocketBase SDK — Express is unreachable from the APK.
+      // pbStartMining fetches the entry cost from PB settings itself (never trusts stale state).
+      const res = await pbStartMining(currentPbId, multiplier, miningRateRef.current);
 
       // Sync clock drift immediately from the server response
       if (res?.serverTime && isFinite(res.serverTime)) {
@@ -759,24 +764,12 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       storage.removeItem(currentCacheKey ?? '').catch(() => {});
     };
 
-    // ── The actual claim work — Express first (4s), then PB SDK ───────────
+    // ── The actual claim work — PocketBase SDK directly ───────────────────
+    // Express is unreachable from the APK (api.webcod.in is PocketBase-only).
+    // Going PB-direct eliminates the 4-second Express timeout dead zone and the
+    // silent-failure where the claim request never reached a writable endpoint.
     const doActualClaim = async (): Promise<number> => {
-      let res: any;
-      try {
-        // Express gets 4 seconds. On device it's almost always unreachable —
-        // the short timeout ensures PocketBase SDK is tried immediately.
-        const expressCall    = api.claimMining({ sessionId: s.pbSessionId!, pbId: currentPbId });
-        const expressTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('EXPRESS_TIMEOUT')), 4000)
-        );
-        res = await Promise.race([expressCall, expressTimeout]);
-      } catch (expressErr: any) {
-        const errCode = expressErr?.data?.error || '';
-        const isHardBlock = errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED';
-        if (isHardBlock) throw expressErr;
-        // Express unreachable / timed out → PocketBase SDK (uses server clock via Date header)
-        res = await pbClaimMining(s.pbSessionId!, currentPbId, miningRateRef.current);
-      }
+      const res = await pbClaimMining(s.pbSessionId!, currentPbId, miningRateRef.current);
 
       // ── Success path ────────────────────────────────────────────────────
       resetLocalSession();
@@ -802,9 +795,9 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     };
 
     try {
-      // ── 10-second HARD CAP on the entire operation ─────────────────────
-      // If Express (4 s) + PocketBase SDK both stall due to network issues,
-      // the button still unfreezes within 10 s and the user sees a clear message.
+      // ── 10-second HARD CAP on the PocketBase claim call ───────────────
+      // If PocketBase stalls due to network issues the button still unfreezes
+      // within 10 s and the user sees a clear error message.
       const hardTimeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(
           Object.assign(new Error('Request timed out after 10 seconds.'), {
@@ -846,33 +839,28 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     const currentPbId = pbIdRef.current;
     if (!currentPbId) return { success: false, error: 'Account not ready. Please wait.' };
     try {
-      let res: any;
+      // Go PB-direct — read costs from PocketBase settings, no Express needed
+      let pbSettings: any = null;
       try {
-        res = await api.activateBooster({ pbId: currentPbId, multiplier });
-      } catch {
-        // Express unreachable — read booster costs directly from PocketBase settings
-        let pbSettings: any = null;
-        try {
-          const settingsRes = await pb.collection('settings').getList(1, 1);
-          pbSettings = settingsRes.items[0] ?? null;
-        } catch { /* keep null */ }
-        const costMap: Record<number, number> = {
-          2:  safe(pbSettings?.boost_2x_cost,  200),
-          4:  safe(pbSettings?.boost_4x_cost,  400),
-          6:  safe(pbSettings?.boost_6x_cost,  600),
-          10: safe(pbSettings?.boost_10x_cost, 800),
-        };
-        res = await pbActivateBooster(currentPbId, multiplier, costMap[multiplier] ?? 400);
-      }
+        const settingsRes = await pb.collection('settings').getList(1, 1);
+        pbSettings = settingsRes.items[0] ?? null;
+      } catch { /* keep null */ }
+      const costMap: Record<number, number> = {
+        2:  safe(pbSettings?.boost_2x_cost,  200),
+        4:  safe(pbSettings?.boost_4x_cost,  400),
+        6:  safe(pbSettings?.boost_6x_cost,  600),
+        10: safe(pbSettings?.boost_10x_cost, 800),
+      };
+      const res = await pbActivateBooster(currentPbId, multiplier, costMap[multiplier] ?? 400);
       if (res?.success) {
-        const expiresAt = parseBoosterTs(res.expiresAt ?? res.boosterExpiresAt);
+        const expiresAt = parseBoosterTs(res.expiresAt);
         const newBooster = { multiplier: safe(res.multiplier, multiplier), expiresAt };
         setActiveBooster(newBooster);
         activeBoosterRef.current = newBooster;
         refreshBalance().catch(() => {});
         return { success: true };
       }
-      return { success: false, error: res?.error || 'Failed to activate booster' };
+      return { success: false, error: 'Failed to activate booster' };
     } catch (e: any) {
       return { success: false, error: e?.message || 'Failed to activate booster' };
     }
@@ -888,29 +876,24 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     clearAllTimers();
 
     try {
-      let res: any;
+      // Go PB-direct — read all costs from PocketBase settings directly
+      let pbSettings: any = null;
       try {
-        res = await api.activateAndMine({ pbId: currentPbId, multiplier });
-      } catch {
-        // Express unreachable — read booster + mining costs directly from PocketBase settings
-        let pbSettings: any = null;
-        try {
-          const settingsRes = await pb.collection('settings').getList(1, 1);
-          pbSettings = settingsRes.items[0] ?? null;
-        } catch { /* keep null */ }
-        const costMap: Record<number, number> = {
-          2:  safe(pbSettings?.boost_2x_cost,  200),
-          4:  safe(pbSettings?.boost_4x_cost,  400),
-          6:  safe(pbSettings?.boost_6x_cost,  600),
-          10: safe(pbSettings?.boost_10x_cost, 800),
-        };
-        const boosterCost = costMap[multiplier] ?? 400;
-        // miningEntryCost is already loaded from PB settings (power_token_per_click)
-        const miningCost = miningEntryCost;
-        res = await pbActivateAndMine(
-          currentPbId, multiplier, miningRateRef.current, miningCost, boosterCost,
-        );
-      }
+        const settingsRes = await pb.collection('settings').getList(1, 1);
+        pbSettings = settingsRes.items[0] ?? null;
+      } catch { /* keep null */ }
+      const costMap: Record<number, number> = {
+        2:  safe(pbSettings?.boost_2x_cost,  200),
+        4:  safe(pbSettings?.boost_4x_cost,  400),
+        6:  safe(pbSettings?.boost_6x_cost,  600),
+        10: safe(pbSettings?.boost_10x_cost, 800),
+      };
+      const boosterCost = costMap[multiplier] ?? 400;
+      // Fetch mining entry cost from PB settings (authoritative — never use stale React state)
+      const miningCost = Number(pbSettings?.power_token_per_click) || 24;
+      const res = await pbActivateAndMine(
+        currentPbId, multiplier, miningRateRef.current, miningCost, boosterCost,
+      );
 
       // Sync clock drift from server response
       if (res?.serverTime && isFinite(res.serverTime)) {
