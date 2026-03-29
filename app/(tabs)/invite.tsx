@@ -25,40 +25,36 @@ export default function InviteScreen() {
   const { data: stats } = useQuery({
     queryKey: ['/api/app/user/referral-stats', pbId],
     queryFn: async () => {
+      // PRIMARY: PocketBase SDK direct — api.webcod.in, works on APK + web preview
       try {
-        return await api.getReferralStats(pbId);
+        const code = user?.referralCode ?? pbUser?.referralCode ?? '';
+        const [refRes, meRes] = await Promise.all([
+          pb.collection('users').getList(1, 200, {
+            filter: code ? `(referred_by = "${code}" || referred_by = "${pbId}")` : 'id = ""',
+            fields: 'id,email,created,total_claims',
+          }),
+          pb.collection('users').getOne(pbId, {
+            fields: 'id,referral_balance,referral_earnings',
+          }),
+        ]);
+        return {
+          referredCount: refRes.totalItems,
+          totalEarnings: meRes.referral_earnings || 0,
+          referralBalance: meRes.referral_balance || 0,
+          referredUsers: (refRes.items || []).map((u: any) => ({
+            id: u.id,
+            email: u.email,
+            joined: u.created,
+            claims: u.total_claims || 0,
+          })),
+        };
       } catch {
-        // PB SDK fallback: query referred users and user balances directly
-        try {
-          const code = user?.referralCode ?? pbUser?.referralCode ?? '';
-          const [refRes, meRes] = await Promise.all([
-            pb.collection('users').getList(1, 200, {
-              filter: code ? `referred_by = "${code}"` : 'id = ""',
-              fields: 'id,email,created,total_claims',
-            }),
-            pb.collection('users').getOne(pbId, {
-              fields: 'id,referral_balance,referral_earnings',
-            }),
-          ]);
-          return {
-            referredCount: refRes.totalItems,
-            totalEarnings: meRes.referral_earnings || 0,
-            referralBalance: meRes.referral_balance || 0,
-            referredUsers: (refRes.items || []).map((u: any) => ({
-              id: u.id,
-              email: u.email,
-              joined: u.created,
-              claims: u.total_claims || 0,
-            })),
-          };
-        } catch {
-          return {
-            referredCount: 0,
-            totalEarnings: pbUser?.referralEarnings ?? 0,
-            referralBalance: pbUser?.referralBalance ?? 0,
-            referredUsers: [],
-          };
-        }
+        return {
+          referredCount: 0,
+          totalEarnings: pbUser?.referralEarnings ?? 0,
+          referralBalance: pbUser?.referralBalance ?? 0,
+          referredUsers: [],
+        };
       }
     },
     enabled: !!pbId,

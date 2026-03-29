@@ -454,28 +454,25 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     }
   }, [pbUser]);
 
-  // ── Load settings once ────────────────────────────────────────────────────
+  // ── Load settings once — PocketBase SDK direct (primary for APK + web preview) ──
   useEffect(() => {
     (async () => {
       let s: any = null;
       try {
-        s = await api.getSettings();
+        // PRIMARY: read from PocketBase SDK directly — api.webcod.in, works on APK + web
+        const res = await pb.collection('settings').getList(1, 1);
+        const raw = res.items[0];
+        if (raw) {
+          s = {
+            miningRatePerSec:      raw.mining_rate_per_sec,
+            miningDurationMinutes: raw.mining_duration_minutes,
+            powerTokenPerClick:    raw.power_token_per_click,
+            ratePopupFrequency:    raw.rate_popup_frequency,
+            playStoreUrl:          raw.play_store_url ?? raw.app_store_link,
+          };
+        }
       } catch {
-        // Express unreachable — fall back to PocketBase directly
-        try {
-          const res = await pb.collection('settings').getList(1, 1);
-          const raw = res.items[0];
-          if (raw) {
-            // Map snake_case PB fields → camelCase AppSettings shape
-            s = {
-              miningRatePerSec:      raw.mining_rate_per_sec,
-              miningDurationMinutes: raw.mining_duration_minutes,
-              powerTokenPerClick:    raw.power_token_per_click,
-              ratePopupFrequency:    raw.rate_popup_frequency,
-              playStoreUrl:          raw.play_store_url ?? raw.app_store_link,
-            };
-          }
-        } catch { /* keep defaults */ }
+        try { s = await api.getSettings(); } catch { /* keep defaults */ }
       }
       if (!s) return;
       if (s.miningRatePerSec)      setMiningRatePerSec(safe(s.miningRatePerSec, 0.01736));

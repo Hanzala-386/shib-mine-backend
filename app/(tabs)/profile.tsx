@@ -169,41 +169,40 @@ export default function ProfileScreen() {
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
   const pbId         = pbUser?.pbId ?? '';
 
-  /* Referral stats — try Express first, fall back to direct PocketBase query */
+  /* Referral stats — PocketBase SDK direct primary (api.webcod.in) */
   const { data: referralStats, refetch: refetchReferralStats } = useQuery({
     queryKey: ['/api/app/user/referral-stats', pbId, referralCode],
     queryFn: async () => {
+      // PRIMARY: PocketBase SDK direct — api.webcod.in, works on APK + web preview
       try {
-        return await api.getReferralStats(pbId);
+        const code = referralCode;
+        const result = await pb.collection('users').getList(1, 50, {
+          filter: code ? `(referred_by = "${code}" || referred_by = "${pbId}")` : 'id = ""',
+          fields: 'id,display_name,email,created,total_claims',
+          sort: '-created',
+        });
+        const meRec = await pb.collection('users').getOne(pbId, {
+          fields: 'id,referral_balance,referral_earnings',
+        });
+        const referredUsers = (result.items || []).map((u: any) => ({
+          id: u.id,
+          email: u.display_name || u.email || 'Miner',
+          joined: u.created || '',
+          claims: u.total_claims || 0,
+        }));
+        return {
+          referredCount:   result.totalItems,
+          referralBalance: meRec.referral_balance ?? pbUser?.referralBalance ?? 0,
+          totalEarnings:   meRec.referral_earnings ?? pbUser?.referralEarnings ?? 0,
+          referredUsers,
+        };
       } catch {
-        // Express unreachable — query PocketBase directly for referral count
-        try {
-          const code = referralCode;
-          const result = await pb.collection('users').getList(1, 50, {
-            filter: code ? `referred_by = "${code}"` : 'id = ""',
-            fields: 'id,display_name,email,created,total_claims',
-            sort: '-created',
-          });
-          const referredUsers = (result.items || []).map((u: any) => ({
-            id: u.id,
-            email: u.display_name || u.email || 'Miner',
-            joined: u.created || '',
-            claims: u.total_claims || 0,
-          }));
-          return {
-            referredCount:  result.totalItems,
-            referralBalance: pbUser?.referralBalance ?? 0,
-            totalEarnings:   pbUser?.referralEarnings ?? 0,
-            referredUsers,
-          };
-        } catch {
-          return {
-            referredCount:  0,
-            referralBalance: pbUser?.referralBalance ?? 0,
-            totalEarnings:   pbUser?.referralEarnings ?? 0,
-            referredUsers:   [],
-          };
-        }
+        return {
+          referredCount:  0,
+          referralBalance: pbUser?.referralBalance ?? 0,
+          totalEarnings:   pbUser?.referralEarnings ?? 0,
+          referredUsers:   [],
+        };
       }
     },
     enabled: !!pbId,
@@ -231,23 +230,19 @@ export default function ProfileScreen() {
 
     const doTransfer = async () => {
       try {
+        // PRIMARY: PocketBase SDK direct — api.webcod.in, works on APK + web preview
         let result: { success: boolean; claimed: number; newShibBalance: number };
-        try {
-          result = await api.claimReferral(pbId);
-        } catch {
-          // PB SDK fallback: move referral_balance → shib_balance directly
-          const userRec = await pb.collection('users').getOne(pbId, {
-            fields: 'id,referral_balance,shib_balance',
-          });
-          const balance = userRec.referral_balance || 0;
-          if (balance <= 0) throw new Error('No referral rewards to claim');
-          const newShib = (userRec.shib_balance || 0) + balance;
-          await pb.collection('users').update(pbId, {
-            shib_balance: newShib,
-            referral_balance: 0,
-          });
-          result = { success: true, claimed: balance, newShibBalance: newShib };
-        }
+        const userRec = await pb.collection('users').getOne(pbId, {
+          fields: 'id,referral_balance,shib_balance',
+        });
+        const balance = userRec.referral_balance || 0;
+        if (balance <= 0) throw new Error('No referral rewards to claim');
+        const newShib = (userRec.shib_balance || 0) + balance;
+        await pb.collection('users').update(pbId, {
+          shib_balance: newShib,
+          referral_balance: 0,
+        });
+        result = { success: true, claimed: balance, newShibBalance: newShib };
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setShowClaimModal(false);
         claimAnim.setValue(0);

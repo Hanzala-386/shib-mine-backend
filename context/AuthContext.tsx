@@ -431,11 +431,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const fbUser = auth.currentUser;
     if (!fbUser) return;
     try {
-      let pbRecord = await api.getUser(fbUser.uid).catch(async (e: any) => {
-        if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) throw e;
-        // Express unreachable → try PocketBase directly
-        return pbGetSelf();
-      });
+      // PRIMARY: PocketBase SDK direct — works on APK + web preview without Express
+      let pbRecord = await pbGetSelf();
+      if (!pbRecord) {
+        // Fallback: try Express (e.g. if PB session expired)
+        pbRecord = await api.getUser(fbUser.uid).catch(() => null);
+      }
       if (!pbRecord) return;
       if (pbRecord.status === 'blocked') {
         Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
@@ -457,11 +458,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const fbUser = auth.currentUser;
     if (!fbUser) return;
     try {
-      let pbRecord = await api.getUser(fbUser.uid).catch(async (e: any) => {
-        if (e?.data?.error === 'ACCOUNT_BLOCKED' || e?.status === 403) throw e;
-        // Express unreachable → try PocketBase directly
-        return pbGetSelf();
-      });
+      // PRIMARY: PocketBase SDK direct — works on APK + web preview without Express
+      let pbRecord = await pbGetSelf();
+      if (!pbRecord) {
+        // Fallback: try Express (e.g. if PB session expired)
+        pbRecord = await api.getUser(fbUser.uid).catch(() => null);
+      }
       if (!pbRecord) return;
       if (pbRecord.status === 'blocked') {
         Alert.alert('ACCOUNT BANNED!', 'Your account has been permanently disabled due to multiple fraud attempts.');
