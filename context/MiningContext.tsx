@@ -35,16 +35,23 @@ async function pbStartMining(
   const currentPt = Number(user.power_tokens) || 0;
   if (currentPt < entryCost) throw new Error(`Not enough Power Tokens. Need ${entryCost} PT.`);
 
-  // Deduct PT first (optimistic; session creation may still fail)
+  // Deduct PT
   await pb.collection('users').update(pbId, { power_tokens: currentPt - entryCost });
 
-  const session = await pb.collection('mining_sessions').create({
-    user: pbId,
-    start_time: new Date().toISOString(),
-    booster_multiplier: multiplier,
-    claimed_amount: 0,
-    is_verified: false,
-  });
+  // Create session — if this fails, roll back PT so the user is not charged twice
+  let session: any;
+  try {
+    session = await pb.collection('mining_sessions').create({
+      user: pbId,
+      start_time: new Date().toISOString(),
+      booster_multiplier: multiplier,
+      claimed_amount: 0,
+      is_verified: false,
+    });
+  } catch (sessionErr: any) {
+    await pb.collection('users').update(pbId, { power_tokens: currentPt }).catch(() => {});
+    throw new Error(`Session creation failed — your tokens have been refunded. (${sessionErr?.message || 'unknown error'})`);
+  }
 
   await pb.collection('users').update(pbId, { current_mining_session: session.id });
 
@@ -262,19 +269,34 @@ async function pbActivateAndMine(
   if (currentPt < totalCost) throw new Error(`Not enough Power Tokens. Need ${totalCost} PT.`);
 
   const expiresAt = Date.now() + 3600000; // booster active 1 hour
+
+  // Deduct PT and activate booster
   await pb.collection('users').update(pbId, {
     power_tokens: currentPt - totalCost,
     active_booster_multiplier: multiplier,
     booster_expires: String(expiresAt),
   });
 
-  const session = await pb.collection('mining_sessions').create({
-    user: pbId,
-    start_time: new Date().toISOString(),
-    booster_multiplier: multiplier,
-    claimed_amount: 0,
-    is_verified: false,
-  });
+  // Create session — if this fails, roll back PT so the user is not charged twice
+  let session: any;
+  try {
+    session = await pb.collection('mining_sessions').create({
+      user: pbId,
+      start_time: new Date().toISOString(),
+      booster_multiplier: multiplier,
+      claimed_amount: 0,
+      is_verified: false,
+    });
+  } catch (sessionErr: any) {
+    // Roll back: restore PT and remove booster fields so user can retry
+    await pb.collection('users').update(pbId, {
+      power_tokens: currentPt,
+      active_booster_multiplier: 0,
+      booster_expires: '',
+    }).catch(() => {});
+    throw new Error(`Session creation failed — your tokens have been refunded. (${sessionErr?.message || 'unknown error'})`);
+  }
+
   await pb.collection('users').update(pbId, { current_mining_session: session.id });
 
   // Use PocketBase's server-assigned `created` field as the authoritative start time.
@@ -737,7 +759,12 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       return { success: true };
     } catch (e: any) {
-      if (sessionRef.current?.status === 'mining') startTimers(sessionRef.current);
+      // Do NOT resume stale timers — if the PB call failed, there is no real session.
+      // Clear any stale cache so the UI resets to idle correctly.
+      clearAllTimers();
+      sessionRef.current = null;
+      setSession(null);
+      if (currentCacheKey) storage.removeItem(currentCacheKey).catch(() => {});
       console.warn('[Mining] startMining failed', e);
       return { success: false, error: e?.message || 'Failed to start mining.' };
     }
@@ -942,7 +969,12 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       return { success: true };
     } catch (e: any) {
-      if (sessionRef.current?.status === 'mining') startTimers(sessionRef.current);
+      // Do NOT resume stale timers — PB call failed so no real session exists.
+      // Clear any stale cache so the UI resets to idle correctly.
+      clearAllTimers();
+      sessionRef.current = null;
+      setSession(null);
+      if (currentCacheKey) storage.removeItem(currentCacheKey).catch(() => {});
       console.warn('[Mining] startMiningWithBooster failed', e);
       return { success: false, error: e?.message || 'Failed to start mining with booster.' };
     }

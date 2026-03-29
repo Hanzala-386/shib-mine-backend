@@ -207,8 +207,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   // Confirms verification in PB and loads user profile.
-  // Primary path: Express backend (has admin PB creds, handles fraud checks).
-  // Fallback path: Direct PocketBase auth (used when APK points to PB-only server).
+  // PRIMARY path: PocketBase SDK direct auth — works for ALL clients (APK + web preview).
+  // The PB SDK is ALWAYS authenticated before this function returns, eliminating the
+  // race condition where mining ops fired before the SDK had a valid auth token.
   async function confirmAndLoadUser(fbUser: FirebaseUser): Promise<void> {
     try {
       const cached = await storage.getItem(`shib_pending_${fbUser.uid}`);
@@ -216,33 +217,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       let pbRecord: PBUser | null = null;
 
-      // ── Primary: try Express backend ──────────────────────────────────────
-      try {
-        pbRecord = await api.confirmVerified({
-          firebaseUid: fbUser.uid,
-          email: fbUser.email ?? '',
-          displayName: pending.displayName || fbUser.email?.split('@')[0] || '',
-          referralCode: pending.referralCode || generateReferralCode(),
-          referredBy: pending.referredBy || '',
-        });
-        // Express handled the PB admin writes, but the PB SDK is still unauthenticated.
-        // Authenticate it in the background so all PB-direct SDK calls (mining, boosters,
-        // claim) work in the web preview exactly as they do in the APK.
-        pbDirectLogin(fbUser.email ?? '', fbUser.uid).catch(() => {});
-      } catch (expressErr: any) {
-        const errCode = expressErr?.data?.error || expressErr?.code || '';
-        const isHardBlock = expressErr?.status === 403 || errCode === 'ACCOUNT_BLOCKED' || errCode === 'EMAIL_PERMANENTLY_BANNED';
-        if (isHardBlock) throw expressErr; // propagate bans — don't fall through
+      // ── Step 1: PocketBase direct auth (primary — both APK and web preview) ─
+      // This authenticates the SDK immediately. All subsequent PB SDK calls
+      // (pbStartMining, pbClaimMining, pbActivateAndMine) are guaranteed to have
+      // a valid auth token — no race condition, no 403 from unauthenticated SDK.
+      pbRecord = await pbDirectLogin(fbUser.email ?? '', fbUser.uid);
 
-        // ── Fallback 1: authenticate directly with PocketBase ─────────────
-        console.warn('[Auth] Express unreachable, trying PocketBase direct login:', expressErr?.message);
-        pbRecord = await pbDirectLogin(fbUser.email ?? '', fbUser.uid);
+      if (!pbRecord) {
+        // ── Step 2: User not in PB yet (first login after sign-up) ──────────
+        // Try Express first — it has admin creds and handles referral processing.
+        try {
+          await api.confirmVerified({
+            firebaseUid: fbUser.uid,
+            email: fbUser.email ?? '',
+            displayName: pending.displayName || fbUser.email?.split('@')[0] || '',
+            referralCode: pending.referralCode || generateReferralCode(),
+            referredBy: pending.referredBy || '',
+          });
+          // Express created the PB record — now authenticate as that user
+          pbRecord = await pbDirectLogin(fbUser.email ?? '', fbUser.uid);
+        } catch (expressErr: any) {
+          const errCode = expressErr?.data?.error || expressErr?.code || '';
+          const isHardBlock = expressErr?.status === 403 || errCode === 'ACCOUNT_BLOCKED' || errCode === 'EMAIL_PERMANENTLY_BANNED';
+          if (isHardBlock) throw expressErr;
 
-        // ── Fallback 2: PB user doesn't exist yet — create it directly ────
-        // This happens when the APK cannot reach Express (which normally creates
-        // the PB record). We replicate the same record Express would create.
-        if (!pbRecord) {
-          console.warn('[Auth] PB user not found — creating directly via PB SDK');
+          // ── Step 3: Express unreachable — create PB record directly ────────
+          console.warn('[Auth] Express unreachable for new user, creating directly in PB');
           try {
             const pass = pbPassword(fbUser.uid);
             const code = pending.referralCode || generateReferralCode();
@@ -265,13 +265,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               status:           'active',
               is_verified:      true,
             });
-            // Register referral code in public_referrals (publicly queryable for APK validation)
-            // createRule is "" so this works without auth
             pb.collection('public_referrals').create({
               code: code,
               user_id: createdRecord.id,
             }).catch(() => {});
-            // Now log in with the freshly created account
             pbRecord = await pbDirectLogin(fbUser.email ?? '', fbUser.uid);
             console.warn('[Auth] PB user created and logged in directly ✓');
           } catch (createErr: any) {
