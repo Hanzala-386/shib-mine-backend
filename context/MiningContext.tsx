@@ -81,8 +81,9 @@ async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: 
     if (!sessionId) return { session: null };
 
     const s = await pb.collection('mining_sessions').getOne(sessionId);
-    if ((Number(s.claimed_amount) || 0) > 0) {
-      // already claimed — clear the reference
+    // claimed_amount > 0 = normal claim; < 0 (e.g. -1) = fraud-voided.
+    // Both mean the session is no longer active — clear the reference.
+    if ((Number(s.claimed_amount) || 0) !== 0) {
       await pb.collection('users').update(pbId, { current_mining_session: null }).catch(() => {});
       return { session: null };
     }
@@ -582,16 +583,54 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     try {
       // Always go PB direct — Express is unreachable on-device
       const res = await pbGetActiveMining(currentPbId);
-      if (res?.session?.serverTime && isFinite(res.session.serverTime)) {
-        clockDriftRef.current = res.session.serverTime - Date.now();
-      }
+
       if (!res?.session) {
+        // No active session on server — clear local state unless user already sees CLAIM button
         const current = sessionRef.current;
         if (current?.status === 'ready_to_claim') return;
         if (currentCacheKey) await storage.removeItem(currentCacheKey);
         setSession(null);
         sessionRef.current = null;
         clearAllTimers();
+        return;
+      }
+
+      // ── Session confirmed by server: re-sync timers from PB's authoritative data ──
+      // PB's startTimeMs is derived from its server-set `created` field, so it is
+      // immune to device clock drift. This makes both the circle timer and the main
+      // timer use one single source of truth.
+      const pbStart = res.session.startTimeMs;
+      const pbEnd   = res.session.endTimeMs;
+      const pbDur   = res.session.durationMs;
+
+      // Update clock drift from PB server time
+      if (res.session.serverTime && isFinite(res.session.serverTime)) {
+        clockDriftRef.current = res.session.serverTime - Date.now();
+      }
+
+      const now       = serverNow();
+      const remaining = Math.max(0, pbEnd - now);
+      const elapsed   = Math.min(Math.max(0, now - pbStart), pbDur);
+
+      // Also patch the cached session so future restores use PB's start time
+      const current = sessionRef.current;
+      if (current && current.status === 'mining') {
+        const synced: MiningSession = {
+          ...current,
+          startTimeMs: pbStart,
+          endTimeMs:   pbEnd,
+          durationMs:  pbDur,
+          multiplier:  res.session.multiplier,
+        };
+        sessionRef.current = synced;
+        setSession(synced);
+        if (currentCacheKey) storage.setItem(currentCacheKey, JSON.stringify(synced)).catch(() => {});
+
+        // Restart the interval timers with the PB-authoritative start/end times so
+        // both the circle timer AND the main timer always track the server clock.
+        // Without this, the running interval keeps using the stale cached closure values
+        // and overwrites the synced state on its very next tick.
+        startTimers(synced);
       }
     } catch { /* ignore — stay with local state */ }
   }
@@ -792,12 +831,24 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     // Express is unreachable from the APK (api.webcod.in is PocketBase-only).
     // Going PB-direct eliminates the 4-second Express timeout dead zone and the
     // silent-failure where the claim request never reached a writable endpoint.
+    // Best-effort: clear current_mining_session on PB so re-login never
+    // auto-restores a session the user has already interacted with.
+    const clearPbSessionRef = () => {
+      if (currentPbId) {
+        pb.collection('users').update(currentPbId, { current_mining_session: null }).catch(() => {});
+      }
+    };
+
     const doActualClaim = async (): Promise<number> => {
       const res = await pbClaimMining(s.pbSessionId!, currentPbId, miningRateRef.current);
 
       // ── Success path ────────────────────────────────────────────────────
       resetLocalSession();
-      refreshBalance().catch(() => {});
+
+      // BUG 3 FIX: AWAIT refreshBalance() so the wallet balance is updated
+      // BEFORE the success alert fires. Previously this was fire-and-forget,
+      // causing the user to see old balance even after a successful claim.
+      await refreshBalance().catch(() => {});
 
       // Rate Us: increment completed-session counter (non-critical, best-effort)
       try {
@@ -836,21 +887,26 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       const errCode = e?.data?.error || '';
 
       if (errCode === 'CLAIM_TIMEOUT') {
-        // Network stall: reset so user can start a new session
+        // Network stall — clear local state and PB reference so user can retry
         resetLocalSession();
+        clearPbSessionRef(); // BUG 2 FIX: prevent auto-start on re-login
         throw e; // handleClaim shows "try again" message
       }
 
       if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED') {
         resetLocalSession();
+        // pbClaimMining already sets claimed_amount=-1; pbGetActiveMining now
+        // treats ≠0 as inactive, so the session won't auto-restore on next login.
         if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED') throw e;
         console.warn('[Mining] Session expired/voided — reset to idle');
         return 0;
       }
 
-      // Any other error (e.g. "already claimed"): reset session, return 0
+      // Any other error (e.g. "already claimed", 404 session not found):
+      // reset locally and clear PB reference so re-login starts clean.
       console.warn('[Mining] claimReward error:', e?.message);
       resetLocalSession();
+      clearPbSessionRef(); // BUG 2 FIX: prevent stale session auto-restoring
       return 0;
 
     } finally {
