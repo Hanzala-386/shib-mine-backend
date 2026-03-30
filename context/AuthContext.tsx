@@ -13,7 +13,7 @@ import {
   type FirebaseUser,
 } from '@/lib/firebase';
 import { api, type PBUser } from '@/lib/api';
-import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
+import { pb, POCKETBASE_URL, processPendingReferralEarnings } from '@/lib/pocketbase';
 
 export interface UserProfile {
   uid: string;
@@ -292,6 +292,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
         try { await firebaseSignOut(auth); } catch {}
         return;
+      }
+
+      // Process any pending referral commissions for this user (deferred crediting pattern).
+      // If this user was referred someone who just claimed, their commission is in the log.
+      // This self-updates their own balance (always allowed) and resolves within ~1 second.
+      if (pbRecord) {
+        const pendingCommission = await processPendingReferralEarnings(pbRecord.pbId);
+        if (pendingCommission > 0) {
+          // Update the in-memory record so the displayed balance is accurate immediately
+          pbRecord = {
+            ...pbRecord,
+            shib_balance:      (Number(pbRecord.shib_balance)      || 0) + pendingCommission,
+            referral_balance:  (Number(pbRecord.referral_balance)  || 0) + pendingCommission,
+            referral_earnings: (Number(pbRecord.referral_earnings) || 0) + pendingCommission,
+          };
+        }
       }
 
       setPbUser(pbRecord);

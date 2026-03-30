@@ -27,7 +27,7 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
    - app.json plugin: `react-native-google-mobile-ads` with test App IDs (update to production IDs before release)
 8. **Admin Panel** — Restricted to hanzala386@gmail.com, controls all economic settings
 9. **Wallet** — SHIB balance & Power Token tracking (BEP-20 + Binance Email withdrawal)
-10. **Invite** — Referral code sharing, 10% server-side commission
+10. **Invite** — Referral code sharing, 10% commission via deferred referral_earnings_log pipeline
 11. **Profile** — User stats, settings, admin access button
 
 ## PocketBase Schema (https://api.webcod.in)
@@ -40,6 +40,12 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
 ### mining_sessions collection
 - `user` (relation to users), `start_time` (date), `claimed_amount` (number), `booster_multiplier` (number), `is_verified` (bool), `ip_address` (text)
 - NO `status`, `duration`, or `reward` fields — status is derived from `claimed_amount === 0`
+
+### referral_earnings_log collection
+- `referrer_id` (text, required), `claimer_id` (text, required), `amount` (number), `processed` (bool)
+- listRule/viewRule/updateRule: `referrer_id = @request.auth.id` — only referrer can read/update their own entries
+- createRule: `@request.auth.id != ""` — any authenticated user (claimer) can write
+- **Architecture**: Claimer writes entry on mining claim; referrer's client calls `processPendingReferralEarnings(pbId)` on login to credit their own balance (self-update, always allowed). Key bug fixed: was calling `pbRecord.id` (undefined) instead of `pbRecord.pbId`.
 
 ### settings collection
 - All admin-configurable values: mining rates, booster costs, ad IDs, withdrawal tiers

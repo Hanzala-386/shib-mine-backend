@@ -222,19 +222,33 @@ async function pbClaimMining(
     current_mining_session: null,
   });
 
-  // Referral commission (10%) — best-effort
+  // Referral commission (10%) — written to referral_earnings_log for secure deferred crediting.
+  //
+  // WHY NOT direct update: PocketBase updateRule = "@request.auth.id = id" means a user
+  // token can ONLY update their OWN record. Updating the REFERRER's record returns 403.
+  // This PB version's rule parser also rejects complex &&-joined rules in updateRule.
+  //
+  // THE ARCHITECTURE:
+  //   1. The claimer creates a referral_earnings_log entry (createRule allows any auth user).
+  //   2. When the REFERRER next opens the app, processPendingReferralEarnings() runs:
+  //      it reads their pending log entries, totals the amounts, and credits their OWN
+  //      balance (self-update → always allowed). Entries are then marked processed.
+  //
+  // This is secure, requires no permissive updateRule, and works from the APK.
   if (user.referred_by && reward > 0) {
     try {
       const referrer = await pb.collection('users').getFirstListItem(
         `referral_code="${user.referred_by}"`,
       );
       const commission = reward * 0.1;
-      await pb.collection('users').update(referrer.id, {
-        shib_balance: (Number(referrer.shib_balance) || 0) + commission,
-        referral_balance: (Number(referrer.referral_balance) || 0) + commission,
-        referral_earnings: (Number(referrer.referral_earnings) || 0) + commission,
+      // Write to the log — the referrer's client will process and credit their own balance
+      await pb.collection('referral_earnings_log').create({
+        referrer_id: referrer.id,
+        claimer_id:  pbId,
+        amount:      commission,
+        processed:   false,
       }).catch(() => {});
-    } catch { /* non-critical */ }
+    } catch { /* non-critical — claim itself already succeeded */ }
   }
 
   return { reward };

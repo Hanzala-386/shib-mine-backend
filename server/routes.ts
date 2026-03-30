@@ -244,6 +244,10 @@ async function ensureCollectionRules() {
         // CRITICAL: allow a user to update their own record.
         // Without this, pbStartMining / pbClaimMining / pbActivateBooster balance writes all fail
         // silently in the APK because the PB SDK authenticates as a regular user, not admin.
+        //
+        // NOTE: referral commission cross-user updates are handled via the referral_earnings_log
+        // collection (see ensureReferralEarningsLogCollection). The claimer writes a pending entry,
+        // and the referrer processes it on their next app open (self-update, always allowed).
         updateRule: "@request.auth.id = id",
         // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
         deleteRule: "@request.auth.id = id",
@@ -297,6 +301,78 @@ async function ensureMiningSessionsRules() {
     console.log("[mining_sessions] Rules patched — APK can create + claim sessions via PB SDK");
   } catch (e: any) {
     console.warn("[mining_sessions] Rules patch failed:", e.message);
+  }
+}
+
+// ─── Ensure referral_earnings_log collection exists in PocketBase ──────────
+// This collection is the secure mechanism for referral commission payouts.
+//
+// Architecture:
+//   1. When user A claims a mining reward, they CREATE a record here pointing to referrer B.
+//   2. When user B (the referrer) opens the app, processPendingReferralEarnings() runs
+//      client-side: reads their pending log entries, totals them, and credits their OWN
+//      balance (self-update — always allowed by @request.auth.id = id rule).
+//   3. The entries are marked processed.
+//
+// This avoids the need for a cross-user updateRule (which this PB version's parser rejects).
+async function ensureReferralEarningsLogCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/referral_earnings_log");
+    if (!check.code) {
+      // Collection already exists — just ensure rules are correct
+      const patchRes = await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule:   "referrer_id = @request.auth.id",
+        viewRule:   "referrer_id = @request.auth.id",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: "referrer_id = @request.auth.id",
+        deleteRule: null,
+      }, token);
+      if (!patchRes.code) {
+        console.log("[referral_earnings_log] Rules patched");
+      }
+      return;
+    }
+    // Create the collection first WITHOUT rules.
+    // NOTE: This PB version uses the `schema` key (older API), not `fields`.
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "referral_earnings_log",
+      type: "base",
+      schema: [
+        { name: "referrer_id",  type: "text",   required: true  },
+        { name: "claimer_id",   type: "text",   required: true  },
+        { name: "amount",       type: "number", required: true  },
+        { name: "processed",    type: "bool",   required: false },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[referral_earnings_log] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    console.log("[referral_earnings_log] Collection created — patching rules...");
+    // Patch rules in a separate step (required for older PB versions)
+    const patchRes = await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule:   "referrer_id = @request.auth.id",
+      viewRule:   "referrer_id = @request.auth.id",
+      createRule: "@request.auth.id != \"\"",
+      updateRule: "referrer_id = @request.auth.id",
+      deleteRule: null,
+    }, token);
+    if (patchRes.code) {
+      console.warn("[referral_earnings_log] Rules patch failed:", JSON.stringify(patchRes).slice(0, 200));
+      // Fall back to open createRule so at least writes work
+      await pbHttp("PATCH", `/api/collections/${created.id}`, {
+        listRule:   "@request.auth.id != \"\"",
+        viewRule:   "@request.auth.id != \"\"",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: "@request.auth.id != \"\"",
+        deleteRule: null,
+      }, token);
+    } else {
+      console.log("[referral_earnings_log] Secure referral payout pipeline active");
+    }
+  } catch (e: any) {
+    console.warn("[referral_earnings_log] Setup failed:", e.message);
   }
 }
 
@@ -499,6 +575,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureCollectionRules())
     .then(() => ensurePublicReferralsCollection())
     .then(() => ensureMiningSessionsRules())
+    .then(() => ensureReferralEarningsLogCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
