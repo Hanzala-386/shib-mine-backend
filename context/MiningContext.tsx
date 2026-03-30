@@ -587,9 +587,10 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       const res = await pbGetActiveMining(currentPbId);
 
       if (!res?.session) {
-        // No active session on server — clear local state unless user already sees CLAIM button
-        const current = sessionRef.current;
-        if (current?.status === 'ready_to_claim') return;
+        // Server has no active session.
+        // IMPORTANT: if the local cache had prematurely set status='ready_to_claim'
+        // due to device clock skew, we should trust the server and clear state
+        // (the session is truly gone — either claimed elsewhere or expired).
         if (currentCacheKey) await storage.removeItem(currentCacheKey);
         setSession(null);
         sessionRef.current = null;
@@ -597,44 +598,65 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // ── Session confirmed by server: re-sync timers from PB's authoritative data ──
-      // PB's startTimeMs is derived from its server-set `created` field, so it is
-      // immune to device clock drift. This makes both the circle timer and the main
-      // timer use one single source of truth.
+      // ── Session confirmed by server — use PB's server clock as single source of truth ──
+      // NOTE: res.session.serverTime = startTimeMs (a historical timestamp, NOT current time).
+      // DO NOT use it to update clockDrift — that corrupts serverNow() and makes the timer
+      // show wrong values. clockDrift is maintained by syncClockDrift() via the PB Date header.
       const pbStart = res.session.startTimeMs;
       const pbEnd   = res.session.endTimeMs;
       const pbDur   = res.session.durationMs;
 
-      // Update clock drift from PB server time
-      if (res.session.serverTime && isFinite(res.session.serverTime)) {
-        clockDriftRef.current = res.session.serverTime - Date.now();
-      }
-
-      const now       = serverNow();
+      // Use device clock only — clockDrift is already correct from syncClockDrift()
+      const now       = Date.now() + clockDriftRef.current;
       const remaining = Math.max(0, pbEnd - now);
       const elapsed   = Math.min(Math.max(0, now - pbStart), pbDur);
 
-      // Also patch the cached session so future restores use PB's start time
-      const current = sessionRef.current;
-      if (current && current.status === 'mining') {
-        const synced: MiningSession = {
-          ...current,
+      if (remaining <= 0) {
+        // Server confirms session existed but it's now past 60 min → safe to show CLAIM
+        const current = sessionRef.current;
+        const done: MiningSession = {
+          ...(current ?? {
+            pbSessionId: res.session.id,
+            startTimeMs: pbStart,
+            endTimeMs: pbEnd,
+            durationMs: pbDur,
+            multiplier: res.session.multiplier,
+            expectedReward: 0,
+          }),
           startTimeMs: pbStart,
-          endTimeMs:   pbEnd,
-          durationMs:  pbDur,
-          multiplier:  res.session.multiplier,
+          endTimeMs: pbEnd,
+          status: 'ready_to_claim',
         };
-        sessionRef.current = synced;
-        setSession(synced);
-        if (currentCacheKey) storage.setItem(currentCacheKey, JSON.stringify(synced)).catch(() => {});
-
-        // Restart the interval timers with the PB-authoritative start/end times so
-        // both the circle timer AND the main timer always track the server clock.
-        // Without this, the running interval keeps using the stale cached closure values
-        // and overwrites the synced state on its very next tick.
-        startTimers(synced);
+        sessionRef.current = done;
+        setSession(done);
+        clearAllTimers();
+        if (currentCacheKey) storage.setItem(currentCacheKey, JSON.stringify(done)).catch(() => {});
+        return;
       }
-    } catch { /* ignore — stay with local state */ }
+
+      // Session is still running — sync/correct timer state regardless of what the
+      // local cache thought. This fixes premature CLAIM caused by device clock skew:
+      // even if the cache had status='ready_to_claim', PB says there's time left → go back to mining.
+      const current = sessionRef.current;
+      const synced: MiningSession = {
+        ...(current ?? {}),
+        pbSessionId: res.session.id,
+        startTimeMs: pbStart,
+        endTimeMs:   pbEnd,
+        durationMs:  pbDur,
+        multiplier:  res.session.multiplier,
+        status:      'mining',
+      };
+      sessionRef.current = synced;
+      setSession(synced);
+      setTimeRemaining(remaining);
+      setElapsedMs(elapsed);
+      if (currentCacheKey) storage.setItem(currentCacheKey, JSON.stringify(synced)).catch(() => {});
+
+      // Restart timers with PB-authoritative start/end so both circle and main timer
+      // track the server clock — kills any stale interval running from old closure values
+      startTimers(synced);
+    } catch { /* network error — stay with local state */ }
   }
 
   async function fetchFromServer(currentPbId: string, currentCacheKey: string | null) {
@@ -647,10 +669,8 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     }
     if (res?.session) {
       const s = res.session;
-      // Sync clock drift from server's response time — free, no extra round-trip
-      if (s.serverTime && isFinite(s.serverTime)) {
-        clockDriftRef.current = s.serverTime - Date.now();
-      }
+      // NOTE: s.serverTime is startTimeMs (session start, not current time) — do NOT
+      // use it to update clockDrift. clockDrift is managed by syncClockDrift() only.
       const durationMs = safe(s.durationMs, 3600000);
       const endTimeMs = resolveEndMs(s.endTimeMs, s.startTimeMs, durationMs);
       const startTimeMs = resolveStartMs(s.startTimeMs, s.endTimeMs, durationMs);
