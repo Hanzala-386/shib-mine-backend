@@ -139,7 +139,9 @@ async function pbClaimMining(
   ]);
 
   // ── Anti-fraud: block banned accounts immediately ──────────────────────────
-  const userStatus = (user.status || '').toLowerCase();
+  // user.status may come back from PocketBase as a non-string type (number, object, null).
+  // String() ensures .toLowerCase() never throws regardless of what PB returns.
+  const userStatus = String(user.status || '').toLowerCase();
   if (userStatus === 'blocked' || userStatus === 'banned') {
     throw Object.assign(new Error('Account is blocked due to suspicious activity.'), {
       data: { error: 'ACCOUNT_BLOCKED' },
