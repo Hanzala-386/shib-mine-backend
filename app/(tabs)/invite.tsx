@@ -11,7 +11,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
-import { pb } from '@/lib/pocketbase';
+import { pb, processPendingReferralEarnings } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 
 export default function InviteScreen() {
@@ -27,6 +27,9 @@ export default function InviteScreen() {
     queryFn: async () => {
       // PRIMARY: PocketBase SDK direct — api.webcod.in, works on APK + web preview
       try {
+        // Process any pending referral commissions before reading balance
+        try { await processPendingReferralEarnings(pbId); } catch {}
+
         const code = user?.referralCode ?? pbUser?.referralCode ?? '';
         const [refRes, meRes] = await Promise.all([
           pb.collection('users').getList(1, 200, {

@@ -1,0 +1,43 @@
+STRICT INSTRUCTION: BYPASS T&C POPUP & EXECUTE LIVE REFERRAL TEST
+"You are failing to proceed past the Sign-up/Login screen because of the Terms & Conditions popup. Listen carefully to these instructions to enter the app and fix the referral system.
+
+How to Bypass the T&C Popup:
+When the 'Terms and Conditions' popup appears, you MUST scroll the text inside the popup all the way to the bottom.
+
+The 'Accept/Continue' checkbox or button will ONLY activate once the scroll is 100% complete.
+
+Check the box and proceed to the Login screen. Do not get stuck here again.
+
+URGENT: Live Referral System Fix & Testing Task
+"The referral system is still completely broken. You are relying too much on Express/Localhost logic, which fails in the APK. You must move all referral reward logic to the direct PocketBase API and perform this live test immediately.
+
+STRICT TESTING WORKFLOW:
+
+Main Referrer Account: gemiko5312@powpearl.com | 12345678
+(This account has referred the two accounts below. Use this to check 'Referral Rewards' in the Profile section.)
+
+Step 1: First Account Testing
+
+Account: hamzasha4288@gmail.com | Hanzu@123
+
+Task: Login to this account and Claim the completed mining session.
+
+Verification: Immediately login to the Main Referrer (gemiko5312) and check if exactly 10% of that claim was added to the 'Referral Rewards' balance.
+
+If it fails: Do NOT proceed to Step 2. Fix the backend trigger/logic that links the claim to the referrer's balance using our PocketBase API directly.
+
+Step 2: Second Account Testing (Validation)
+
+Account: abukapadi@gmail.com | Hanzu@123
+
+Task: Only after Step 1 is fixed and verified, repeat the same process with this second account to ensure the fix is permanent and automated for all users.
+
+CRITICAL RULES:
+
+No Express/Localhost: Do not route these rewards through a separate Express server that causes sync issues. Use PocketBase collections and hooks/API calls directly.
+
+Live Check: You must manually verify the balance increase in the Profile -> Referral Rewards section of the main account.
+
+UI Sync: Ensure the 'Referral Rewards' field in the user profile updates in real-time after a successful claim from a referred user.
+
+Perform this live test now and report exactly why the rewards were not triggering before."

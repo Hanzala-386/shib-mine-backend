@@ -22,7 +22,7 @@ import {
 } from 'firebase/auth';
 import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { pb } from '@/lib/pocketbase';
+import { pb, processPendingReferralEarnings } from '@/lib/pocketbase';
 import { useWallet } from '@/context/WalletContext';
 import { useAds } from '@/context/AdContext';
 import { InlineBannerAd, BANNER_HEIGHT } from '@/components/StickyBannerAd';
@@ -175,6 +175,9 @@ export default function ProfileScreen() {
     queryFn: async () => {
       // PRIMARY: PocketBase SDK direct — api.webcod.in, works on APK + web preview
       try {
+        // Process any pending commissions first so balance is always current
+        try { await processPendingReferralEarnings(pbId); } catch {}
+
         const code = referralCode;
         const result = await pb.collection('users').getList(1, 50, {
           filter: code ? `(referred_by = "${code}" || referred_by = "${pbId}")` : 'id = ""',
@@ -206,7 +209,7 @@ export default function ProfileScreen() {
       }
     },
     enabled: !!pbId,
-    staleTime: 60_000,
+    staleTime: 0,
   });
   const totalReferrals    = referralStats?.referredCount ?? 0;
   const referralBalance   = referralStats?.referralBalance ?? 0;

@@ -486,6 +486,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await signOut();
         return;
       }
+      // Process any pending referral commissions and apply to in-memory record
+      if (pbRecord.pbId) {
+        const earned = await processPendingReferralEarnings(pbRecord.pbId).catch(() => 0);
+        if (earned > 0) {
+          pbRecord = {
+            ...pbRecord,
+            shibBalance:      (pbRecord.shibBalance      || 0) + earned,
+            referralBalance:  (pbRecord.referralBalance  || 0) + earned,
+            referralEarnings: (pbRecord.referralEarnings || 0) + earned,
+          };
+        }
+      }
       setPbUser(pbRecord);
       if (pbRecord.is_verified) setUser(pbToProfile(pbRecord, fbUser));
     } catch (e: any) {
@@ -495,6 +507,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
   }
+
+  // ── Background referral commission poll (every 60 s while logged in) ────────
+  // Ensures the home-screen SHIB balance reflects new commissions without re-login.
+  useEffect(() => {
+    if (!pbUser?.pbId) return;
+    const id = setInterval(() => { refreshBalance().catch(() => {}); }, 60_000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pbUser?.pbId]);
 
   // Immediately updates the PT balance in state without a network round-trip.
   // Used by MiningContext after a successful startMiningWithBooster call so the
