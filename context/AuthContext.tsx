@@ -342,6 +342,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   ): Promise<void> {
     isAuthAction = true;
     try {
+      // ── Security: block permanently-deleted and fraud emails before Firebase account creation ──
+      const normEmail = email.toLowerCase().trim();
+      try {
+        const delRes = await pb.collection('deleted_emails').getList(1, 1, {
+          filter: `email = "${normEmail}"`,
+          fields: 'id',
+        });
+        if (delRes.totalItems > 0) {
+          throw Object.assign(
+            new Error('This email is permanently blacklisted as the account associated with it was previously deleted. You cannot create a new account with this email.'),
+            { code: 'EMAIL_PERMANENTLY_BANNED' },
+          );
+        }
+      } catch (e: any) { if (e?.code === 'EMAIL_PERMANENTLY_BANNED') throw e; /* collection unreachable — allow */ }
+      try {
+        const fraudRes = await pb.collection('fraud_emails').getList(1, 1, {
+          filter: `email = "${normEmail}"`,
+          fields: 'id',
+        });
+        if (fraudRes.totalItems > 0) {
+          throw Object.assign(
+            new Error('Access Denied. Your account has been permanently blocked due to repeated fraudulent activity and violation of our terms.'),
+            { code: 'ACCOUNT_BLOCKED', status: 403 },
+          );
+        }
+      } catch (e: any) { if (e?.code === 'ACCOUNT_BLOCKED') throw e; /* collection unreachable — allow */ }
+
       const cred = await createUserWithEmailAndPassword(auth, email, password);
 
       // Store pending profile data for when they verify
@@ -382,7 +409,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(false);
 
       if (freshUser.emailVerified) {
-        // ✅ Verified — sync with PB and open the app
+        // ── Security: block deleted and fraud emails (unauthenticated PB query) ──
+        // Both collections have listRule:"" (public read) so this works pre-auth.
+        const normEmail = email.toLowerCase().trim();
+        try {
+          const delRes = await pb.collection('deleted_emails').getList(1, 1, {
+            filter: `email = "${normEmail}"`,
+            fields: 'id',
+          });
+          if (delRes.totalItems > 0) {
+            try { await firebaseSignOut(auth); } catch {}
+            throw Object.assign(
+              new Error('This email is permanently blacklisted as the account associated with it was previously deleted. You cannot create a new account with this email.'),
+              { code: 'EMAIL_PERMANENTLY_BANNED' },
+            );
+          }
+        } catch (e: any) { if (e?.code === 'EMAIL_PERMANENTLY_BANNED') throw e; }
+        try {
+          const fraudRes = await pb.collection('fraud_emails').getList(1, 1, {
+            filter: `email = "${normEmail}"`,
+            fields: 'id',
+          });
+          if (fraudRes.totalItems > 0) {
+            try { await firebaseSignOut(auth); } catch {}
+            throw Object.assign(
+              new Error('Access Denied. Your account has been permanently blocked due to repeated fraudulent activity and violation of our terms.'),
+              { code: 'ACCOUNT_BLOCKED', status: 403 },
+            );
+          }
+        } catch (e: any) { if (e?.code === 'ACCOUNT_BLOCKED') throw e; }
+
+        // ✅ Verified and not blocked — sync with PB and open the app
         await confirmAndLoadUser(freshUser);
         router.replace('/(tabs)' as any);
       } else {

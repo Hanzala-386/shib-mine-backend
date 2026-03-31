@@ -254,17 +254,29 @@ async function ensureCollectionRules() {
       }, token);
       console.log("[users] listRule + viewRule + createRule + updateRule + deleteRule patched — APK self-CRUD enabled");
     }
-    // Allow any authenticated user to CREATE a deleted_emails record (for client-side deletion flow)
+    // deleted_emails: public read (APK checks before sign-up without auth), authenticated create
     const deCol = await pbGet("/api/collections/deleted_emails");
     if (!deCol.code) {
       await pbHttp("PATCH", `/api/collections/${deCol.id}`, {
-        listRule:   null,
-        viewRule:   null,
+        listRule:   "",   // public read — APK can check at sign-up without a PB session
+        viewRule:   "",
         createRule: "@request.auth.id != \"\"",
         updateRule: null,
         deleteRule: null,
       }, token);
-      console.log("[deleted_emails] createRule patched — authenticated users can add blacklisted emails");
+      console.log("[deleted_emails] rules patched — public read, authenticated create");
+    }
+    // fraud_emails: public read (APK checks at login/signup without auth), authenticated create
+    const feCol = await pbGet("/api/collections/fraud_emails");
+    if (!feCol.code) {
+      await pbHttp("PATCH", `/api/collections/${feCol.id}`, {
+        listRule:   "",
+        viewRule:   "",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[fraud_emails] rules patched — public read, authenticated create");
     }
   } catch (e: any) {
     console.warn("[ensureCollectionRules] Patch failed:", e.message);
@@ -395,6 +407,25 @@ async function ensureDeletedEmailsCollection() {
   }
 }
 
+// ─── Ensure fraud_emails collection exists in PocketBase ──────────────────────
+async function ensureFraudEmailsCollection() {
+  try {
+    const check = await pbGet("/api/collections/fraud_emails");
+    if (!check.code) return; // already exists
+    const token = await getAdminToken();
+    await pbHttp("POST", "/api/collections", {
+      name: "fraud_emails",
+      type: "base",
+      fields: [
+        { name: "email", type: "text", required: true },
+      ],
+    }, token);
+    console.log("[fraud_emails] Collection created in PocketBase");
+  } catch (e: any) {
+    console.warn("[fraud_emails] Could not auto-create collection:", e.message);
+  }
+}
+
 /** Save an email address to the permanent blacklist before account deletion */
 async function blacklistEmail(email: string): Promise<void> {
   if (!email) return;
@@ -491,6 +522,38 @@ async function isEmailBlacklisted(email: string): Promise<boolean> {
   }
 }
 
+/** Returns true if the email belongs to a permanently fraud-blocked account */
+async function isFraudEmail(email: string): Promise<boolean> {
+  try {
+    const normalised = email.toLowerCase().trim();
+    const res = await pbGet(
+      `/api/collections/fraud_emails/records?filter=${encodeURIComponent(`email="${normalised}"`)}&perPage=1`
+    );
+    return !!(res.items?.[0]);
+  } catch {
+    return false; // on error, do not block
+  }
+}
+
+/** Saves an email to the fraud_emails collection (idempotent) */
+async function saveFraudEmail(email: string): Promise<void> {
+  try {
+    const normalised = email.toLowerCase().trim();
+    if (!normalised) return;
+    const existing = await pbGet(
+      `/api/collections/fraud_emails/records?filter=${encodeURIComponent(`email="${normalised}"`)}&perPage=1`
+    );
+    if (existing.items?.[0]) {
+      console.log(`[fraud_emails] Already saved: ${normalised}`);
+      return;
+    }
+    await pbPost("/api/collections/fraud_emails/records", { email: normalised });
+    console.log(`[fraud_emails] Saved fraud-blocked email: ${normalised}`);
+  } catch (e: any) {
+    console.warn(`[fraud_emails] Failed to save ${email}:`, e.message);
+  }
+}
+
 // Settings cache
 let settingsCache: any = null;
 let settingsCacheAt = 0;
@@ -572,6 +635,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureOtpCollection())
     .then(() => ensureDailyUsageCollection())
     .then(() => ensureDeletedEmailsCollection())
+    .then(() => ensureFraudEmailsCollection())
     .then(() => ensureCollectionRules())
     .then(() => ensurePublicReferralsCollection())
     .then(() => ensureMiningSessionsRules())
@@ -853,13 +917,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!firebaseUid || !email)
         return res.status(400).json({ error: "firebaseUid and email required" });
 
-      // ── Fraud prevention: block re-registration from a previously deleted email ──
+      // ── Fraud prevention: block deleted emails ──────────────────────────────
       const blocked = await isEmailBlacklisted(email);
       if (blocked) {
-        console.warn(`[auth/sync] Blocked signup attempt from blacklisted email: ${email}`);
+        console.warn(`[auth/sync] Blocked attempt from deleted-email blacklist: ${email}`);
         return res.status(403).json({
           error: "This email address is associated with a deleted account and cannot be used to create a new account.",
           code: "EMAIL_PERMANENTLY_BANNED",
+        });
+      }
+
+      // ── Fraud prevention: block fraud_emails ─────────────────────────────────
+      const fraudBlocked = await isFraudEmail(email);
+      if (fraudBlocked) {
+        console.warn(`[auth/sync] Blocked attempt from fraud_emails list: ${email}`);
+        return res.status(403).json({
+          error: "ACCOUNT_BLOCKED",
+          blocked: true,
+          message: "Access Denied. Your account has been permanently blocked due to repeated fraudulent activity and violation of our terms.",
         });
       }
 
@@ -1708,6 +1783,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
 
         console.log(`[FRAUD] Updated user ${pbId}: fraud_attempts=${strikes} blocked=${isBlocked}`);
+
+        // 3. On 3rd strike: save email to fraud_emails so login is blocked with specific message
+        if (isBlocked && user.email) {
+          await saveFraudEmail(user.email);
+        }
 
         const strikesLeft = 3 - strikes;
         return res.status(isBlocked ? 403 : 400).json({
