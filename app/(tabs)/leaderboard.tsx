@@ -282,35 +282,32 @@ export default function LeaderboardScreen() {
     staleTime: 60_000,
   });
 
-  // Ticker: try Express, then query PocketBase withdrawals collection directly
+  // Ticker: PocketBase SDK direct (primary) — works on APK + web, no Express dependency
   const { data: ticker = [] } = useQuery<TickerItem[]>({
     queryKey: ['/api/app/withdrawals/approved/recent'],
     queryFn: async () => {
       try {
-        return await fetchJson('/api/app/withdrawals/approved/recent');
+        const res = await pb.collection('withdrawals').getList(1, 20, {
+          filter: 'status = "completed" || status = "approved"',
+          sort: '-created',
+          expand: 'user',
+        });
+        return (res.items || []).map((w: any) => {
+          // Full display name — no masking
+          const uname: string =
+            w.expand?.user?.display_name ||
+            w.expand?.user?.name ||
+            w.display_name ||
+            'Miner';
+          return {
+            id: w.id,
+            maskedName: uname,
+            method: w.method || 'BEP-20',
+            amount: w.amount || 0,
+          };
+        });
       } catch {
-        // PB fallback: query completed withdrawals directly
-        try {
-          const res = await pb.collection('withdrawals').getList(1, 10, {
-            filter: 'status = "completed" || status = "approved"',
-            sort: '-created',
-            expand: 'user',
-          });
-          return (res.items || []).map((w: any) => {
-            const uname: string = w.expand?.user?.display_name || 'Miner';
-            const masked = uname.length > 2
-              ? uname.slice(0, 2) + '***'
-              : uname + '***';
-            return {
-              id: w.id,
-              maskedName: masked,
-              method: w.method || 'BEP-20',
-              amount: w.amount || 0,
-            };
-          });
-        } catch {
-          return [];
-        }
+        return [];
       }
     },
     staleTime: 120_000,
@@ -318,8 +315,12 @@ export default function LeaderboardScreen() {
 
   const topPad = insets.top + (Platform.OS === 'web' ? 67 : 0);
 
-  // Total height of the custom tab bar (banner ad + tab buttons + safe area bottom)
-  const tabBarH = Platform.OS === 'web' ? 84 : BANNER_HEIGHT + 56 + insets.bottom;
+  // Total height of the custom tab bar on native:
+  //   InlineBannerAd wrapper has marginVertical:8 → adds 16px to BANNER_HEIGHT
+  //   Tab buttons: 56px + insets.bottom safe area
+  // Add 8px safety margin for adaptive banner height variation across devices.
+  const AD_TOTAL = Platform.OS === 'web' ? 0 : BANNER_HEIGHT + 16 + 8; // banner + margins + safety
+  const tabBarH  = Platform.OS === 'web' ? 84 : AD_TOTAL + 56 + insets.bottom;
 
   return (
     <View style={styles.container}>
@@ -385,13 +386,12 @@ export default function LeaderboardScreen() {
         ListFooterComponent={<View style={{ height: 24 }} />}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
-          // Padding = tabBar (banner+buttons+insets) + ticker height + buffer
-          // Ensures the last player row is fully visible above the fixed ticker
+          // Reserve space below the last item for: tab bar + live ticker + buffer
           paddingBottom: tabBarH + TICKER_TOTAL_H + 24,
         }}
       />
 
-      {/* Fixed withdrawal ticker — anchored directly above the tab bar */}
+      {/* Fixed withdrawal ticker — sits above the tab bar, zIndex above tab bar (20) */}
       <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
         <WithdrawalTicker items={ticker} />
       </View>
@@ -430,7 +430,9 @@ const styles = StyleSheet.create({
   tickerFixed: {
     position: 'absolute', left: 0, right: 0,
     backgroundColor: Colors.darkBg,
-    zIndex: 10,
-    elevation: 10,
+    // zIndex must be HIGHER than tab bar (zIndex:20 / elevation:20) so the
+    // ticker is always visible even if the ad banner bleeds into its area.
+    zIndex: 25,
+    elevation: 25,
   },
 });
