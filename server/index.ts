@@ -1,5 +1,6 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
+import { createServer } from "node:http";
 import { registerRoutes } from "./routes";
 import * as fs from "fs";
 import * as path from "path";
@@ -227,26 +228,30 @@ function setupErrorHandler(app: express.Application) {
   });
 }
 
-(async () => {
-  setupCors(app);
-  setupBodyParsing(app);
-  setupRequestLogging(app);
+const port = parseInt(process.env.PORT || "5000", 10);
 
-  configureExpoAndLanding(app);
+setupCors(app);
+setupBodyParsing(app);
+setupRequestLogging(app);
+configureExpoAndLanding(app);
+setupErrorHandler(app);
 
-  const server = await registerRoutes(app);
+// Start listening immediately so Railway health checks succeed and the
+// domain provisions without delay.
+const server = createServer(app);
+server.listen(
+  {
+    port,
+    host: "0.0.0.0",
+    reusePort: true,
+  },
+  () => {
+    log(`express server serving on port ${port}`);
+  },
+);
 
-  setupErrorHandler(app);
-
-  const port = parseInt(process.env.PORT || "5000", 10);
-  server.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`express server serving on port ${port}`);
-    },
-  );
-})();
+// Register API routes and kick off PocketBase collection setup in the
+// background — this must not block the server from accepting requests.
+registerRoutes(app).catch((err) =>
+  console.error("[startup] Background route/PB init failed:", err),
+);
