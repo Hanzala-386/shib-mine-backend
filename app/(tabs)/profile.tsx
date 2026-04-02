@@ -33,54 +33,17 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-/* ── Permanent Delete Account — OTP via Brevo REST API ──────────────────────
-   Uses the Brevo transactional email REST API with an absolute URL so it works
-   identically in dev, Expo Go, and the production APK (no Express dependency).
-   OTP is stored in PocketBase otp_codes; in-memory localOtp is the fallback.
+/* ── Permanent Delete Account — OTP via Railway Express ──────────────────────
+   Routes through the production Express server (Railway) which uses server-side
+   SMTP credentials. OTP is stored in PocketBase otp_codes by the server.
+   Verification is done server-side via /api/auth/confirm-delete.
 ──────────────────────────────────────────────────────────────────────────── */
-const BREVO_API_KEY = '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';
-const BREVO_SENDER  = 'support@shibahit.com';
-
 async function sendDeleteOtp(pbId: string, email: string): Promise<string> {
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
-  const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
-    .toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
-
-  // Store OTP in PocketBase — best-effort (verification also checks in-memory)
-  try {
-    const existing = await pb.collection('otp_codes').getList(1, 20, {
-      filter: `user = "${pbId}"`, fields: 'id',
-    });
-    for (const rec of existing.items) {
-      await pb.collection('otp_codes').delete(rec.id).catch(() => {});
-    }
-    await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
-  } catch { /* collection rules may block; in-memory OTP is the fallback */ }
-
-  console.log('[PermanentDelete] Sending OTP via Brevo REST API... email=' + email);
-  // Absolute URL — works in APK, Expo Go, and web preview
-  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: {
-      'api-key': BREVO_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      sender: { name: 'Shiba Hit', email: BREVO_SENDER },
-      to: [{ email }],
-      subject: 'Your Permanent Account Deletion Code — Shiba Hit',
-      textContent: `Your 6-digit code is:\n\n${otp}\n\nExpires in 5 minutes. Do not share this code.\n\n— Shiba Hit Team`,
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    console.log('[PermanentDelete] Brevo REST error:', res.status, body);
-    throw new Error(`Email delivery failed (${res.status}). ${body}`);
-  }
-
-  console.log('[PermanentDelete] OTP sent via Brevo REST ✓');
-  return otp;
+  console.log('[PermanentDelete] Requesting OTP via Railway Express... email=' + email);
+  await api.requestDeleteOtp(pbId, email);
+  console.log('[PermanentDelete] OTP dispatched via Railway SMTP ✓');
+  // OTP is stored server-side in PocketBase — no local copy needed
+  return '';
 }
 
 /* ── helpers ── */
