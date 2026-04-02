@@ -1,5 +1,4 @@
 import type { Express, Request, Response } from "express";
-import { createServer, type Server } from "node:http";
 import https from "node:https";
 import http from "node:http";
 import crypto from "node:crypto";
@@ -628,7 +627,7 @@ async function ensureUserSchema() {
 }
 
 // ─── Routes ────────────────────────────────────────────────────────────────
-export async function registerRoutes(app: Express): Promise<Server> {
+export async function registerRoutes(app: Express): Promise<void> {
   // Warm up admin token, ensure PB schema on startup
   getAdminToken()
     .then(() => ensureUserSchema())
@@ -2499,8 +2498,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  const httpServer = createServer(app);
-  return httpServer;
 }
 
 // ── Format user helper ─────────────────────────────────────────────────────

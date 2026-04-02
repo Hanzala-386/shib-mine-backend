@@ -1,5 +1,6 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
+import { createServer } from "node:http";
 import { registerRoutes } from "./routes";
 import * as fs from "fs";
 import * as path from "path";
@@ -227,26 +228,28 @@ function setupErrorHandler(app: express.Application) {
   });
 }
 
-(async () => {
-  setupCors(app);
-  setupBodyParsing(app);
-  setupRequestLogging(app);
+const port = parseInt(process.env.PORT || "5000", 10);
 
-  configureExpoAndLanding(app);
+setupCors(app);
+setupBodyParsing(app);
+setupRequestLogging(app);
+configureExpoAndLanding(app);
+setupErrorHandler(app);
 
-  const server = await registerRoutes(app);
+// Create and start listening IMMEDIATELY (synchronously)
+const server = createServer(app);
+server.listen(
+  {
+    port,
+    host: "0.0.0.0",
+    reusePort: true,
+  },
+  () => {
+    log(`express server serving on port ${port}`);
+  },
+);
 
-  setupErrorHandler(app);
-
-  const port = parseInt(process.env.PORT || "5000", 10);
-  server.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`express server serving on port ${port}`);
-    },
-  );
-})();
+// Fire off PocketBase initialization in background (don't await)
+registerRoutes(app).catch((err) =>
+  console.error("[startup] Background PocketBase init failed:", err),
+);
