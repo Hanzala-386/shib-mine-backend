@@ -351,7 +351,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
         if (delRes.totalItems > 0) {
           throw Object.assign(
-            new Error('This email is permanently blacklisted as the account associated with it was previously deleted. You cannot create a new account with this email.'),
+            new Error('An account was previously associated with this email. This email is permanently restricted from new registrations.'),
             { code: 'EMAIL_PERMANENTLY_BANNED' },
           );
         }
@@ -363,7 +363,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
         if (fraudRes.totalItems > 0) {
           throw Object.assign(
-            new Error('Access Denied. Your account has been permanently blocked due to repeated fraudulent activity and violation of our terms.'),
+            new Error('This email has been permanently banned due to fraudulent activity.'),
             { code: 'ACCOUNT_BLOCKED', status: 403 },
           );
         }
@@ -420,7 +420,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (delRes.totalItems > 0) {
             try { await firebaseSignOut(auth); } catch {}
             throw Object.assign(
-              new Error('This email is permanently blacklisted as the account associated with it was previously deleted. You cannot create a new account with this email.'),
+              new Error('An account was previously associated with this email. This email is permanently restricted from new registrations.'),
               { code: 'EMAIL_PERMANENTLY_BANNED' },
             );
           }
@@ -433,7 +433,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (fraudRes.totalItems > 0) {
             try { await firebaseSignOut(auth); } catch {}
             throw Object.assign(
-              new Error('Access Denied. Your account has been permanently blocked due to repeated fraudulent activity and violation of our terms.'),
+              new Error('This email has been permanently banned due to fraudulent activity.'),
               { code: 'ACCOUNT_BLOCKED', status: 403 },
             );
           }
@@ -547,9 +547,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (pbRecord.pbId) {
         const earned = await processPendingReferralEarnings(pbRecord.pbId).catch(() => 0);
         if (earned > 0) {
+          // Mirror only referral_balance + referral_earnings — NOT shib_balance (wallet).
+          // Referral commissions must be claimed by the user via the Claim button.
           pbRecord = {
             ...pbRecord,
-            shibBalance:      (pbRecord.shibBalance      || 0) + earned,
             referralBalance:  (pbRecord.referralBalance  || 0) + earned,
             referralEarnings: (pbRecord.referralEarnings || 0) + earned,
           };

@@ -951,7 +951,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (blocked) {
         console.warn(`[auth/sync] Blocked attempt from deleted-email blacklist: ${email}`);
         return res.status(403).json({
-          error: "This email address is associated with a deleted account and cannot be used to create a new account.",
+          error: "An account was previously associated with this email. This email is permanently restricted from new registrations.",
           code: "EMAIL_PERMANENTLY_BANNED",
         });
       }
@@ -963,7 +963,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({
           error: "ACCOUNT_BLOCKED",
           blocked: true,
-          message: "Access Denied. Your account has been permanently blocked due to repeated fraudulent activity and violation of our terms.",
+          message: "This email has been permanently banned due to fraudulent activity.",
         });
       }
 

@@ -23,8 +23,9 @@ export async function processPendingReferralEarnings(pbId: string): Promise<numb
 
     // Read current balances fresh to avoid stale-closure overwrites
     const user = await pb.collection('users').getOne(pbId);
+    // IMPORTANT: referral commissions go ONLY into referral_balance (claimable via Claim button).
+    // Do NOT credit shib_balance (main wallet) — that would bypass the Claim step entirely.
     await pb.collection('users').update(pbId, {
-      shib_balance:      (Number(user.shib_balance)      || 0) + total,
       referral_balance:  (Number(user.referral_balance)  || 0) + total,
       referral_earnings: (Number(user.referral_earnings) || 0) + total,
     });
