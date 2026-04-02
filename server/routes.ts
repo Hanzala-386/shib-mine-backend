@@ -96,14 +96,18 @@ async function pbDelete(path: string) {
 }
 
 // ─── Brevo SMTP mailer ─────────────────────────────────────────────────────
-const BREVO_SMTP_USER = "a52a39001@smtp-brevo.com";
-const BREVO_SMTP_PASS = "xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-Vw2ZH0wPTNPWBoby";
+// Credentials are read from environment variables first (Railway / Replit secrets).
+// The hardcoded values below are fallbacks for local development only.
+const BREVO_SMTP_USER_DEFAULT = "a52a39001@smtp-brevo.com";
+const BREVO_SMTP_PASS_DEFAULT = "xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-Vw2ZH0wPTNPWBoby";
 
 async function sendOtpEmail(to: string, otp: string) {
-  const smtpUser = BREVO_SMTP_USER;
-  const smtpPass = BREVO_SMTP_PASS;
+  // SMTP_USER / SMTP_KEY are set in Railway Variables (and Replit Secrets).
+  // Fall back to hardcoded Brevo creds if not configured.
+  const smtpUser = process.env.SMTP_USER || BREVO_SMTP_USER_DEFAULT;
+  const smtpPass = process.env.SMTP_KEY  || BREVO_SMTP_PASS_DEFAULT;
 
-  console.log(`[SMTP] user=${smtpUser} | key-ends=${smtpPass.slice(-12)}`);
+  console.log(`[SMTP] host=smtp-relay.brevo.com user=${smtpUser} | key-ends=${smtpPass.slice(-8)} | to=${to}`);
 
   const transporter = nodemailer.createTransport({
     host: "smtp-relay.brevo.com",
@@ -566,20 +570,30 @@ async function isFraudEmail(email: string): Promise<boolean> {
 
 /** Saves an email to the fraud_emails collection (idempotent) */
 async function saveFraudEmail(email: string): Promise<void> {
+  const normalised = email.toLowerCase().trim();
+  if (!normalised) return;
   try {
-    const normalised = email.toLowerCase().trim();
-    if (!normalised) return;
+    // Verify admin token is available before attempting write
+    const token = await getAdminToken();
+    if (!token) {
+      console.error(`[fraud_emails] CRITICAL: No admin token — PB_ADMIN_EMAIL/PB_ADMIN_PASSWORD missing in Railway Variables. Cannot save fraud email: ${normalised}`);
+      return;
+    }
     const existing = await pbGet(
       `/api/collections/fraud_emails/records?filter=${encodeURIComponent(`email="${normalised}"`)}&perPage=1`
     );
     if (existing.items?.[0]) {
-      console.log(`[fraud_emails] Already saved: ${normalised}`);
+      console.log(`[fraud_emails] Already in blacklist: ${normalised}`);
       return;
     }
-    await pbPost("/api/collections/fraud_emails/records", { email: normalised });
-    console.log(`[fraud_emails] Saved fraud-blocked email: ${normalised}`);
+    const res = await pbPost("/api/collections/fraud_emails/records", { email: normalised });
+    if (!res.id) {
+      console.error(`[fraud_emails] PocketBase rejected write — full response: ${JSON.stringify(res)}`);
+      return;
+    }
+    console.log(`[fraud_emails] ✓ Fraud email saved to PocketBase: ${normalised} (id=${res.id})`);
   } catch (e: any) {
-    console.warn(`[fraud_emails] Failed to save ${email}:`, e.message);
+    console.error(`[fraud_emails] FAILED to save ${normalised}:`, e.message, e.stack?.split('\n')[1] || '');
   }
 }
 
@@ -656,8 +670,33 @@ async function ensureUserSchema() {
   }
 }
 
+// ─── Startup env-var validation ────────────────────────────────────────────
+function validateEnv() {
+  const REQUIRED = ['PB_ADMIN_EMAIL', 'PB_ADMIN_PASSWORD'];
+  const RECOMMENDED = ['SMTP_USER', 'SMTP_KEY'];
+  const missing = REQUIRED.filter((k) => !process.env[k]);
+  const missingRec = RECOMMENDED.filter((k) => !process.env[k]);
+  if (missing.length) {
+    console.error(`[ENV] ❌ CRITICAL — Missing required variables: ${missing.join(', ')}`);
+    console.error('[ENV]    PocketBase admin operations WILL FAIL (fraud email save, OTP store, etc.)');
+    console.error('[ENV]    Add these in Railway → Variables tab immediately.');
+  } else {
+    console.log('[ENV] ✓ PB_ADMIN_EMAIL and PB_ADMIN_PASSWORD are set');
+  }
+  if (missingRec.length) {
+    console.warn(`[ENV] ⚠  Missing recommended variables: ${missingRec.join(', ')}`);
+    console.warn('[ENV]    OTP email will fall back to hardcoded Brevo credentials (may fail on Railway).');
+    console.warn('[ENV]    Add SMTP_USER + SMTP_KEY in Railway → Variables tab to fix email delivery.');
+  } else {
+    console.log('[ENV] ✓ SMTP_USER and SMTP_KEY are set — OTP email will use env credentials');
+  }
+}
+
 // ─── Routes ────────────────────────────────────────────────────────────────
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Validate environment variables on startup — catches Railway misconfiguration immediately
+  validateEnv();
+
   // Warm up admin token, ensure PB schema on startup
   getAdminToken()
     .then(() => ensureUserSchema())
