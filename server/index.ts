@@ -232,6 +232,10 @@ function setupErrorHandler(app: express.Application) {
   setupBodyParsing(app);
   setupRequestLogging(app);
 
+  app.get("/", (_req: Request, res: Response) => {
+    res.json({ status: "Backend is running on Railway" });
+  });
+
   configureExpoAndLanding(app);
 
   const server = await registerRoutes(app);
