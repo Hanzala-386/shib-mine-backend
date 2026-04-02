@@ -39,3 +39,9 @@ yarn-error.*
 .vercel
 
 .env
+
+# Large binary assets — store in cloud storage (Google Drive, PocketBase, S3)
+attached_assets/
+*.zip
+*.7z
+*.lfs
