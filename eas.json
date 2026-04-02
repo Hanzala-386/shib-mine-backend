@@ -12,7 +12,7 @@
         "gradleCommand": ":app:assembleDebug"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "api.webcod.in"
+        "EXPO_PUBLIC_DOMAIN": "shib-mine-backend-production.up.railway.app"
       }
     },
     "preview": {
@@ -21,7 +21,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "api.webcod.in"
+        "EXPO_PUBLIC_DOMAIN": "shib-mine-backend-production.up.railway.app"
       }
     },
     "production": {
@@ -31,7 +31,7 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "api.webcod.in"
+        "EXPO_PUBLIC_DOMAIN": "shib-mine-backend-production.up.railway.app"
       }
     }
   },
