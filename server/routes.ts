@@ -392,15 +392,23 @@ async function ensureReferralEarningsLogCollection() {
 async function ensureDeletedEmailsCollection() {
   try {
     const check = await pbGet("/api/collections/deleted_emails");
-    if (!check.code) return; // already exists
+    if (!check.code) return; // already exists — code field absent on success
     const token = await getAdminToken();
-    await pbHttp("POST", "/api/collections", {
+    const res = await pbHttp("POST", "/api/collections", {
       name: "deleted_emails",
       type: "base",
-      fields: [
-        { name: "email", type: "text", required: true },
+      // IMPORTANT: this PocketBase version uses "schema" (not "fields") for collection creation
+      schema: [
+        { name: "email",  type: "text", required: true,  options: {} },
+        { name: "reason", type: "text", required: false, options: {} },
       ],
+      listRule:   "",
+      viewRule:   "",
+      createRule: "@request.auth.id != \"\"",
+      updateRule: null,
+      deleteRule: null,
     }, token);
+    if (res.code) throw new Error(`PB rejected creation: ${JSON.stringify(res)}`);
     console.log("[deleted_emails] Collection created in PocketBase");
   } catch (e: any) {
     console.warn("[deleted_emails] Could not auto-create collection:", e.message);
@@ -411,16 +419,37 @@ async function ensureDeletedEmailsCollection() {
 async function ensureFraudEmailsCollection() {
   try {
     const check = await pbGet("/api/collections/fraud_emails");
-    if (!check.code) return; // already exists
+    if (!check.code) {
+      // Collection exists — make sure rules are correct
+      const token = await getAdminToken();
+      await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule:   "",
+        viewRule:   "",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[fraud_emails] Collection already exists — rules confirmed");
+      return;
+    }
+    // Collection does not exist — create it
     const token = await getAdminToken();
-    await pbHttp("POST", "/api/collections", {
+    const res = await pbHttp("POST", "/api/collections", {
       name: "fraud_emails",
       type: "base",
-      fields: [
-        { name: "email", type: "text", required: true },
+      // IMPORTANT: this PocketBase version uses "schema" (not "fields") for collection creation
+      schema: [
+        { name: "email",  type: "text", required: true,  options: {} },
+        { name: "reason", type: "text", required: false, options: {} },
       ],
+      listRule:   "",
+      viewRule:   "",
+      createRule: "@request.auth.id != \"\"",
+      updateRule: null,
+      deleteRule: null,
     }, token);
-    console.log("[fraud_emails] Collection created in PocketBase");
+    if (res.code) throw new Error(`PB rejected creation: ${JSON.stringify(res)}`);
+    console.log("[fraud_emails] Collection created in PocketBase ✓");
   } catch (e: any) {
     console.warn("[fraud_emails] Could not auto-create collection:", e.message);
   }
