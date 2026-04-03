@@ -2,7 +2,11 @@ import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, Alert, Platform,
   Animated as RNAnimated, ActivityIndicator, Modal, Linking,
+  Easing as RNEasing,
 } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
+import { pb } from '@/lib/pocketbase';
+import { BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,6 +24,98 @@ import { useMining } from '@/context/MiningContext';
 import { useAdmin } from '@/context/AdminContext';
 import { useAds } from '@/context/AdContext';
 import Colors from '@/constants/colors';
+
+// ── Live Withdrawal Ticker (identical to leaderboard.tsx) ──────────────────────
+interface TickerItem {
+  id: string;
+  maskedName: string;
+  method: string;
+  amount: number;
+}
+
+const TICKER_ITEM_W = 230;
+const TICKER_H      = 46;
+const TICKER_TOTAL_H = TICKER_H + 28; // label row + track + border + padding
+
+function WithdrawalTicker({ items }: { items: TickerItem[] }) {
+  const translateX = useRef(new RNAnimated.Value(0)).current;
+  const quadrupled = [...items, ...items, ...items, ...items];
+  const stopped    = useRef(false);
+
+  useEffect(() => {
+    if (!items.length) return;
+    stopped.current = false;
+    const totalW = items.length * TICKER_ITEM_W;
+
+    function runCycle() {
+      if (stopped.current) return;
+      translateX.setValue(0);
+      RNAnimated.timing(translateX, {
+        toValue: -totalW,
+        duration: totalW * 30,
+        easing: RNEasing.linear,
+        useNativeDriver: false,
+      }).start(({ finished }) => {
+        if (finished && !stopped.current) runCycle();
+      });
+    }
+    runCycle();
+    return () => { stopped.current = true; translateX.stopAnimation(); };
+  }, [items.length]);
+
+  if (!items.length) {
+    return (
+      <View style={tkStyles.emptyBox}>
+        <Text style={tkStyles.emptyText}>No approved withdrawals yet</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={tkStyles.wrapper}>
+      <View style={tkStyles.labelWrap}>
+        <MaterialCommunityIcons name="bank-transfer" size={13} color={Colors.gold} />
+        <Text style={tkStyles.label}>LIVE WITHDRAWALS</Text>
+      </View>
+      <View style={tkStyles.track}>
+        <RNAnimated.View style={[tkStyles.row, { transform: [{ translateX }] }]}>
+          {quadrupled.map((item, i) => (
+            <View key={`${item.id}-${i}`} style={tkStyles.chip}>
+              <Text style={tkStyles.name}>{item.maskedName}</Text>
+              <View style={tkStyles.dot} />
+              <Text style={tkStyles.method}>{item.method === 'Binance Email' ? 'Email' : 'BEP-20'}</Text>
+              <View style={tkStyles.dot} />
+              <Text style={tkStyles.amount}>+{
+                (() => {
+                  const v = item.amount;
+                  if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(2)}B`;
+                  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+                  if (v >= 1_000) return `${(v / 1_000).toFixed(0)}K`;
+                  return v.toLocaleString();
+                })()
+              } SHIB</Text>
+            </View>
+          ))}
+        </RNAnimated.View>
+      </View>
+    </View>
+  );
+}
+
+const tkStyles = StyleSheet.create({
+  wrapper:   { borderTopWidth: 1, borderTopColor: 'rgba(244,196,48,0.15)', backgroundColor: 'rgba(244,196,48,0.04)', paddingVertical: 4 },
+  labelWrap: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 16, paddingBottom: 4 },
+  label:     { fontFamily: 'Inter_700Bold', fontSize: 9, color: Colors.gold, letterSpacing: 1.5, textTransform: 'uppercase' },
+  track:     { height: TICKER_H, overflow: 'hidden' },
+  row:       { flexDirection: 'row', alignItems: 'center', height: TICKER_H },
+  chip:      { width: TICKER_ITEM_W, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, height: TICKER_H },
+  name:      { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textPrimary },
+  method:    { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary },
+  amount:    { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#4CAF50' },
+  dot:       { width: 4, height: 4, borderRadius: 2, backgroundColor: Colors.textMuted },
+  emptyBox:  { height: TICKER_H + 22, alignItems: 'center', justifyContent: 'center' },
+  emptyText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted },
+});
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
 
@@ -271,6 +367,33 @@ export default function HomeScreen() {
   const { settings } = useAdmin();
   const { showMiningInterstitial } = useAds();
 
+  // Live withdrawal ticker — same query as leaderboard.tsx
+  const { data: ticker = [] } = useQuery<TickerItem[]>({
+    queryKey: ['/api/app/withdrawals/approved/recent'],
+    queryFn: async () => {
+      try {
+        const res = await pb.collection('withdrawals').getList(1, 20, {
+          filter: 'status = "completed" || status = "approved"',
+          sort: '-created',
+          expand: 'user',
+        });
+        return (res.items || []).map((w: any) => ({
+          id: w.id,
+          maskedName: w.expand?.user?.display_name || w.expand?.user?.name || 'Miner',
+          method: w.method || 'BEP-20',
+          amount: w.amount || 0,
+        }));
+      } catch {
+        return [];
+      }
+    },
+    staleTime: 120_000,
+  });
+
+  // Tab bar height — matches leaderboard.tsx calculation
+  const AD_TOTAL = Platform.OS === 'web' ? 0 : BANNER_HEIGHT + 16 + 8;
+  const tabBarH  = Platform.OS === 'web' ? 84 : AD_TOTAL + 56 + insets.bottom;
+
   const [showAdLoader, setShowAdLoader] = useState(false);
   const [showLowPtWarning, setShowLowPtWarning] = useState(false);
   const [showWelcomeBonus, setShowWelcomeBonus] = useState(false);
@@ -520,8 +643,8 @@ export default function HomeScreen() {
           styles.scroll,
           {
             paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 16),
-            // Tab bar (~56px) + AdMob banner (~50px) + safe-area bottom + buffer
-            paddingBottom: insets.bottom + 160,
+            // Tab bar + AdMob banner + live ticker + buffer
+            paddingBottom: tabBarH + TICKER_TOTAL_H + 24,
           },
         ]}
       >
@@ -774,6 +897,11 @@ export default function HomeScreen() {
 
       </ScrollView>
 
+      {/* Fixed withdrawal ticker — sits above the tab bar, identical to leaderboard */}
+      <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
+        <WithdrawalTicker items={ticker} />
+      </View>
+
       {/* ══ WELCOME BONUS MODAL ════════════════════════════════════════════════ */}
       <Modal
         visible={showWelcomeBonus}
@@ -896,6 +1024,11 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scroll: { paddingHorizontal: 20, paddingBottom: 120 },
+  tickerFixed: {
+    position: 'absolute', left: 0, right: 0,
+    backgroundColor: Colors.darkBg,
+    zIndex: 25, elevation: 25,
+  },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   greeting: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary },
   userName: { fontFamily: 'Inter_700Bold', fontSize: 21, color: Colors.textPrimary, marginTop: 2 },
