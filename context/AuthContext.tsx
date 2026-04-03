@@ -177,17 +177,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Reload to get the freshest emailVerified status from Firebase
+    setFirebaseUser(fbUser);
+
+    // ── Fast path: load cached profile instantly ──────────────────────────
+    // If we have a profile cached from a previous session, show the home screen
+    // immediately (isLoading → false) while the live PocketBase refresh runs in
+    // the background. This eliminates the 3-5 second blank-screen delay on
+    // every app restart for returning users.
+    try {
+      const cachedRaw = await storage.getItem(`shib_profile_${fbUser.uid}`);
+      if (cachedRaw) {
+        const cachedProfile: UserProfile = JSON.parse(cachedRaw);
+        if (cachedProfile?.is_verified) {
+          setUser(cachedProfile);
+          setIsLoading(false); // ← instant: app opens straight to home screen
+          // Restore PB SDK session so mining ops don't 403 while refreshing
+          await restorePbSession().catch(() => {});
+          // Reload Firebase state in background (don't await — we're already shown)
+          fbUser.reload().catch(() => {});
+          const freshUser = auth.currentUser ?? fbUser;
+          setFirebaseUser(freshUser);
+          // Live refresh in background — updates balance, booster status, etc.
+          confirmAndLoadUser(freshUser).catch((e: any) => {
+            console.warn('[Auth] Background refresh failed:', e?.message);
+            if (e?.code === 'EMAIL_PERMANENTLY_BANNED' || e?.status === 403) {
+              Alert.alert(
+                'Account Permanently Banned',
+                e.message || 'This email address is permanently banned.',
+                [{ text: 'OK' }]
+              );
+            }
+          });
+          return; // fast path complete
+        }
+      }
+    } catch { /* cache miss or parse error — fall through to full load */ }
+
+    // ── Full load path (first login or cache miss) ────────────────────────
     try { await fbUser.reload(); } catch {}
     const freshUser = auth.currentUser ?? fbUser;
     setFirebaseUser(freshUser);
 
     if (freshUser.emailVerified) {
-      // Firebase says verified → make sure PB is synced
       try {
         await confirmAndLoadUser(freshUser);
       } catch (e: any) {
-        // confirmAndLoadUser already signed out and cleared state for banned emails
         console.warn('[Auth] handleAuthStateChange: confirmAndLoadUser threw:', e?.message);
         if (e?.code === 'EMAIL_PERMANENTLY_BANNED' || e?.status === 403) {
           Alert.alert(
@@ -456,6 +490,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // ── Sign Out ──────────────────────────────────────────────────────────────
   async function signOut() {
+    // Clear ALL persisted session data so the user must log in again
+    try { await storage.removeItem(PB_SESSION_KEY); } catch {}
+    try {
+      const fbUser = auth.currentUser;
+      if (fbUser?.uid) {
+        await storage.removeItem(`shib_profile_${fbUser.uid}`).catch(() => {});
+      }
+    } catch {}
+    // Clear PocketBase SDK auth store
+    try { pb.authStore.clear(); } catch {}
+    // Sign out of Firebase (clears AsyncStorage-persisted Firebase session)
     await firebaseSignOut(auth);
     setUser(null);
     setPbUser(null);
