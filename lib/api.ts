@@ -20,18 +20,84 @@ async function request<T = any>(
     const data = await res.json();
     if (!res.ok) {
       const err: any = new Error(data?.error || `HTTP ${res.status}`);
-      err.data = data;       // ← attach full server payload so callers can read e.data.error, e.data.message, etc.
+      err.data = data;
       err.status = res.status;
       if (data?.code) err.code = data.code;
       throw err;
     }
     return data as T;
   } catch (err: any) {
-    if (err?.name === 'AbortError') throw new Error('Request timed out. Check your connection.');
+    // expo/fetch throws a plain Error with message containing "cancel" or "abort"
+    // rather than a proper AbortError — catch both forms.
+    const msg: string = err?.message ?? '';
+    const isAbort =
+      err?.name === 'AbortError' ||
+      msg.toLowerCase().includes('cancel') ||
+      msg.toLowerCase().includes('abort') ||
+      msg.toLowerCase().includes('timed out');
+    if (isAbort) throw new Error('Request timed out. Check your connection.');
     throw err;
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ── Robust POST — uses globalThis.fetch (standard RN fetch, no expo/fetch streaming
+// layer) so it is immune to the expo/fetch AbortController cancellation bug on
+// Android. Used for critical user-action endpoints like delete-account OTP where
+// a spurious "Fetch request has been canceled" would be highly confusing.
+async function robustPost<T = any>(
+  path: string,
+  body: object,
+  timeoutMs = 30000,
+  retries = 1,
+): Promise<T> {
+  const url = new URL(path, getApiUrl()).toString();
+  let lastErr: any;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      // globalThis.fetch = React Native's built-in fetch (not expo/fetch streaming)
+      const res = await globalThis.fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const err: any = new Error(data?.error || `HTTP ${res.status}`);
+        err.data = data;
+        err.status = res.status;
+        if (data?.code) err.code = data.code;
+        throw err;
+      }
+      return data as T;
+    } catch (err: any) {
+      lastErr = err;
+      const msg: string = err?.message ?? '';
+      const isCanceled =
+        err?.name === 'AbortError' ||
+        msg.toLowerCase().includes('cancel') ||
+        msg.toLowerCase().includes('abort');
+      // Only retry on cancellation errors, not on real HTTP errors
+      if (!isCanceled || attempt >= retries) break;
+      console.warn(`[robustPost] Attempt ${attempt + 1} canceled — retrying...`);
+      await new Promise((r) => setTimeout(r, 500));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const msg: string = lastErr?.message ?? '';
+  const isCanceled =
+    lastErr?.name === 'AbortError' ||
+    msg.toLowerCase().includes('cancel') ||
+    msg.toLowerCase().includes('abort');
+  if (isCanceled) throw new Error('Request timed out. Check your connection and try again.');
+  throw lastErr;
 }
 
 export const api = {
@@ -205,11 +271,13 @@ export const api = {
 
   adminGetStats: () => request<AdminStats>('GET', '/api/app/admin/stats'),
 
+  // Uses robustPost (globalThis.fetch, 30s timeout, 1 retry) — avoids expo/fetch
+  // AbortController cancellation bug on Android for this critical user action.
   requestDeleteOtp: (pbId: string, email: string) =>
-    request<{ success: boolean }>('POST', '/api/auth/request-delete-otp', { pbId, email }),
+    robustPost<{ success: boolean }>('/api/auth/request-delete-otp', { pbId, email }),
 
   confirmDelete: (pbId: string, code: string) =>
-    request<{ success: boolean }>('POST', '/api/auth/confirm-delete', { pbId, code }),
+    robustPost<{ success: boolean }>('/api/auth/confirm-delete', { pbId, code }),
 };
 
 // ── Types ──────────────────────────────────────────────────────────────────
