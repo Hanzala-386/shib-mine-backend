@@ -670,6 +670,35 @@ async function ensureUserSchema() {
   }
 }
 
+// Verifies brevo_api_key exists in the PocketBase 'settings' collection.
+// Collection is named 'settings' (not 'app_settings'). The APK reads the key
+// directly from PocketBase and calls Brevo REST API — no Railway proxy needed.
+async function ensureBrevoKeyInSettings(): Promise<void> {
+  try {
+    const token = await getAdminToken();
+    const colls = await pbHttp("GET", "/api/collections?perPage=200", null, token);
+    // PocketBase uses 'settings' as the collection name (confirmed via admin API)
+    const settingsCol = (colls.items || []).find(
+      (c: any) => c.name === "settings" || c.name === "app_settings"
+    );
+    if (!settingsCol) {
+      console.warn("[settings] Settings collection not found — skipping brevo_api_key patch");
+      return;
+    }
+    const schema: any[] = settingsCol.schema || [];
+    const exists = schema.find((f: any) => f.name === "brevo_api_key");
+    if (exists) {
+      console.log(`[${settingsCol.name}] brevo_api_key field already present ✓`);
+      return;
+    }
+    schema.push({ name: "brevo_api_key", type: "text", required: false });
+    await pbHttp("PATCH", `/api/collections/${settingsCol.id}`, { schema }, token);
+    console.log(`[${settingsCol.name}] brevo_api_key field added — set value in PocketBase admin panel`);
+  } catch (e: any) {
+    console.warn("[settings] brevo_api_key patch skipped:", e.message);
+  }
+}
+
 // ─── Startup env-var validation ────────────────────────────────────────────
 function validateEnv() {
   const REQUIRED = ['PB_ADMIN_EMAIL', 'PB_ADMIN_PASSWORD'];
@@ -708,6 +737,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensurePublicReferralsCollection())
     .then(() => ensureMiningSessionsRules())
     .then(() => ensureReferralEarningsLogCollection())
+    .then(() => ensureBrevoKeyInSettings())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────

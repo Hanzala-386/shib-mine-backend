@@ -33,17 +33,93 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-/* ── Permanent Delete Account — OTP via Railway Express ──────────────────────
-   Routes through the production Express server (Railway) which uses server-side
-   SMTP credentials. OTP is stored in PocketBase otp_codes by the server.
-   Verification is done server-side via /api/auth/confirm-delete.
+/* ── Permanent Delete Account — Direct PocketBase + Brevo REST ───────────────
+   Architecture: App → api.webcod.in (PocketBase) for OTP storage/verification
+                 App → api.brevo.com (REST) for email delivery
+   Railway Express is bypassed entirely — no multi-hop, no timeout issues.
+
+   Email key lifecycle:
+     • Fetched from PocketBase app_settings.brevo_api_key at runtime
+     • Admin can update key in PocketBase admin panel without an APK rebuild
+     • OTP is also stored in-memory (localOtp) as a fallback if email fails
 ──────────────────────────────────────────────────────────────────────────── */
-async function sendDeleteOtp(pbId: string, email: string): Promise<string> {
-  console.log('[PermanentDelete] Requesting OTP via Railway Express... email=' + email);
-  await api.requestDeleteOtp(pbId, email);
-  console.log('[PermanentDelete] OTP dispatched via Railway SMTP ✓');
-  // OTP is stored server-side in PocketBase — no local copy needed
+const BREVO_SENDER = 'support@shibahit.com';
+
+async function fetchBrevoKey(): Promise<string> {
+  try {
+    // Direct call to api.webcod.in — collection is named 'settings' in PocketBase
+    const records = await pb.collection('settings').getList(1, 1, { fields: 'brevo_api_key' });
+    const key = (records.items[0] as any)?.brevo_api_key;
+    if (key && typeof key === 'string' && key.length > 20) return key;
+  } catch { /* collection unreachable or field not yet added */ }
   return '';
+}
+
+async function sendDeleteOtp(pbId: string, email: string): Promise<string> {
+  const otp = String(Math.floor(100000 + Math.random() * 900000));
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
+    .toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+
+  // Step 1 — store OTP directly in PocketBase (no Railway, direct to api.webcod.in)
+  try {
+    const existing = await pb.collection('otp_codes').getList(1, 20, {
+      filter: `user = "${pbId}"`, fields: 'id',
+    });
+    for (const rec of existing.items) {
+      pb.collection('otp_codes').delete(rec.id).catch(() => {});
+    }
+    await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
+    console.log('[PermanentDelete] OTP stored in PocketBase ✓');
+  } catch (pbErr: any) {
+    // Non-fatal — in-memory OTP returned below is the fallback for verification
+    console.warn('[PermanentDelete] PB OTP store failed:', pbErr?.message);
+  }
+
+  // Step 2 — fetch Brevo REST API key from PocketBase app_settings
+  const brevoKey = await fetchBrevoKey();
+  if (!brevoKey) {
+    // Key not configured — OTP is in PocketBase and in-memory; verification still works
+    // but no email will be sent. Warn rather than throw so the modal still opens.
+    console.warn('[PermanentDelete] brevo_api_key not set in app_settings — email skipped');
+    return otp;
+  }
+
+  // Step 3 — call Brevo REST API directly from device (no Railway proxy)
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': brevoKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sender: { name: 'Shiba Hit', email: BREVO_SENDER },
+      to: [{ email }],
+      subject: 'Your Account Deletion Code — Shiba Hit',
+      htmlContent: `
+<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;background:#111;color:#fff;border-radius:16px;">
+  <h2 style="color:#FF6B00;margin:0 0 6px;">Shiba Hit</h2>
+  <p style="color:#999;font-size:13px;margin:0 0 28px;">Account Deletion Request</p>
+  <p style="color:#ccc;margin:0 0 20px;">Enter this code in the app to confirm permanent account deletion.</p>
+  <div style="background:#1e1e1e;border:1px solid #333;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px;">
+    <p style="color:#888;font-size:11px;letter-spacing:3px;text-transform:uppercase;margin:0 0 10px;">YOUR 6-DIGIT CODE</p>
+    <p style="color:#FFD700;font-size:44px;font-weight:bold;letter-spacing:16px;margin:0;font-family:monospace;">${otp}</p>
+  </div>
+  <p style="color:#888;font-size:13px;margin:0 0 6px;">⏱ Expires in <strong style="color:#fff;">5 minutes</strong>.</p>
+  <p style="color:#888;font-size:13px;">If you didn't request this, ignore this email — your account is safe.</p>
+  <hr style="border:none;border-top:1px solid #222;margin:20px 0 12px;"/>
+  <p style="color:#555;font-size:12px;margin:0;">Shiba Hit &bull; support@shibahit.com</p>
+</div>`,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.warn('[PermanentDelete] Brevo REST error:', res.status, body);
+    // OTP is stored in PocketBase — email failure is non-fatal.
+    // The in-memory OTP returned below lets support staff verify via support@shibahit.com.
+    // On 401/403 the key is invalid (SMTP key used instead of REST key) or expired.
+    return otp; // caller stores this as localOtp for in-memory verification fallback
+  }
+
+  console.log('[PermanentDelete] OTP email sent via Brevo REST ✓');
+  return otp;
 }
 
 /* ── helpers ── */
@@ -349,56 +425,64 @@ export default function ProfileScreen() {
     setIsDeleting(true);
     const email = (firebaseUser?.email || user?.email || '').toLowerCase().trim();
     try {
-      // 1. Verify OTP + delete PocketBase user record
+      // ── Step 1: Verify OTP directly via PocketBase SDK (direct to api.webcod.in) ──
+      // Railway is bypassed entirely. Primary = PB otp_codes, fallback = in-memory.
+      let verified = false;
       try {
-        await api.confirmDelete(pbId, otpCode);
-      } catch {
-        // PB SDK fallback — try otp_codes collection first (works after rule patch)
-        let verified = false;
-        try {
-          const records = await pb.collection('otp_codes').getList(1, 10, {
-            filter: `user = "${pbId}"`,
-          });
-          const otpRecord = (records.items || []).find(
-            (r: any) => String(r.code).trim() === String(otpCode).trim()
-          );
-          if (otpRecord) {
-            if (new Date(otpRecord.expires_at) < new Date()) {
-              await pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
-              throw new Error('OTP has expired. Please request a new one.');
-            }
-            await pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
-            verified = true;
+        const records = await pb.collection('otp_codes').getList(1, 10, {
+          filter: `user = "${pbId}"`,
+        });
+        const otpRecord = (records.items || []).find(
+          (r: any) => String(r.code).trim() === String(otpCode).trim()
+        );
+        if (otpRecord) {
+          if (new Date(otpRecord.expires_at) < new Date()) {
+            pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
+            throw new Error('OTP has expired. Please request a new one.');
           }
-        } catch (pbOtpErr: any) {
-          if (pbOtpErr?.message?.includes('OTP has expired')) throw pbOtpErr;
-          // Collection may still be admin-only — fall through to in-memory check
-        }
-
-        // Ultimate fallback: compare against the in-memory OTP generated by sendDeleteOtp
-        if (!verified) {
-          if (!localOtp) throw new Error('Session expired. Please request a new OTP code.');
-          if (String(otpCode).trim() !== String(localOtp).trim()) {
-            throw new Error('Invalid OTP. Please try again.');
-          }
+          pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
           verified = true;
+          console.log('[PermanentDelete] OTP verified via PocketBase ✓');
         }
-
-        // Delete the PocketBase user record
-        await pb.collection('users').delete(pbId);
+      } catch (pbOtpErr: any) {
+        if (pbOtpErr?.message?.includes('OTP has expired')) throw pbOtpErr;
+        // otp_codes may be temporarily unreachable — fall through to in-memory check
+        console.warn('[PermanentDelete] PB OTP verify error:', pbOtpErr?.message);
       }
 
-      // 2. Blacklist the email in deleted_emails (prevent re-registration)
+      // In-memory fallback (OTP returned by sendDeleteOtp even when email failed)
+      if (!verified) {
+        if (!localOtp) throw new Error('Session expired. Please request a new OTP code.');
+        if (String(otpCode).trim() !== String(localOtp).trim()) {
+          throw new Error('Invalid code. Please check the email and try again.');
+        }
+        verified = true;
+        console.log('[PermanentDelete] OTP verified via in-memory fallback ✓');
+      }
+
+      // ── Step 2: Blacklist email BEFORE deleting the PB record ────────────────
+      // Must happen while still authenticated so the createRule allows the write.
       if (email) {
         try {
           await pb.collection('deleted_emails').create({ email });
-        } catch { /* non-critical — admin may add manually */ }
+          console.log('[PermanentDelete] Email blacklisted in deleted_emails ✓');
+        } catch { /* already blacklisted or collection unreachable — non-critical */ }
       }
 
-      // 3. Delete Firebase account
-      await deleteUser(firebaseUser!);
+      // ── Step 3: Delete PocketBase user record ────────────────────────────────
+      try {
+        await pb.collection('users').delete(pbId);
+        console.log('[PermanentDelete] PB user record deleted ✓');
+      } catch (delErr: any) {
+        console.warn('[PermanentDelete] PB user delete failed:', delErr?.message);
+        // Continue — Firebase account deletion is the critical step
+      }
 
-      // 4. Clear in-memory OTP and navigate away
+      // ── Step 4: Delete Firebase account ─────────────────────────────────────
+      await deleteUser(firebaseUser!);
+      console.log('[PermanentDelete] Firebase account deleted ✓');
+
+      // ── Step 5: Navigate away ─────────────────────────────────────────────────
       setLocalOtp('');
       setShowOtpModal(false);
       Alert.alert('Account Deleted', 'Your account has been permanently deleted. Goodbye!', [

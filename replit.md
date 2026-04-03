@@ -49,6 +49,12 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
 
 ### settings collection
 - All admin-configurable values: mining rates, booster costs, ad IDs, withdrawal tiers
+- `brevo_api_key` (text) — Brevo **REST** API key (`xkeysib-...`) used by app to send Delete Account OTP emails directly. Admin sets this in PocketBase admin panel. **Note**: the SMTP key (`xsmtpsib-...`) stored here currently only works with nodemailer SMTP — a REST key (`xkeysib-...`) from Brevo dashboard → API Keys section is required for the direct REST call path.
+- listRule/viewRule: `""` (public read — allows APK to fetch `brevo_api_key` without auth)
+
+### otp_codes collection
+- `user` (relation to users), `code` (text), `expires_at` (text)
+- listRule/viewRule/createRule/deleteRule: `user = @request.auth.id` — users manage their own OTPs via PB SDK
 
 ## Auth Flow
 1. New user → Firebase signup → save pending data in AsyncStorage → `sendOtp(email)` → OTP screen
@@ -110,6 +116,7 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 ## CRITICAL: Backend Architecture
 - **Express (port 5000)** runs ONLY in Replit dev environment. `api.webcod.in` hosts PocketBase ONLY.
 - All `/api/app/*` routes return 404 on the published APK. Every Express call MUST have a PocketBase SDK fallback.
+- **Delete Account OTP** — fully direct, no Railway: app generates OTP on-device → stores in PB `otp_codes` via SDK → fetches `brevo_api_key` from PB `settings` → calls `api.brevo.com/v3/smtp/email` directly. Verification: app reads `otp_codes` directly from PB. `api.confirmDelete` (Railway route) is no longer called. In-memory OTP (`localOtp`) is the final fallback if PB is temporarily unreachable.
 - **Game** is now LIVE at `https://webcod.in/arcade/index.html` (shared hosting — different domain from PocketBase API).
 - `GAME_URL` in `games.tsx` is hardcoded to `https://webcod.in/arcade/index.html` (NOT constructed from `getApiUrl()`).
 - `games.tsx` fetches game stats and syncs scores **directly via PocketBase SDK** (`pb.collection('users')`) — no Express dependency.
