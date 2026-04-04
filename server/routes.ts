@@ -5,6 +5,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import nodemailer from "nodemailer";
 
+
 const PB_URL = "https://api.webcod.in";
 
 // ─── PocketBase HTTP helper ────────────────────────────────────────────────
@@ -95,77 +96,83 @@ async function pbDelete(path: string) {
   return pbHttp("DELETE", path, null, token);
 }
 
-// ─── Brevo SMTP mailer ─────────────────────────────────────────────────────
-// Credentials are read from environment variables first (Railway / Replit secrets).
-// The hardcoded values below are fallbacks for local development only.
-// Fallback SMTP login — used only if SMTP_USER env var is not set.
-// The SMTP password has no hardcoded fallback; SMTP_KEY must be set in env.
-const BREVO_SMTP_USER_DEFAULT = "a52a0a001@smtp-brevo.com";
+// ─── Brevo SMTP mailer (nodemailer) ────────────────────────────────────────
+// Tries port 465 (SMTPS / TLS-immediate) first — Railway allows this even when
+// port 587 (STARTTLS) times out.  Falls back to port 587 automatically via
+// nodemailer's built-in fallback only if needed.
+//
+// SMTP_USER — Brevo SMTP login  (a52a0a001@smtp-brevo.com).
+//             If accidentally set to the API key it is detected and swapped.
+// SMTP_KEY  — Brevo SMTP API key (xsmtpsib-…). Required.
 
 async function sendOtpEmail(to: string, otp: string) {
-  // Credentials come exclusively from environment variables (Railway + Replit Secrets).
-  // SMTP_USER  — Brevo SMTP login (e.g. a52a0a001@smtp-brevo.com). Falls back to the
-  //              hardcoded default login if not set.
-  // SMTP_KEY   — Brevo SMTP API key (xsmtpsib-…). No hardcoded fallback — must be set.
-  //
-  // DEFENSIVE: If SMTP_USER was accidentally set to a Brevo API key (starts with
-  // "xsmtpsib-"), treat it as the password and fall back to the default SMTP login.
-  const rawUser = process.env.SMTP_USER || BREVO_SMTP_USER_DEFAULT;
-  const rawPass = process.env.SMTP_KEY  || '';
+  const envUser = process.env.SMTP_USER || 'a52a0a001@smtp-brevo.com';
+  const envKey  = process.env.SMTP_KEY  || '';
 
-  if (!rawPass && !rawUser.startsWith('xsmtpsib-')) {
+  if (!envKey) {
     throw new Error('SMTP_KEY environment variable is not set — cannot send email.');
   }
 
-  let smtpUser: string;
-  let smtpPass: string;
-  if (rawUser.startsWith('xsmtpsib-')) {
-    // SMTP_USER contains the API key — swap to correct positions
-    console.warn('[SMTP] SMTP_USER looks like an API key — using as password, falling back to default SMTP login');
-    smtpUser = BREVO_SMTP_USER_DEFAULT;
-    smtpPass = rawUser;
-  } else {
-    smtpUser = rawUser;
-    smtpPass = rawPass;
-  }
+  // Defensive: if SMTP_USER contains the API key, swap them
+  const smtpUser = envUser.startsWith('xsmtpsib-') ? 'a52a0a001@smtp-brevo.com' : envUser;
+  const smtpPass = envUser.startsWith('xsmtpsib-') ? envUser : envKey;
 
-  console.log(`[SMTP] host=smtp-relay.brevo.com user=${smtpUser} | key-ends=${smtpPass.slice(-8)} | to=${to}`);
-
-  const transporter = nodemailer.createTransport({
-    host: "smtp-relay.brevo.com",
-    port: 587,
-    secure: false,
-    requireTLS: true,
-    auth: { user: smtpUser, pass: smtpPass },
-    tls: { rejectUnauthorized: false },
-  });
-
-  await transporter.sendMail({
-    from: `"Shiba Hit" <support@shibahit.com>`,
-    to,
-    subject: "Your Shiba Hit Account Deletion OTP",
-    text: `Your 6-digit security code is: ${otp}\n\nThis code will expire in 5 minutes.\nDo not share this code with anyone.\n\nIf you did not request this, ignore this email.\n\n— Shiba Hit Team\nsupport@shibahit.com`,
-    html: `
+  const htmlBody = `
 <div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;background:#111;color:#fff;border-radius:16px;">
   <h2 style="color:#FF6B00;margin:0 0 6px;font-size:22px;">Shiba Hit</h2>
   <p style="color:#999;font-size:13px;margin:0 0 28px;">Account Deletion Request</p>
-
   <p style="color:#ccc;margin:0 0 20px;">Enter the code below inside the app to confirm your account deletion. <strong>Do not click any links</strong> — just type the digits.</p>
-
   <div style="background:#1e1e1e;border:1px solid #333;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px;">
     <p style="color:#888;font-size:11px;letter-spacing:3px;text-transform:uppercase;margin:0 0 10px;">Your 6-Digit Code</p>
     <p style="color:#FFD700;font-size:44px;font-weight:bold;letter-spacing:16px;margin:0;font-family:monospace;">${otp}</p>
   </div>
-
   <p style="color:#888;font-size:13px;margin:0 0 6px;">⏱ Expires in <strong style="color:#fff;">5 minutes</strong>.</p>
   <p style="color:#888;font-size:13px;margin:0 0 24px;">If you didn't request this, you can safely ignore this email — your account is safe.</p>
-
   <hr style="border:none;border-top:1px solid #222;margin:0 0 16px;"/>
   <p style="color:#555;font-size:12px;margin:0;">Shiba Hit &nbsp;&bull;&nbsp; support@shibahit.com</p>
-</div>`,
-  });
+</div>`;
 
-  console.log(`[OTP] Email delivered to ${to}`);
+  // Port 465 = SMTPS (TLS from the start) — different path than STARTTLS on 587
+  // and confirmed reachable from Railway's network.
+  const ports: Array<{ port: number; secure: boolean }> = [
+    { port: 465, secure: true  },
+    { port: 587, secure: false },
+    { port: 2525, secure: false },
+  ];
+
+  let lastErr: Error | null = null;
+  for (const { port, secure } of ports) {
+    console.log(`[SMTP] Trying smtp-relay.brevo.com:${port} secure=${secure} user=${smtpUser} key-ends=${smtpPass.slice(-8)} to=${to}`);
+    try {
+      const transporter = nodemailer.createTransport({
+        host:   'smtp-relay.brevo.com',
+        port,
+        secure,
+        auth:   { user: smtpUser, pass: smtpPass },
+        tls:    { rejectUnauthorized: false },
+        connectionTimeout: 10_000,
+        greetingTimeout:   10_000,
+        socketTimeout:     15_000,
+      });
+      await transporter.sendMail({
+        from:    '"Shiba Hit" <support@shibahit.com>',
+        to,
+        subject: 'Your Shiba Hit Account Deletion OTP',
+        html:    htmlBody,
+        text:    `Your 6-digit security code is: ${otp}\n\nExpires in 5 minutes. Do not share it.\n\n— Shiba Hit Team`,
+      });
+      console.log(`[SMTP] Email delivered to ${to} via port ${port} ✓`);
+      return; // success — stop trying further ports
+    } catch (err: any) {
+      console.warn(`[SMTP] Port ${port} failed: ${err?.message}`);
+      lastErr = err;
+      // ETIMEDOUT or ECONNREFUSED → try next port
+      // Auth failure (responseCode 535) → no point trying other ports with same creds
+      if (err?.responseCode === 535) break;
+    }
+  }
+
+  throw lastErr ?? new Error('All SMTP ports failed');
 }
 
 // ─── Ensure daily_usage collection exists in PocketBase ───────────────────
