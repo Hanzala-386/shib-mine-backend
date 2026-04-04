@@ -19,7 +19,9 @@ import {
   reauthenticateWithCredential,
   updatePassword,
   deleteUser,
+  sendPasswordResetEmail,
 } from 'firebase/auth';
+import { auth } from '@/lib/firebase';
 import { useAuth } from '@/context/AuthContext';
 import { pb, processPendingReferralEarnings } from '@/lib/pocketbase';
 import { useWallet } from '@/context/WalletContext';
@@ -280,8 +282,8 @@ export default function ProfileScreen() {
     setIsRequestingOtp(true);
     setOtpError('');
     try {
-      await pb.collection('users').requestPasswordReset(email);
-      console.log('[PermanentDelete] PB requestPasswordReset sent ✓');
+      await sendPasswordResetEmail(auth, email);
+      console.log('[PermanentDelete] Firebase sendPasswordResetEmail sent ✓');
       setShowConfirmDeleteModal(false);
       setShowOtpModal(true);
     } catch (e: any) {
