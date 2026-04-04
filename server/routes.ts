@@ -98,14 +98,36 @@ async function pbDelete(path: string) {
 // ─── Brevo SMTP mailer ─────────────────────────────────────────────────────
 // Credentials are read from environment variables first (Railway / Replit secrets).
 // The hardcoded values below are fallbacks for local development only.
-const BREVO_SMTP_USER_DEFAULT = "a52a39001@smtp-brevo.com";
-const BREVO_SMTP_PASS_DEFAULT = "xsmtpsib-57d87a3812ae04a7addce247e7bb94c093e2fbc9e18524fdd25eced8f3762011-Vw2ZH0wPTNPWBoby";
+// Fallback SMTP login — used only if SMTP_USER env var is not set.
+// The SMTP password has no hardcoded fallback; SMTP_KEY must be set in env.
+const BREVO_SMTP_USER_DEFAULT = "a52a0a001@smtp-brevo.com";
 
 async function sendOtpEmail(to: string, otp: string) {
-  // SMTP_USER / SMTP_KEY are set in Railway Variables (and Replit Secrets).
-  // Fall back to hardcoded Brevo creds if not configured.
-  const smtpUser = process.env.SMTP_USER || BREVO_SMTP_USER_DEFAULT;
-  const smtpPass = process.env.SMTP_KEY  || BREVO_SMTP_PASS_DEFAULT;
+  // Credentials come exclusively from environment variables (Railway + Replit Secrets).
+  // SMTP_USER  — Brevo SMTP login (e.g. a52a0a001@smtp-brevo.com). Falls back to the
+  //              hardcoded default login if not set.
+  // SMTP_KEY   — Brevo SMTP API key (xsmtpsib-…). No hardcoded fallback — must be set.
+  //
+  // DEFENSIVE: If SMTP_USER was accidentally set to a Brevo API key (starts with
+  // "xsmtpsib-"), treat it as the password and fall back to the default SMTP login.
+  const rawUser = process.env.SMTP_USER || BREVO_SMTP_USER_DEFAULT;
+  const rawPass = process.env.SMTP_KEY  || '';
+
+  if (!rawPass && !rawUser.startsWith('xsmtpsib-')) {
+    throw new Error('SMTP_KEY environment variable is not set — cannot send email.');
+  }
+
+  let smtpUser: string;
+  let smtpPass: string;
+  if (rawUser.startsWith('xsmtpsib-')) {
+    // SMTP_USER contains the API key — swap to correct positions
+    console.warn('[SMTP] SMTP_USER looks like an API key — using as password, falling back to default SMTP login');
+    smtpUser = BREVO_SMTP_USER_DEFAULT;
+    smtpPass = rawUser;
+  } else {
+    smtpUser = rawUser;
+    smtpPass = rawPass;
+  }
 
   console.log(`[SMTP] host=smtp-relay.brevo.com user=${smtpUser} | key-ends=${smtpPass.slice(-8)} | to=${to}`);
 

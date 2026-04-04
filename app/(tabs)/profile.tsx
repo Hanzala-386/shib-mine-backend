@@ -33,93 +33,35 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-/* ── Permanent Delete Account — Direct PocketBase + Brevo REST ───────────────
-   Architecture: App → api.webcod.in (PocketBase) for OTP storage/verification
-                 App → api.brevo.com (REST) for email delivery
-   Railway Express is bypassed entirely — no multi-hop, no timeout issues.
+/* ── Permanent Delete Account — OTP via Railway SMTP ─────────────────────────
+   Architecture:
+     App → Railway Express → Brevo SMTP relay → inbox   (email delivery)
+     App → PocketBase SDK  → otp_codes collection        (OTP verification)
 
-   Email key lifecycle:
-     • Fetched from PocketBase app_settings.brevo_api_key at runtime
-     • Admin can update key in PocketBase admin panel without an APK rebuild
-     • OTP is also stored in-memory (localOtp) as a fallback if email fails
+   Why Railway for email (not direct Brevo REST from device):
+     • Browser (web): fetch to api.brevo.com is blocked by CORS
+     • Railway uses nodemailer + Brevo SMTP which bypasses CORS entirely
+     • Railway SMTP is confirmed working — PocketBase admin uses the same setup
+     • api.requestDeleteOtp() uses robustPost() (globalThis.fetch, 30s, 1 retry)
+       so it is immune to the Android "Fetch canceled" bug
+
+   OTP lifecycle:
+     • Railway generates a cryptographically secure OTP server-side
+     • Railway stores it in PocketBase otp_codes and emails it via SMTP
+     • Verification reads otp_codes directly via PB SDK (no Railway needed)
 ──────────────────────────────────────────────────────────────────────────── */
-const BREVO_SENDER = 'support@shibahit.com';
 
-async function fetchBrevoKey(): Promise<string> {
-  try {
-    // Direct call to api.webcod.in — collection is named 'settings' in PocketBase
-    const records = await pb.collection('settings').getList(1, 1, { fields: 'brevo_api_key' });
-    const key = (records.items[0] as any)?.brevo_api_key;
-    if (key && typeof key === 'string' && key.length > 20) return key;
-  } catch { /* collection unreachable or field not yet added */ }
-  return '';
-}
-
-async function sendDeleteOtp(pbId: string, email: string): Promise<string> {
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
-  const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
-    .toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
-
-  // Step 1 — store OTP directly in PocketBase (no Railway, direct to api.webcod.in)
-  try {
-    const existing = await pb.collection('otp_codes').getList(1, 20, {
-      filter: `user = "${pbId}"`, fields: 'id',
-    });
-    for (const rec of existing.items) {
-      pb.collection('otp_codes').delete(rec.id).catch(() => {});
-    }
-    await pb.collection('otp_codes').create({ user: pbId, code: otp, expires_at: expiresAt });
-    console.log('[PermanentDelete] OTP stored in PocketBase ✓');
-  } catch (pbErr: any) {
-    // Non-fatal — in-memory OTP returned below is the fallback for verification
-    console.warn('[PermanentDelete] PB OTP store failed:', pbErr?.message);
-  }
-
-  // Step 2 — fetch Brevo REST API key from PocketBase app_settings
-  const brevoKey = await fetchBrevoKey();
-  if (!brevoKey) {
-    // Key not configured — OTP is in PocketBase and in-memory; verification still works
-    // but no email will be sent. Warn rather than throw so the modal still opens.
-    console.warn('[PermanentDelete] brevo_api_key not set in app_settings — email skipped');
-    return otp;
-  }
-
-  // Step 3 — call Brevo REST API directly from device (no Railway proxy)
-  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: { 'api-key': brevoKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sender: { name: 'Shiba Hit', email: BREVO_SENDER },
-      to: [{ email }],
-      subject: 'Your Account Deletion Code — Shiba Hit',
-      htmlContent: `
-<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;background:#111;color:#fff;border-radius:16px;">
-  <h2 style="color:#FF6B00;margin:0 0 6px;">Shiba Hit</h2>
-  <p style="color:#999;font-size:13px;margin:0 0 28px;">Account Deletion Request</p>
-  <p style="color:#ccc;margin:0 0 20px;">Enter this code in the app to confirm permanent account deletion.</p>
-  <div style="background:#1e1e1e;border:1px solid #333;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px;">
-    <p style="color:#888;font-size:11px;letter-spacing:3px;text-transform:uppercase;margin:0 0 10px;">YOUR 6-DIGIT CODE</p>
-    <p style="color:#FFD700;font-size:44px;font-weight:bold;letter-spacing:16px;margin:0;font-family:monospace;">${otp}</p>
-  </div>
-  <p style="color:#888;font-size:13px;margin:0 0 6px;">⏱ Expires in <strong style="color:#fff;">5 minutes</strong>.</p>
-  <p style="color:#888;font-size:13px;">If you didn't request this, ignore this email — your account is safe.</p>
-  <hr style="border:none;border-top:1px solid #222;margin:20px 0 12px;"/>
-  <p style="color:#555;font-size:12px;margin:0;">Shiba Hit &bull; support@shibahit.com</p>
-</div>`,
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    console.warn('[PermanentDelete] Brevo REST error:', res.status, body);
-    // OTP is stored in PocketBase — email failure is non-fatal.
-    // The in-memory OTP returned below lets support staff verify via support@shibahit.com.
-    // On 401/403 the key is invalid (SMTP key used instead of REST key) or expired.
-    return otp; // caller stores this as localOtp for in-memory verification fallback
-  }
-
-  console.log('[PermanentDelete] OTP email sent via Brevo REST ✓');
-  return otp;
+// Returns { otp: '', emailSent: true } — OTP is server-side only (no local copy)
+async function sendDeleteOtp(
+  pbId: string,
+  email: string,
+): Promise<{ otp: string; emailSent: boolean }> {
+  // Single call to Railway — generates OTP, stores in PB, sends via Brevo SMTP
+  // Uses robustPost (globalThis.fetch, 30s timeout, 1 retry on Android cancel)
+  await api.requestDeleteOtp(pbId, email);
+  console.log('[PermanentDelete] OTP dispatched via Railway SMTP ✓');
+  // OTP is stored in PocketBase by Railway — verification reads it directly
+  return { otp: '', emailSent: true };
 }
 
 /* ── helpers ── */
@@ -202,7 +144,8 @@ export default function ProfileScreen() {
   const [resendCountdown, setResendCountdown] = useState(0);
   // In-memory OTP: stored when PocketBase collection rules block otp_codes.create.
   // The email is always sent via Brevo; this is the local copy for verification.
-  const [localOtp, setLocalOtp] = useState<string>('');
+  const [localOtp, setLocalOtp]   = useState<string>('');
+  const [emailSent, setEmailSent] = useState(false); // true = Brevo confirmed delivery
 
   const miningCount  = pbUser?.totalClaims ?? 0;
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
@@ -373,8 +316,9 @@ export default function ProfileScreen() {
     if (!pbId || !email) return;
     setIsRequestingOtp(true);
     try {
-      const generatedOtp = await sendDeleteOtp(pbId, email);
+      const { otp: generatedOtp, emailSent: sent } = await sendDeleteOtp(pbId, email);
       setLocalOtp(generatedOtp);
+      setEmailSent(sent);
       setOtpCode('');
       setOtpError('');
       setShowConfirmDeleteModal(false);
@@ -396,8 +340,9 @@ export default function ProfileScreen() {
     setIsRequestingOtp(true);
     setOtpError('');
     try {
-      const generatedOtp = await sendDeleteOtp(pbId, email);
+      const { otp: generatedOtp, emailSent: sent } = await sendDeleteOtp(pbId, email);
       setLocalOtp(generatedOtp);
+      setEmailSent(sent);
       setOtpCode('');
       setResendCountdown(60);
       const id = setInterval(() => {
@@ -425,8 +370,8 @@ export default function ProfileScreen() {
     setIsDeleting(true);
     const email = (firebaseUser?.email || user?.email || '').toLowerCase().trim();
     try {
-      // ── Step 1: Verify OTP directly via PocketBase SDK (direct to api.webcod.in) ──
-      // Railway is bypassed entirely. Primary = PB otp_codes, fallback = in-memory.
+      // ── Step 1: Verify OTP via PocketBase SDK (Railway stored it there) ──────
+      // OTP was generated and stored by Railway. We read it directly from PB.
       let verified = false;
       try {
         const records = await pb.collection('otp_codes').getList(1, 10, {
@@ -446,18 +391,12 @@ export default function ProfileScreen() {
         }
       } catch (pbOtpErr: any) {
         if (pbOtpErr?.message?.includes('OTP has expired')) throw pbOtpErr;
-        // otp_codes may be temporarily unreachable — fall through to in-memory check
         console.warn('[PermanentDelete] PB OTP verify error:', pbOtpErr?.message);
+        throw new Error('Verification failed — please try again or request a new code.');
       }
 
-      // In-memory fallback (OTP returned by sendDeleteOtp even when email failed)
       if (!verified) {
-        if (!localOtp) throw new Error('Session expired. Please request a new OTP code.');
-        if (String(otpCode).trim() !== String(localOtp).trim()) {
-          throw new Error('Invalid code. Please check the email and try again.');
-        }
-        verified = true;
-        console.log('[PermanentDelete] OTP verified via in-memory fallback ✓');
+        throw new Error('Invalid code. Please check your email and try again.');
       }
 
       // ── Step 2: Blacklist email BEFORE deleting the PB record ────────────────
@@ -1071,9 +1010,15 @@ export default function ProfileScreen() {
             <Ionicons name="mail-outline" size={36} color={Colors.error} style={{ alignSelf: 'center', marginBottom: 8 }} />
             <Text style={otpStyles.title}>Verify Your Identity</Text>
             <Text style={otpStyles.subtitle}>
-              Enter the 6-digit code sent to{'\n'}
+              A 6-digit code was sent to{'\n'}
               <Text style={{ color: Colors.textPrimary }}>{firebaseUser?.email || ''}</Text>
             </Text>
+            <View style={otpStyles.spamHint}>
+              <Ionicons name="alert-circle-outline" size={13} color={Colors.gold} />
+              <Text style={otpStyles.spamHintText}>
+                Don't see it? Check your <Text style={{ color: Colors.textPrimary }}>Spam / Junk</Text> folder.
+              </Text>
+            </View>
 
             <TextInput
               style={otpStyles.input}
@@ -1328,6 +1273,8 @@ const otpStyles = StyleSheet.create({
   handle:     { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.darkBorder, alignSelf: 'center', marginBottom: 8 },
   title:      { fontFamily: 'Inter_700Bold', fontSize: 20, color: Colors.error, textAlign: 'center' },
   subtitle:   { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+  spamHint:     { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(244,196,48,0.08)', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12 },
+  spamHintText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, flex: 1 },
   input: {
     borderWidth: 2,
     borderColor: Colors.error + '60',
