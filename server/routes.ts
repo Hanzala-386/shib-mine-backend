@@ -813,7 +813,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await sendOtpEmail(email, otp);
       } catch (smtpErr: any) {
         console.error("[SMTP] Failed to deliver OTP email:", smtpErr.message, smtpErr.stack);
-        return res.status(500).json({ error: "Failed to send email. Please try again later." });
+        // Include smtp_error in response so Railway logs are visible via curl (temporary debug)
+        return res.status(500).json({
+          error: "Failed to send email. Please try again later.",
+          smtp_error: smtpErr?.message || String(smtpErr),
+          smtp_code: smtpErr?.responseCode || smtpErr?.code || null,
+        });
       }
 
       console.log(`[OTP] Sent deletion OTP to ${email} for user ${pbId}`);
@@ -1616,6 +1621,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // drift so that the countdown timer always tracks server time, not phone time.
   app.get("/api/app/server-time", (_req: Request, res: Response) => {
     res.json({ serverTime: Date.now() });
+  });
+
+  // ── Temporary SMTP debug — shows Railway env var state (key masked) ────────
+  app.get("/api/debug/smtp-config", (_req: Request, res: Response) => {
+    const rawUser = process.env.SMTP_USER || '(not set)';
+    const rawPass = process.env.SMTP_KEY  || '(not set)';
+    res.json({
+      smtp_user:      rawUser,
+      smtp_key_set:   rawPass !== '(not set)',
+      smtp_key_tail:  rawPass !== '(not set)' ? rawPass.slice(-8) : '(not set)',
+      smtp_user_looks_like_key: rawUser.startsWith('xsmtpsib-'),
+      node_env:       process.env.NODE_ENV || '(not set)',
+    });
   });
 
   app.post("/api/app/mine/start", async (req: Request, res: Response) => {
