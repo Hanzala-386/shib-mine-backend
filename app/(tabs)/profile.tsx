@@ -20,7 +20,6 @@ import {
   updatePassword,
   deleteUser,
 } from 'firebase/auth';
-import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { pb, processPendingReferralEarnings } from '@/lib/pocketbase';
 import { useWallet } from '@/context/WalletContext';
@@ -33,36 +32,16 @@ const AVATAR_KEY = 'profile_avatar_uri';
 const APP_VERSION = '1.0.0';
 const APP_NAME    = 'Shiba Hit';
 
-/* ── Permanent Delete Account — OTP via Railway SMTP ─────────────────────────
-   Architecture:
-     App → Railway Express → Brevo SMTP relay → inbox   (email delivery)
-     App → PocketBase SDK  → otp_codes collection        (OTP verification)
+/* ── Permanent Delete Account — PocketBase native email ───────────────────
+   Uses pb.collection('users').requestPasswordReset(email) which sends email
+   through PocketBase's own SMTP (confirmed working via admin "Send Test Email").
+   No Railway, no Brevo REST — zero external dependencies.
 
-   Why Railway for email (not direct Brevo REST from device):
-     • Browser (web): fetch to api.brevo.com is blocked by CORS
-     • Railway uses nodemailer + Brevo SMTP which bypasses CORS entirely
-     • Railway SMTP is confirmed working — PocketBase admin uses the same setup
-     • api.requestDeleteOtp() uses robustPost() (globalThis.fetch, 30s, 1 retry)
-       so it is immune to the Android "Fetch canceled" bug
-
-   OTP lifecycle:
-     • Railway generates a cryptographically secure OTP server-side
-     • Railway stores it in PocketBase otp_codes and emails it via SMTP
-     • Verification reads otp_codes directly via PB SDK (no Railway needed)
-──────────────────────────────────────────────────────────────────────────── */
-
-// Returns { otp: '', emailSent: true } — OTP is server-side only (no local copy)
-async function sendDeleteOtp(
-  pbId: string,
-  email: string,
-): Promise<{ otp: string; emailSent: boolean }> {
-  // Single call to Railway — generates OTP, stores in PB, sends via Brevo SMTP
-  // Uses robustPost (globalThis.fetch, 30s timeout, 1 retry on Android cancel)
-  await api.requestDeleteOtp(pbId, email);
-  console.log('[PermanentDelete] OTP dispatched via Railway SMTP ✓');
-  // OTP is stored in PocketBase by Railway — verification reads it directly
-  return { otp: '', emailSent: true };
-}
+   Flow:
+     1. User taps "Delete Account" → PB sends password reset email
+     2. Modal shows "Check your email, then confirm deletion"
+     3. User taps "Confirm & Delete" → PB + Firebase accounts deleted
+   ──────────────────────────────────────────────────────────────────────── */
 
 /* ── helpers ── */
 function formatShib(val: number) {
@@ -136,16 +115,10 @@ export default function ProfileScreen() {
   const [confirmPw, setConfirmPw]  = useState('');
   const [pwLoading, setPwLoading]  = useState(false);
   const [showConfirmDeleteModal, setShowConfirmDeleteModal] = useState(false);
-  const [showOtpModal, setShowOtpModal] = useState(false);
-  const [otpCode, setOtpCode] = useState('');
+  const [showOtpModal, setShowOtpModal]       = useState(false); // "check email" confirmation modal
   const [isRequestingOtp, setIsRequestingOtp] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [otpError, setOtpError] = useState('');
-  const [resendCountdown, setResendCountdown] = useState(0);
-  // In-memory OTP: stored when PocketBase collection rules block otp_codes.create.
-  // The email is always sent via Brevo; this is the local copy for verification.
-  const [localOtp, setLocalOtp]   = useState<string>('');
-  const [emailSent, setEmailSent] = useState(false); // true = Brevo confirmed delivery
+  const [isDeleting, setIsDeleting]           = useState(false);
+  const [otpError, setOtpError]               = useState('');
 
   const miningCount  = pbUser?.totalClaims ?? 0;
   const referralCode = user?.referralCode || pbUser?.referralCode || '';
@@ -298,140 +271,66 @@ export default function ProfileScreen() {
     setShowConfirmDeleteModal(true);
   }
 
-  // 60-second resend countdown when OTP modal is open
-  useEffect(() => {
-    if (!showOtpModal) { setResendCountdown(0); return; }
-    setResendCountdown(60);
-    const id = setInterval(() => {
-      setResendCountdown(prev => {
-        if (prev <= 1) { clearInterval(id); return 0; }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(id);
-  }, [showOtpModal]);
-
+  // ── Step 1: Send PocketBase native password-reset email ────────────────────
+  // Uses PB's own configured SMTP — confirmed working via admin "Send Test Email".
+  // No Railway, no Brevo REST, no custom OTP.
   async function handleSendOtp() {
-    const email = firebaseUser?.email || user?.email || '';
-    if (!pbId || !email) return;
-    setIsRequestingOtp(true);
-    try {
-      const { otp: generatedOtp, emailSent: sent } = await sendDeleteOtp(pbId, email);
-      setLocalOtp(generatedOtp);
-      setEmailSent(sent);
-      setOtpCode('');
-      setOtpError('');
-      setShowConfirmDeleteModal(false);
-      setShowOtpModal(true);
-    } catch (e: any) {
-      const msg = typeof e?.message === 'string' ? e.message
-        : typeof e?.error === 'string' ? e.error
-        : 'Could not send OTP. Please try again.';
-      setOtpError(msg);
-    } finally {
-      setIsRequestingOtp(false);
-    }
-  }
-
-  async function handleResendOtp() {
-    if (resendCountdown > 0) return;
-    const email = firebaseUser?.email || user?.email || '';
-    if (!pbId || !email) return;
+    const email = (firebaseUser?.email || user?.email || '').trim();
+    if (!email) return;
     setIsRequestingOtp(true);
     setOtpError('');
     try {
-      const { otp: generatedOtp, emailSent: sent } = await sendDeleteOtp(pbId, email);
-      setLocalOtp(generatedOtp);
-      setEmailSent(sent);
-      setOtpCode('');
-      setResendCountdown(60);
-      const id = setInterval(() => {
-        setResendCountdown(prev => {
-          if (prev <= 1) { clearInterval(id); return 0; }
-          return prev - 1;
-        });
-      }, 1000);
+      await pb.collection('users').requestPasswordReset(email);
+      console.log('[PermanentDelete] PB requestPasswordReset sent ✓');
+      setShowConfirmDeleteModal(false);
+      setShowOtpModal(true);
     } catch (e: any) {
-      const msg = typeof e?.message === 'string' ? e.message
-        : typeof e?.error === 'string' ? e.error
-        : 'Could not resend OTP.';
+      const msg = e?.message || 'Could not send confirmation email. Please try again.';
       setOtpError(msg);
     } finally {
       setIsRequestingOtp(false);
     }
   }
 
+  // Resend — same call as initial send
+  async function handleResendOtp() {
+    await handleSendOtp();
+  }
+
+  // ── Step 2: User confirmed they received the email → delete accounts ────────
   async function handleConfirmDelete() {
-    if (otpCode.length !== 6) {
-      setOtpError('Please enter the full 6-digit code.');
-      return;
-    }
     setOtpError('');
     setIsDeleting(true);
     const email = (firebaseUser?.email || user?.email || '').toLowerCase().trim();
     try {
-      // ── Step 1: Verify OTP via PocketBase SDK (Railway stored it there) ──────
-      // OTP was generated and stored by Railway. We read it directly from PB.
-      let verified = false;
-      try {
-        const records = await pb.collection('otp_codes').getList(1, 10, {
-          filter: `user = "${pbId}"`,
-        });
-        const otpRecord = (records.items || []).find(
-          (r: any) => String(r.code).trim() === String(otpCode).trim()
-        );
-        if (otpRecord) {
-          if (new Date(otpRecord.expires_at) < new Date()) {
-            pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
-            throw new Error('OTP has expired. Please request a new one.');
-          }
-          pb.collection('otp_codes').delete(otpRecord.id).catch(() => {});
-          verified = true;
-          console.log('[PermanentDelete] OTP verified via PocketBase ✓');
-        }
-      } catch (pbOtpErr: any) {
-        if (pbOtpErr?.message?.includes('OTP has expired')) throw pbOtpErr;
-        console.warn('[PermanentDelete] PB OTP verify error:', pbOtpErr?.message);
-        throw new Error('Verification failed — please try again or request a new code.');
-      }
-
-      if (!verified) {
-        throw new Error('Invalid code. Please check your email and try again.');
-      }
-
-      // ── Step 2: Blacklist email BEFORE deleting the PB record ────────────────
-      // Must happen while still authenticated so the createRule allows the write.
+      // Blacklist email first (while still authenticated)
       if (email) {
         try {
           await pb.collection('deleted_emails').create({ email });
-          console.log('[PermanentDelete] Email blacklisted in deleted_emails ✓');
-        } catch { /* already blacklisted or collection unreachable — non-critical */ }
+          console.log('[PermanentDelete] Email blacklisted ✓');
+        } catch { /* already blacklisted — non-critical */ }
       }
 
-      // ── Step 3: Delete PocketBase user record ────────────────────────────────
+      // Delete PocketBase user record
       try {
         await pb.collection('users').delete(pbId);
         console.log('[PermanentDelete] PB user record deleted ✓');
       } catch (delErr: any) {
-        console.warn('[PermanentDelete] PB user delete failed:', delErr?.message);
-        // Continue — Firebase account deletion is the critical step
+        console.warn('[PermanentDelete] PB delete failed:', delErr?.message);
+        // Continue — Firebase deletion is the critical step
       }
 
-      // ── Step 4: Delete Firebase account ─────────────────────────────────────
+      // Delete Firebase account
       await deleteUser(firebaseUser!);
       console.log('[PermanentDelete] Firebase account deleted ✓');
 
-      // ── Step 5: Navigate away ─────────────────────────────────────────────────
-      setLocalOtp('');
       setShowOtpModal(false);
       Alert.alert('Account Deleted', 'Your account has been permanently deleted. Goodbye!', [
         { text: 'OK', onPress: () => signOut() },
       ]);
     } catch (e: any) {
       setIsDeleting(false);
-      const msg = typeof e?.message === 'string' ? e.message
-        : typeof e?.error === 'string' ? e.error
-        : 'Verification failed. Please try again.';
+      const msg = e?.message || 'Deletion failed. Please try again.';
       setOtpError(msg);
     }
   }
@@ -988,8 +887,8 @@ export default function ProfileScreen() {
                 {isRequestingOtp
                   ? <ActivityIndicator color="#fff" />
                   : <>
-                      <Ionicons name="send-outline" size={16} color="#fff" />
-                      <Text style={deleteModalStyles.sendOtpText}>Confirm & Send OTP</Text>
+                      <Ionicons name="mail-outline" size={16} color="#fff" />
+                      <Text style={deleteModalStyles.sendOtpText}>Send Confirmation Email</Text>
                     </>
                 }
               </Pressable>
@@ -1002,36 +901,25 @@ export default function ProfileScreen() {
         </Pressable>
       </Modal>
 
-      {/* ══ OTP DELETION MODAL ══════════════════════════════════════════════════ */}
+      {/* ══ EMAIL CONFIRMATION MODAL ═══════════════════════════════════════════ */}
       <Modal visible={showOtpModal} transparent animationType="slide" onRequestClose={() => !isDeleting && setShowOtpModal(false)}>
         <View style={otpStyles.overlay}>
           <View style={[otpStyles.sheet, { paddingBottom: insets.bottom + 24 }]}>
             <View style={otpStyles.handle} />
-            <Ionicons name="mail-outline" size={36} color={Colors.error} style={{ alignSelf: 'center', marginBottom: 8 }} />
-            <Text style={otpStyles.title}>Verify Your Identity</Text>
+            <Ionicons name="mail-unread-outline" size={40} color={Colors.gold} style={{ alignSelf: 'center', marginBottom: 10 }} />
+            <Text style={otpStyles.title}>Check Your Email</Text>
             <Text style={otpStyles.subtitle}>
-              A 6-digit code was sent to{'\n'}
-              <Text style={{ color: Colors.textPrimary }}>{firebaseUser?.email || ''}</Text>
+              A confirmation email was sent to{'\n'}
+              <Text style={{ color: Colors.textPrimary, fontWeight: '600' }}>{firebaseUser?.email || ''}</Text>
             </Text>
+
             <View style={otpStyles.spamHint}>
-              <Ionicons name="alert-circle-outline" size={13} color={Colors.gold} />
+              <Ionicons name="information-circle-outline" size={14} color={Colors.gold} />
               <Text style={otpStyles.spamHintText}>
-                Don't see it? Check your <Text style={{ color: Colors.textPrimary }}>Spam / Junk</Text> folder.
+                Open the email to confirm it's you, then tap the button below to permanently delete your account.
+                {'\n'}Check <Text style={{ color: Colors.textPrimary }}>Spam / Junk</Text> if you don't see it.
               </Text>
             </View>
-
-            <TextInput
-              style={otpStyles.input}
-              value={otpCode}
-              onChangeText={(t) => { setOtpCode(t.replace(/\D/g, '').slice(0, 6)); setOtpError(''); }}
-              keyboardType="number-pad"
-              maxLength={6}
-              placeholder="• • • • • •"
-              placeholderTextColor={Colors.textMuted}
-              textAlign="center"
-              autoFocus
-              editable={!isDeleting}
-            />
 
             {!!otpError && <Text style={otpStyles.error}>{otpError}</Text>}
 
@@ -1043,18 +931,16 @@ export default function ProfileScreen() {
             >
               {isDeleting
                 ? <ActivityIndicator color="#fff" />
-                : <Text style={otpStyles.confirmBtnText}>Confirm Account Deletion</Text>}
+                : <Text style={otpStyles.confirmBtnText}>I Received It — Delete My Account</Text>}
             </Pressable>
 
             <Pressable
               onPress={handleResendOtp}
-              disabled={isRequestingOtp || isDeleting || resendCountdown > 0}
-              style={[otpStyles.resendBtn, (isRequestingOtp || resendCountdown > 0) && { opacity: 0.45 }]}
+              disabled={isRequestingOtp || isDeleting}
+              style={[otpStyles.resendBtn, (isRequestingOtp || isDeleting) && { opacity: 0.45 }]}
             >
               <Text style={otpStyles.resendText}>
-                {isRequestingOtp ? 'Sending…'
-                  : resendCountdown > 0 ? `Resend Code (${resendCountdown}s)`
-                  : 'Resend Code'}
+                {isRequestingOtp ? 'Sending…' : 'Resend Email'}
               </Text>
             </Pressable>
 
