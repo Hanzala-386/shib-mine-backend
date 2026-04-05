@@ -1,0 +1,37 @@
+REVISED WITHDRAWAL LOGIC & RAILWAY DEPLOYMENT INSTRUCTION
+IMPORTANT: Do not modify any existing withdrawal, balance, or API logic other than the specific validations mentioned below. Do not create new files; only update the existing withdrawal handler and UI components.
+
+1. SINGLE PENDING WITHDRAWAL LOCK
+Requirement: A user must not be able to initiate a new withdrawal request if they already have one withdrawal in "Pending" status.
+
+Logic: Check the user's withdrawal history. If any record exists with a status === 'pending', disable the "Withdraw SHIB" button or intercept the submission.
+
+User Feedback: If a user attempts to withdraw while a request is pending, show an error message: "Aapka pichla withdrawal abhi pending hai. Please uske complete hone ka intezar karein."
+
+2. EMAIL FORMAT VALIDATION (FOR BINANCE/DIRECT EMAIL)
+Requirement: Prevent users from submitting random text in the email field.
+
+Logic: Implement a standard email format check (Regex) before allowing submission.
+
+Criteria: The input must contain at least one @ symbol and a valid domain extension (e.g., .com, .in, .net). It does not need to be restricted to Gmail/Hotmail, but it must be a valid email structure.
+
+User Feedback: Show "Invalid Email Format" if the criteria are not met.
+
+3. BEP-20 WALLET ADDRESS LENGTH VALIDATION
+Requirement: Ensure the wallet address is not too short to prevent user errors.
+
+Logic: The input for the BEP-20 Wallet Address must have a minimum length of 30 characters.
+
+User Feedback: If the input is less than 30 characters, show an error message: "Aapka wallet address galat hai (Minimum 30 characters required)."
+
+4. UI ASSET UPDATE (PREVIOUS TASK RE-CONFIRMATION)
+Ensure all Pickaxe and Bitcoin icons have been replaced by the locally stored Shiba Coin asset as per the previous discussion (including animated and static versions).
+
+5. RAILWAY DEPLOYMENT (SHELL INSTRUCTIONS)
+After implementing the UI changes (Shiba Coin) and the new Withdrawal validations, provide the exact commands to be run in the Railway Shell/Terminal to:
+
+Sync the frontend assets.
+
+Update the backend logic on the live server.
+
+Ensure the database and build are correctly updated to reflect these changes.

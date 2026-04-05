@@ -64,6 +64,20 @@ export default function WalletScreen() {
   const addressLabel = method === 'BEP-20' ? 'BEP-20 Wallet Address' : 'Binance Email';
   const addressPlaceholder = method === 'BEP-20' ? 'Enter your BEP-20 address (0x...)' : 'Enter your Binance email';
 
+  /* ── Pending withdrawal lock ── */
+  const hasPendingWithdrawal = withdrawals.some(w => w.status === 'pending');
+
+  /* ── Address / Email validation ── */
+  const trimmedAddr = address.trim();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+  const isValidEmail   = method === 'BEP-20' || emailRegex.test(trimmedAddr);
+  const isValidAddress = method === 'Binance Email' || trimmedAddr.length >= 30;
+  const addressError =
+    trimmedAddr.length === 0 ? ''
+    : method === 'Binance Email' && !isValidEmail ? 'Invalid Email Format'
+    : method === 'BEP-20' && !isValidAddress ? 'Aapka wallet address galat hai (Minimum 30 characters required).'
+    : '';
+
   /* ── Fee calculations ── */
   const grossAmt = parseFloat(amount) || 0;
   const fee      = method === 'BEP-20' ? BEP20_FEE : 0;
@@ -72,9 +86,13 @@ export default function WalletScreen() {
   const hasEnoughBalance    = grossAmt > 0 && grossAmt <= shibBalance;
   const netMeetsMinimum     = netAmt >= minWithdrawalAmount;
   const showInsufficientMsg = grossAmt > 0 && fee > 0 && !netMeetsMinimum;
-  const canSubmit           = grossAmt > 0 && hasEnoughBalance && netMeetsMinimum && !!address.trim() && !submitting;
+  const canSubmit           = !hasPendingWithdrawal && grossAmt > 0 && hasEnoughBalance && netMeetsMinimum && !!trimmedAddr && isValidEmail && isValidAddress && !submitting;
 
   async function handleWithdraw() {
+    if (hasPendingWithdrawal) {
+      Alert.alert('Withdrawal Pending', 'Aapka pichla withdrawal abhi pending hai. Please uske complete hone ka intezar karein.');
+      return;
+    }
     if (!grossAmt || isNaN(grossAmt) || grossAmt <= 0) {
       Alert.alert('Invalid Amount', 'Please enter a valid amount.');
       return;
@@ -90,8 +108,16 @@ export default function WalletScreen() {
       );
       return;
     }
-    if (!address.trim()) {
+    if (!trimmedAddr) {
       Alert.alert('Missing Address', 'Please enter your wallet address or email.');
+      return;
+    }
+    if (method === 'Binance Email' && !isValidEmail) {
+      Alert.alert('Invalid Email Format', 'Please enter a valid email address (e.g. user@example.com).');
+      return;
+    }
+    if (method === 'BEP-20' && !isValidAddress) {
+      Alert.alert('Invalid Wallet Address', 'Aapka wallet address galat hai (Minimum 30 characters required).');
       return;
     }
     setSubmitting(true);
@@ -144,9 +170,21 @@ export default function WalletScreen() {
             </View>
             <Text style={styles.mainBalance}>{formatShib(shibBalance)}</Text>
             <Text style={styles.mainBalanceFull}>{shibBalance.toLocaleString()} SHIB</Text>
+            {hasPendingWithdrawal && (
+              <View style={styles.pendingBanner}>
+                <Ionicons name="time-outline" size={13} color={Colors.gold} />
+                <Text style={styles.pendingBannerText}>1 withdrawal pending review</Text>
+              </View>
+            )}
             <Pressable
               style={({ pressed }) => [styles.withdrawBtn, { opacity: pressed ? 0.85 : 1 }]}
-              onPress={() => setShowWithdraw(true)}
+              onPress={() => {
+                if (hasPendingWithdrawal) {
+                  Alert.alert('Withdrawal Pending', 'Aapka pichla withdrawal abhi pending hai. Please uske complete hone ka intezar karein.');
+                } else {
+                  setShowWithdraw(true);
+                }
+              }}
             >
               <LinearGradient colors={['rgba(0,0,0,0.4)', 'rgba(0,0,0,0.2)']} style={styles.withdrawBtnGradient}>
                 <MaterialCommunityIcons name="bank-transfer" size={16} color={Colors.gold} />
@@ -247,7 +285,7 @@ export default function WalletScreen() {
             {/* ── Address / email input ── */}
             <Text style={styles.fieldLabel}>{addressLabel}</Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, addressError ? styles.inputError : null]}
               value={address}
               onChangeText={setAddress}
               placeholder={addressPlaceholder}
@@ -255,6 +293,12 @@ export default function WalletScreen() {
               autoCapitalize="none"
               keyboardType={method === 'Binance Email' ? 'email-address' : 'default'}
             />
+            {addressError ? (
+              <View style={styles.fieldError}>
+                <Ionicons name="alert-circle-outline" size={13} color="#ff5252" />
+                <Text style={styles.fieldErrorText}>{addressError}</Text>
+              </View>
+            ) : null}
 
             {/* ── Amount input ── */}
             <Text style={styles.fieldLabel}>Gross Amount (SHIB)</Text>
@@ -429,4 +473,16 @@ const styles = StyleSheet.create({
 
   cancelBtn:  { alignItems: 'center', paddingVertical: 8 },
   cancelText: { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textMuted },
+
+  pendingBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(244,196,48,0.12)', borderRadius: 10,
+    paddingVertical: 6, paddingHorizontal: 12, marginTop: 4,
+    borderWidth: 1, borderColor: 'rgba(244,196,48,0.3)',
+  },
+  pendingBannerText: { fontFamily: 'Inter_500Medium', fontSize: 12, color: Colors.gold },
+
+  inputError: { borderColor: '#ff5252' },
+  fieldError: { flexDirection: 'row', alignItems: 'flex-start', gap: 5, marginTop: -4 },
+  fieldErrorText: { flex: 1, fontFamily: 'Inter_400Regular', fontSize: 12, color: '#ff5252', lineHeight: 16 },
 });
