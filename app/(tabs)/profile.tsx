@@ -22,6 +22,7 @@ import {
   sendPasswordResetEmail,
 } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
+import SpinningCoin from '@/components/SpinningCoin';
 import { useAuth } from '@/context/AuthContext';
 import { pb, processPendingReferralEarnings } from '@/lib/pocketbase';
 import { useWallet } from '@/context/WalletContext';
@@ -418,7 +419,7 @@ export default function ProfileScreen() {
         {/* ── Stats grid: Sessions / Referrals / SHIB ── */}
         <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.statsGrid}>
           <View style={styles.statCell}>
-            <MaterialCommunityIcons name="pickaxe" size={18} color={Colors.gold} />
+            <SpinningCoin size={18} spinning={false} />
             <Text style={styles.statNum}>{miningCount}</Text>
             <Text style={styles.statLbl}>Sessions</Text>
           </View>
@@ -428,7 +429,7 @@ export default function ProfileScreen() {
             <Text style={styles.statLbl}>Referrals</Text>
           </View>
           <View style={styles.statCell}>
-            <MaterialCommunityIcons name="bitcoin" size={18} color={Colors.gold} />
+            <SpinningCoin size={18} spinning={false} />
             <Text style={styles.statNum}>{formatShib(shibBalance)}</Text>
             <Text style={styles.statLbl}>SHIB</Text>
           </View>
@@ -579,7 +580,7 @@ export default function ProfileScreen() {
               <Text style={styles.mpEmail}>{user?.email ?? '—'}</Text>
               <View style={styles.mpEarningsRow}>
                 <View style={styles.mpEarningPill}>
-                  <MaterialCommunityIcons name="bitcoin" size={13} color={Colors.gold} />
+                  <SpinningCoin size={13} spinning={false} />
                   <Text style={styles.mpEarningText}>{formatShib(shibBalance)} SHIB</Text>
                 </View>
                 <View style={styles.mpEarningPill}>
@@ -780,7 +781,7 @@ export default function ProfileScreen() {
               colors={['rgba(244,196,48,0.15)', 'rgba(255,107,0,0.08)']}
               style={styles.versionGradient}
             >
-              <MaterialCommunityIcons name="bitcoin" size={44} color={Colors.gold} />
+              <SpinningCoin size={44} spinning={false} />
               <Text style={styles.versionAppName}>{APP_NAME}</Text>
               <Text style={styles.versionNum}>Version {APP_VERSION}</Text>
               <View style={styles.versionDivider} />

@@ -11,6 +11,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useAuth } from '@/context/AuthContext';
+import SpinningCoin from '@/components/SpinningCoin';
 import { api } from '@/lib/api';
 import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
@@ -327,7 +328,7 @@ export default function AuthScreen() {
         >
           <View style={styles.logoArea}>
             <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.logoCircle}>
-              <MaterialCommunityIcons name="pickaxe" size={36} color="#000" />
+              <SpinningCoin size={44} spinning speed="normal" />
             </LinearGradient>
             <Text style={styles.appName}>Shiba Hit</Text>
             <Text style={styles.tagline}>Mine. Earn. Grow.</Text>

@@ -10,6 +10,7 @@ import { useAuth } from '@/context/AuthContext';
 import { getApiUrl } from '@/lib/query-client';
 import { POCKETBASE_URL, pb } from '@/lib/pocketbase';
 import { BANNER_HEIGHT } from '@/components/StickyBannerAd';
+import SpinningCoin from '@/components/SpinningCoin';
 import Colors from '@/constants/colors';
 
 /* ── types ── */
@@ -360,7 +361,7 @@ export default function LeaderboardScreen() {
                     <Text style={styles.myRankName}>{myRank.displayName}</Text>
                   </View>
                   <View style={styles.myRankRight}>
-                    <MaterialCommunityIcons name="bitcoin" size={18} color={Colors.gold} />
+                    <SpinningCoin size={18} spinning={false} />
                     <Text style={styles.myRankBalance}>{formatShib(myRank.shibBalance)}</Text>
                     <Text style={styles.myRankShibLabel}>SHIB</Text>
                   </View>

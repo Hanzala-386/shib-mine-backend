@@ -10,6 +10,7 @@ import { useWallet, type WithdrawalRecord } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import { useAds } from '@/context/AdContext';
 import Colors from '@/constants/colors';
+import SpinningCoin from '@/components/SpinningCoin';
 
 const BEP20_FEE = 3680; // fixed SHIB fee for BEP-20 network withdrawals
 
@@ -138,7 +139,7 @@ export default function WalletScreen() {
             style={styles.mainCardGradient}
           >
             <View style={styles.mainCardHeader}>
-              <MaterialCommunityIcons name="bitcoin" size={28} color={Colors.gold} />
+              <SpinningCoin size={28} spinning speed="slow" />
               <Text style={styles.mainCardLabel}>SHIB Balance</Text>
             </View>
             <Text style={styles.mainBalance}>{formatShib(shibBalance)}</Text>

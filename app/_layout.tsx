@@ -21,6 +21,8 @@ import { AdProvider } from "@/context/AdContext";
 import Colors from "@/constants/colors";
 import { requestNotificationPermission } from "@/lib/notifications";
 import { TermsGateModal } from "@/components/TermsGateModal";
+import { View, StyleSheet } from "react-native";
+import SpinningCoin from "@/components/SpinningCoin";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -47,8 +49,14 @@ function RootLayoutNav() {
     }
   }, [isLoading]);
 
-  // Blank while loading
-  if (isLoading) return null;
+  // Splash while loading
+  if (isLoading) {
+    return (
+      <View style={splashStyles.container}>
+        <SpinningCoin size={140} spinning speed="normal" />
+      </View>
+    );
+  }
 
   return (
     <>
@@ -79,6 +87,15 @@ function ProvidedApp() {
     </AdProvider>
   );
 }
+
+const splashStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+});
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({

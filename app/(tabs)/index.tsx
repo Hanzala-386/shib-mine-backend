@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { pb } from '@/lib/pocketbase';
+import SpinningCoin from '@/components/SpinningCoin';
 import { BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
@@ -273,9 +274,10 @@ const BoosterModal = memo(function BoosterModal({
             </View>
             {!isMining && (
               <View style={modal.costRow}>
-                <Text style={modal.costLabel}>
-                  <MaterialCommunityIcons name="pickaxe" size={13} color={Colors.textSecondary} /> Mining entry
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <SpinningCoin size={13} spinning={false} />
+                  <Text style={modal.costLabel}>Mining entry</Text>
+                </View>
                 <Text style={modal.costVal}>{miningEntryCost} PT</Text>
               </View>
             )}
@@ -311,7 +313,7 @@ const BoosterModal = memo(function BoosterModal({
                   style={modal.startBtnInner}
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                 >
-                  <MaterialCommunityIcons name="pickaxe" size={20} color="#000" />
+                  <SpinningCoin size={20} spinning speed="normal" />
                   <Text style={modal.startBtnText}>
                     {isMining ? 'Activate Booster' : 'Start Mining'}
                   </Text>
@@ -715,10 +717,10 @@ export default function HomeScreen() {
               }
               style={styles.core}
             >
-              <MaterialCommunityIcons
-                name="pickaxe"
-                size={44}
-                color={status === 'ready_to_claim' ? '#000' : Colors.gold}
+              <SpinningCoin
+                size={52}
+                spinning
+                speed={status === 'ready_to_claim' ? 'fast' : 'normal'}
               />
               {status === 'mining' && (
                 <Text style={styles.timerText}>{formatTime(safeTimeRemaining)}</Text>
@@ -773,7 +775,7 @@ export default function HomeScreen() {
                 style={styles.actionGradient}
                 start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
               >
-                <MaterialCommunityIcons name="pickaxe" size={20} color="#000" />
+                <SpinningCoin size={20} spinning speed="normal" />
                 <Text style={styles.actionText}>{showAdLoader ? 'Loading…' : 'Start Mining'}</Text>
                 <View style={styles.feeTag}>
                   <MaterialCommunityIcons name="lightning-bolt" size={12} color="#000" />
@@ -884,7 +886,7 @@ export default function HomeScreen() {
         <Animated.View entering={FadeInDown.delay(450).springify()} style={styles.statsRow}>
           {/* SHIB Balance: static wallet value from DB, only updates after claim */}
           <View style={styles.statCard}>
-            <MaterialCommunityIcons name="bitcoin" size={20} color={Colors.gold} />
+            <SpinningCoin size={20} spinning={false} />
             <Text style={styles.statValue}>{formatShib(displayedStatShib)}</Text>
             <Text style={styles.statLabel}>SHIB Balance</Text>
           </View>
@@ -951,7 +953,7 @@ export default function HomeScreen() {
                   colors={['rgba(244,196,48,0.15)', 'rgba(244,196,48,0.05)']}
                   style={welcomeStyles.bonusItem}
                 >
-                  <MaterialCommunityIcons name="bitcoin" size={26} color={Colors.gold} />
+                  <SpinningCoin size={26} spinning={false} />
                   <Text style={welcomeStyles.bonusAmount}>100</Text>
                   <Text style={welcomeStyles.bonusLabel}>Shiba Inu{'\n'}Coins</Text>
                 </LinearGradient>
