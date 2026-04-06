@@ -75,7 +75,7 @@ export default function WalletScreen() {
   const addressError =
     trimmedAddr.length === 0 ? ''
     : method === 'Binance Email' && !isValidEmail ? 'Invalid Email Format'
-    : method === 'BEP-20' && !isValidAddress ? 'Aapka wallet address galat hai (Minimum 30 characters required).'
+    : method === 'BEP-20' && !isValidAddress ? 'Invalid Address'
     : '';
 
   /* ── Fee calculations ── */
@@ -90,7 +90,7 @@ export default function WalletScreen() {
 
   async function handleWithdraw() {
     if (hasPendingWithdrawal) {
-      Alert.alert('Withdrawal Pending', 'Aapka pichla withdrawal abhi pending hai. Please uske complete hone ka intezar karein.');
+      Alert.alert('Withdrawal Pending', 'Your previous request is currently under review. Please wait for it to be processed before initiating a new one.');
       return;
     }
     if (!grossAmt || isNaN(grossAmt) || grossAmt <= 0) {
@@ -180,7 +180,7 @@ export default function WalletScreen() {
               style={({ pressed }) => [styles.withdrawBtn, { opacity: pressed ? 0.85 : 1 }]}
               onPress={() => {
                 if (hasPendingWithdrawal) {
-                  Alert.alert('Withdrawal Pending', 'Aapka pichla withdrawal abhi pending hai. Please uske complete hone ka intezar karein.');
+                  Alert.alert('Withdrawal Pending', 'Your previous request is currently under review. Please wait for it to be processed before initiating a new one.');
                 } else {
                   setShowWithdraw(true);
                 }

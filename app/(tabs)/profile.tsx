@@ -419,7 +419,7 @@ export default function ProfileScreen() {
         {/* ── Stats grid: Sessions / Referrals / SHIB ── */}
         <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.statsGrid}>
           <View style={styles.statCell}>
-            <SpinningCoin size={18} spinning={false} />
+            <MaterialCommunityIcons name="pickaxe" size={18} color={Colors.gold} />
             <Text style={styles.statNum}>{miningCount}</Text>
             <Text style={styles.statLbl}>Sessions</Text>
           </View>
