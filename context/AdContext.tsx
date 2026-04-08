@@ -40,11 +40,11 @@ interface AdContextValue {
   showInterstitial:       (onDone: (shown: boolean) => void) => void;
 }
 
-/* ─── AdMob test IDs ─────────────────────────────────────────────────────────── */
+/* ─── AdMob production unit IDs ─────────────────────────────────────────────── */
 export const TEST_IDS = {
-  BANNER:       'ca-app-pub-3940256099942544/6300978111',
-  INTERSTITIAL: 'ca-app-pub-3940256099942544/1033173712',
-  REWARDED:     'ca-app-pub-3940256099942544/5224354917',
+  BANNER:       'ca-app-pub-7314448641809053/4666652323',
+  INTERSTITIAL: 'ca-app-pub-7314448641809053/2310185360',
+  REWARDED:     'ca-app-pub-7314448641809053/7506671725',
 };
 
 const DEFAULT_SETTINGS: AdSettings = {
