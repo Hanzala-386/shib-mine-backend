@@ -194,6 +194,39 @@ function withCppConfig(config) {
   });
 }
 
+/* ─── 6. Copy adi-registration.properties into Android native assets ─────────── */
+//
+// Google Play ownership verification requires this file to exist at:
+//   android/app/src/main/assets/adi-registration.properties
+//
+// assetBundlePatterns only bundles files into the JS layer — it does NOT place
+// files in the native assets folder. This withDangerousMod writes the file
+// directly during prebuild so it is included in the compiled APK/AAB.
+//
+function withAdiRegistration(config) {
+  return withDangerousMod(config, [
+    'android',
+    async (cfg) => {
+      const assetsDir = path.join(
+        cfg.modRequest.platformProjectRoot,
+        'app',
+        'src',
+        'main',
+        'assets'
+      );
+
+      if (!fs.existsSync(assetsDir)) {
+        fs.mkdirSync(assetsDir, { recursive: true });
+      }
+
+      const destPath = path.join(assetsDir, 'adi-registration.properties');
+      fs.writeFileSync(destPath, 'DI6G2JKTKQSU4AAAAAAAAAAAAA', 'utf8');
+
+      return cfg;
+    },
+  ]);
+}
+
 /* ─── Compose all patches and export ─────────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   config = withAgpVersion(config);
@@ -201,5 +234,6 @@ module.exports = function withAndroidConfig(config) {
   config = withAdMediationAdapters(config);
   config = withNdkVersion(config);
   config = withCppConfig(config);
+  config = withAdiRegistration(config);
   return config;
 };
