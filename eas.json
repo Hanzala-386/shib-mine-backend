@@ -24,6 +24,16 @@
         "EXPO_PUBLIC_DOMAIN": "shib-mine-backend-production.up.railway.app"
       }
     },
+    "verification": {
+      "distribution": "store",
+      "android": {
+        "buildType": "apk",
+        "credentialsSource": "remote"
+      },
+      "env": {
+        "EXPO_PUBLIC_DOMAIN": "shib-mine-backend-production.up.railway.app"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "channel": "production",
