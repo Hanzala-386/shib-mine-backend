@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import * as fs from "fs";
 import * as path from "path";
+import { createProxyMiddleware } from "http-proxy-middleware";
 
 const app = express();
 const log = console.log;
@@ -203,6 +204,24 @@ function configureExpoAndLanding(app: express.Application) {
   app.use("/arcade", express.static(path.resolve(process.cwd(), "public/arcade")));
   app.use(express.static(path.resolve(process.cwd(), "static-build")));
 
+  if (process.env.NODE_ENV !== "production") {
+    const metroProxy = createProxyMiddleware({
+      target: "http://localhost:8081",
+      changeOrigin: true,
+      ws: true,
+      pathFilter: (pathname) => !pathname.startsWith("/api"),
+      on: {
+        error: (_err, _req, res) => {
+          if (res && "status" in res) {
+            (res as Response).status(502).send("Expo Metro bundler not ready yet — please wait a moment and refresh.");
+          }
+        },
+      },
+    });
+    app.use(metroProxy);
+    log("Dev proxy: forwarding web requests → Metro on :8081");
+  }
+
   log("Expo routing: Checking expo-platform header on / and /manifest");
 }
 
@@ -232,17 +251,13 @@ function setupErrorHandler(app: express.Application) {
   setupBodyParsing(app);
   setupRequestLogging(app);
 
-  app.get("/", (_req: Request, res: Response) => {
-    res.json({ status: "Backend is running on Railway" });
-  });
-
   configureExpoAndLanding(app);
 
   const server = await registerRoutes(app);
 
   setupErrorHandler(app);
 
-  const port = parseInt(process.env.PORT || "5000", 10);
+  const port = parseInt(process.env.SERVER_PORT || process.env.PORT || "5000", 10);
   server.listen(
     {
       port,
