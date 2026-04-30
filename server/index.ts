@@ -162,6 +162,14 @@ function serveLandingPage({
 }
 
 function configureExpoAndLanding(app: express.Application) {
+  // ── PRODUCTION ONLY ──────────────────────────────────────────────────────
+  // In development the Metro proxy (registered at the very top of the
+  // middleware stack in main()) handles everything.  Nothing here runs in dev.
+  if (process.env.NODE_ENV !== "production") {
+    log("Dev mode: Metro proxy handles web requests — skipping landing page");
+    return;
+  }
+
   const templatePath = path.resolve(
     process.cwd(),
     "server",
@@ -175,12 +183,6 @@ function configureExpoAndLanding(app: express.Application) {
 
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.path.startsWith("/api")) {
-      return next();
-    }
-
-    // In development the Metro proxy (added below) handles everything — including
-    // "/" and "/manifest". Landing page + native manifest are production-only.
-    if (process.env.NODE_ENV !== "production") {
       return next();
     }
 
@@ -210,24 +212,6 @@ function configureExpoAndLanding(app: express.Application) {
   app.use("/arcade", express.static(path.resolve(process.cwd(), "public/arcade")));
   app.use(express.static(path.resolve(process.cwd(), "static-build")));
 
-  if (process.env.NODE_ENV !== "production") {
-    const metroProxy = createProxyMiddleware({
-      target: "http://localhost:8081",
-      changeOrigin: true,
-      ws: true,
-      pathFilter: (pathname) => !pathname.startsWith("/api"),
-      on: {
-        error: (_err, _req, res) => {
-          if (res && "status" in res) {
-            (res as Response).status(502).send("Expo Metro bundler not ready yet — please wait a moment and refresh.");
-          }
-        },
-      },
-    });
-    app.use(metroProxy);
-    log("Dev proxy: forwarding web requests → Metro on :8081");
-  }
-
   log("Expo routing: Checking expo-platform header on / and /manifest");
 }
 
@@ -253,6 +237,29 @@ function setupErrorHandler(app: express.Application) {
 }
 
 (async () => {
+  // ── DEV-ONLY: Metro proxy — registered FIRST so it wins before anything else ──
+  // Non-API requests are forwarded directly to Metro on :8081.
+  // This block is completely absent in production (NODE_ENV=production on Railway).
+  if (process.env.NODE_ENV !== "production") {
+    const metroProxy = createProxyMiddleware({
+      target: "http://localhost:8081",
+      changeOrigin: true,
+      ws: true,
+      pathFilter: (pathname) => !pathname.startsWith("/api"),
+      on: {
+        error: (_err, _req, res) => {
+          if (res && "status" in res) {
+            (res as Response)
+              .status(502)
+              .send("Metro bundler not ready — wait a moment and refresh.");
+          }
+        },
+      },
+    });
+    app.use(metroProxy);
+    log("Dev proxy: Metro on :8081 registered as FIRST middleware (all non-/api traffic)");
+  }
+
   setupCors(app);
   setupBodyParsing(app);
   setupRequestLogging(app);
