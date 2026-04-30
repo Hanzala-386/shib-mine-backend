@@ -91,7 +91,7 @@ function ProvidedApp() {
 const splashStyles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: Colors.darkBg,
     justifyContent: 'center',
     alignItems: 'center',
   },

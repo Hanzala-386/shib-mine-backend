@@ -178,6 +178,12 @@ function configureExpoAndLanding(app: express.Application) {
       return next();
     }
 
+    // In development the Metro proxy (added below) handles everything — including
+    // "/" and "/manifest". Landing page + native manifest are production-only.
+    if (process.env.NODE_ENV !== "production") {
+      return next();
+    }
+
     if (req.path !== "/" && req.path !== "/manifest") {
       return next();
     }
