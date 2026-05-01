@@ -283,10 +283,22 @@ export default function LeaderboardScreen() {
     staleTime: 60_000,
   });
 
-  // Ticker: PocketBase SDK direct (primary) — works on APK + web, no Express dependency
+  // Ticker: Express route (primary — uses admin token so expand=user works and display_name is returned)
+  // Falls back to PB SDK if Express is unreachable.
   const { data: ticker = [] } = useQuery<TickerItem[]>({
     queryKey: ['/api/app/withdrawals/approved/recent'],
     queryFn: async () => {
+      // ── Primary: Express API (admin-authed, display_name guaranteed) ──────
+      try {
+        const url = new URL('/api/app/withdrawals/approved/recent', getApiUrl()).href;
+        const res = await fetch(url);
+        if (res.ok) {
+          const json: TickerItem[] = await res.json();
+          return json;
+        }
+      } catch { /* fall through to PB SDK */ }
+
+      // ── Fallback: PB SDK direct (expand may not work without auth) ────────
       try {
         const res = await pb.collection('withdrawals').getList(1, 20, {
           filter: 'status = "completed" || status = "approved"',
@@ -294,12 +306,10 @@ export default function LeaderboardScreen() {
           expand: 'user',
         });
         return (res.items || []).map((w: any) => {
-          // Full display name — no masking
           const uname: string =
             w.expand?.user?.display_name ||
             w.expand?.user?.username ||
             w.expand?.user?.name ||
-            w.username ||
             w.display_name ||
             'Miner';
           return {
