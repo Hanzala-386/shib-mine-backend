@@ -370,6 +370,7 @@ export default function HomeScreen() {
   const { settings } = useAdmin();
   const { showMiningInterstitial } = useAds();
   const { unreadCount } = useNotifications();
+  const router = useRouter();
 
   // Live withdrawal ticker — same query as leaderboard.tsx
   const { data: ticker = [] } = useQuery<TickerItem[]>({
