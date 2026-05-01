@@ -24,6 +24,7 @@ import { useWallet } from '@/context/WalletContext';
 import { useMining } from '@/context/MiningContext';
 import { useAdmin } from '@/context/AdminContext';
 import { useAds } from '@/context/AdContext';
+import { useNotifications } from '@/context/NotificationsContext';
 import Colors from '@/constants/colors';
 
 // ── Live Withdrawal Ticker (identical to leaderboard.tsx) ──────────────────────
@@ -368,6 +369,7 @@ export default function HomeScreen() {
   } = useMining();
   const { settings } = useAdmin();
   const { showMiningInterstitial } = useAds();
+  const { unreadCount } = useNotifications();
 
   // Live withdrawal ticker — same query as leaderboard.tsx
   const { data: ticker = [] } = useQuery<TickerItem[]>({
@@ -657,9 +659,24 @@ export default function HomeScreen() {
               <Text style={styles.greeting}>Welcome back,</Text>
               <Text style={styles.userName}>{user?.displayName ?? 'Miner'}</Text>
             </View>
-            <View style={styles.balanceBadge}>
-              <MaterialCommunityIcons name="lightning-bolt" size={14} color={Colors.gold} />
-              <Text style={styles.balanceText}>{Math.floor(displayedPT)} PT</Text>
+            <View style={styles.headerRight}>
+              <View style={styles.balanceBadge}>
+                <MaterialCommunityIcons name="lightning-bolt" size={14} color={Colors.gold} />
+                <Text style={styles.balanceText}>{Math.floor(displayedPT)} PT</Text>
+              </View>
+              <Pressable
+                style={styles.bellBtn}
+                onPress={() => router.push('/notifications' as any)}
+              >
+                <Ionicons name="notifications-outline" size={22} color={Colors.gold} />
+                {unreadCount > 0 && (
+                  <View style={styles.bellBadge}>
+                    <Text style={styles.bellBadgeText}>
+                      {unreadCount > 9 ? '9+' : String(unreadCount)}
+                    </Text>
+                  </View>
+                )}
+              </Pressable>
             </View>
           </View>
         </Animated.View>
@@ -1032,6 +1049,23 @@ const styles = StyleSheet.create({
     zIndex: 25, elevation: 25,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  bellBtn: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: 'rgba(244,196,48,0.1)',
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)',
+    position: 'relative',
+  },
+  bellBadge: {
+    position: 'absolute', top: -5, right: -5,
+    minWidth: 18, height: 18, borderRadius: 9,
+    backgroundColor: '#FF3B30',
+    alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 3,
+    borderWidth: 1.5, borderColor: Colors.darkBg,
+  },
+  bellBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#fff' },
   greeting: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary },
   userName: { fontFamily: 'Inter_700Bold', fontSize: 21, color: Colors.textPrimary, marginTop: 2 },
   balanceBadge: {

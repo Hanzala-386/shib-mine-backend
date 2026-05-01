@@ -469,6 +469,52 @@ async function ensureReferralEarningsLogCollection() {
   }
 }
 
+// ─── Ensure notifications collection exists in PocketBase ─────────────────
+async function ensureNotificationsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/notifications");
+    if (!check.code) {
+      // Collection exists — ensure rules allow public read (server reads via admin token)
+      await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule:   "",
+        viewRule:   "",
+        createRule: null,
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[notifications] Collection rules verified ✓");
+      return;
+    }
+    // Create the collection
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "notifications",
+      type: "base",
+      schema: [
+        { name: "title",       type: "text",     required: true,  options: {} },
+        { name: "message",     type: "text",     required: true,  options: {} },
+        { name: "type",        type: "select",   required: true,  options: { values: ["global", "personal"], maxSelect: 1 } },
+        { name: "target_user", type: "relation", required: false, options: { collectionId: "_pb_users_auth_", cascadeDelete: false, maxSelect: 1 } },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[notifications] Could not create collection:", JSON.stringify(created).slice(0, 300));
+      return;
+    }
+    // Patch rules in a separate step (required for older PB versions)
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule:   "",
+      viewRule:   "",
+      createRule: null,
+      updateRule: null,
+      deleteRule: null,
+    }, token);
+    console.log("[notifications] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[notifications] Collection setup failed:", e.message);
+  }
+}
+
 // ─── Ensure deleted_emails collection exists in PocketBase ─────────────────
 async function ensureDeletedEmailsCollection() {
   try {
@@ -816,6 +862,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureReferralEarningsLogCollection())
     .then(() => ensureBrevoKeyInSettings())
     .then(() => backfillWithdrawalMaskedNames())
+    .then(() => ensureNotificationsCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
@@ -2254,6 +2301,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error("[/api/app/withdrawals/approved/recent]", e.message);
       res.status(500).json({ error: "Failed to fetch recent withdrawals" });
+    }
+  });
+
+  // ── Notifications: fetch global + personal for a user ────────────────────
+  app.get("/api/app/notifications/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+      const filter = encodeURIComponent(`type = "global" || (type = "personal" && target_user = "${pbId}")`);
+      const r = await pbGet(
+        `/api/collections/notifications/records?filter=${filter}&sort=-created&perPage=50`
+      );
+      res.json({
+        items: (r.items || []).map((n: any) => ({
+          id:      n.id,
+          title:   n.title,
+          message: n.message,
+          type:    n.type,
+          created: n.created,
+        })),
+      });
+    } catch (e: any) {
+      console.error("[/api/app/notifications]", e.message);
+      res.status(500).json({ error: "Failed to fetch notifications" });
     }
   });
 

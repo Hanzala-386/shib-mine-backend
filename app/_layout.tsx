@@ -18,6 +18,7 @@ import { WalletProvider } from "@/context/WalletContext";
 import { MiningProvider } from "@/context/MiningContext";
 import { AdminProvider } from "@/context/AdminContext";
 import { AdProvider } from "@/context/AdContext";
+import { NotificationsProvider } from "@/context/NotificationsContext";
 import Colors from "@/constants/colors";
 import { requestNotificationPermission } from "@/lib/notifications";
 import { TermsGateModal } from "@/components/TermsGateModal";
@@ -66,6 +67,7 @@ function RootLayoutNav() {
         <Stack.Screen name="verify-email" />
         <Stack.Screen name="forgot-password" />
         <Stack.Screen name="admin" options={{ presentation: "modal" }} />
+        <Stack.Screen name="notifications" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
         <Stack.Screen name="privacy" options={{ headerShown: false }} />
         <Stack.Screen name="terms" options={{ headerShown: false }} />
       </Stack>
@@ -80,7 +82,9 @@ function ProvidedApp() {
       <WalletProvider>
         <MiningProvider>
           <AdminProvider>
-            <RootLayoutNav />
+            <NotificationsProvider>
+              <RootLayoutNav />
+            </NotificationsProvider>
           </AdminProvider>
         </MiningProvider>
       </WalletProvider>
