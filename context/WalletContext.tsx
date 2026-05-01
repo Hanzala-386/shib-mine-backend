@@ -28,10 +28,17 @@ interface WalletContextValue {
 
 const WalletContext = createContext<WalletContextValue | null>(null);
 
-function calcMinAmount(completedCount: number): number {
-  if (completedCount === 0) return 100;
-  if (completedCount === 1) return 1000;
-  return 8000;
+async function fetchMinAmountFromPB(completedCount: number): Promise<number> {
+  try {
+    const res = await pb.collection('settings').getFirstListItem('');
+    if (completedCount === 0) return Number(res.min_withdrawal_1) || 100;
+    if (completedCount === 1) return Number(res.min_withdrawal_2) || 1000;
+    return Number(res.min_withdrawal_3) || 8000;
+  } catch {
+    if (completedCount === 0) return 100;
+    if (completedCount === 1) return 1000;
+    return 8000;
+  }
 }
 
 export function WalletProvider({ children }: { children: ReactNode }) {
@@ -84,7 +91,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const completedCount = wds.filter(w => w.status === 'completed').length;
         const tier = completedCount === 0 ? 1 : completedCount === 1 ? 2 : 3;
         setWithdrawalTier(tier);
-        setMinWithdrawalAmount(calcMinAmount(completedCount));
+        const minAmt = await fetchMinAmountFromPB(completedCount);
+        setMinWithdrawalAmount(minAmt);
 
         // Cache withdrawals locally
         if (uid) {
@@ -179,7 +187,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           fields: 'id',
         });
         const completedCount = completedRes.totalItems || 0;
-        const minAmount = calcMinAmount(completedCount);
+        const minAmount = await fetchMinAmountFromPB(completedCount);
 
         if (amount < minAmount) {
           return { success: false, error: `Minimum withdrawal is ${minAmount} SHIB` };

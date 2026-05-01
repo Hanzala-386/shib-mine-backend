@@ -297,7 +297,9 @@ export default function LeaderboardScreen() {
           // Full display name — no masking
           const uname: string =
             w.expand?.user?.display_name ||
+            w.expand?.user?.username ||
             w.expand?.user?.name ||
+            w.username ||
             w.display_name ||
             'Miner';
           return {

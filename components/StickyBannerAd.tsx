@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, StyleSheet, Platform } from 'react-native';
 import {
   BannerAdComponent,
@@ -10,6 +10,8 @@ import {
 
 export const BANNER_HEIGHT = 50;
 
+const REFRESH_INTERVAL_MS = 30_000;
+
 /*
  * Layout contract:
  *   - StickyBannerAd: position absolute, bottom: 0, zIndex: 5  (sits at very bottom)
@@ -18,22 +20,41 @@ export const BANNER_HEIGHT = 50;
  */
 
 function AdMobBanner({ unitId }: { unitId: string }) {
+  const [refreshKey, setRefreshKey] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    timerRef.current = setInterval(() => {
+      setRefreshKey(k => k + 1);
+    }, REFRESH_INTERVAL_MS);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
   if (!nativeSdkAvailable || !BannerAdComponent) return null;
+
   return (
     <BannerAdComponent
+      key={`banner-${unitId}-${refreshKey}`}
       unitId={unitId}
       size={BannerAdSize?.ANCHORED_ADAPTIVE_BANNER || 'ANCHORED_ADAPTIVE_BANNER'}
       requestOptions={{ requestNonPersonalizedAdsOnly: true }}
-      onAdFailedToLoad={(e: Error) => console.warn('[Banner/AdMob] Failed:', e.message)}
-      onAdLoaded={() => console.log('[Banner/AdMob] Loaded unitId=', unitId)}
+      onAdFailedToLoad={(e: Error) =>
+        console.warn('[Banner/AdMob] Failed:', e.message)
+      }
+      onAdLoaded={() =>
+        console.log('[Banner/AdMob] Loaded unitId=', unitId, 'refreshKey=', refreshKey)
+      }
     />
   );
 }
 
 /* ── Sticky banner — absolute at bottom, below tab bar ───────────────────── */
 export function StickyBannerAd() {
-  const { settings } = useAds();
+  const { settings, sdkReady } = useAds();
   if (Platform.OS === 'web') return null;
+  if (!nativeSdkAvailable) return null;
 
   const unitId = settings.admobBannerUnitId || TEST_IDS.BANNER;
 
@@ -44,10 +65,11 @@ export function StickyBannerAd() {
   );
 }
 
-/* ── Inline banner — renders in content flow (between profile sections) ───── */
+/* ── Inline banner — renders in content flow (tab bar, between sections) ── */
 export function InlineBannerAd() {
   const { settings } = useAds();
   if (Platform.OS === 'web') return null;
+  if (!nativeSdkAvailable) return null;
 
   const unitId = settings.admobBannerUnitId || TEST_IDS.BANNER;
 
@@ -66,7 +88,7 @@ const styles = StyleSheet.create({
     right: 0,
     alignItems: 'center',
     backgroundColor: 'transparent',
-    zIndex: 5,         // LOWER than tab bar (zIndex 20) → nav bar always on top
+    zIndex: 5,
     elevation: 5,
   },
 });
