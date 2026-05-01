@@ -15,6 +15,7 @@ import SpinningCoin from '@/components/SpinningCoin';
 import { api } from '@/lib/api';
 import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
+import { useInstallReferrer } from '@/hooks/useInstallReferrer';
 
 type Mode = 'signin' | 'signup';
 
@@ -145,6 +146,7 @@ export default function AuthScreen() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [referralCode, setReferralCode] = useState('');
+  const installReferralCode = useInstallReferrer();
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -161,6 +163,14 @@ export default function AuthScreen() {
   useEffect(() => {
     AsyncStorage.getItem(TERMS_KEY).then((v) => setTermsAccepted(v === 'true'));
   }, []);
+
+  // Auto-fill referral code from Play Store install referrer (Android only)
+  useEffect(() => {
+    if (installReferralCode && !referralCode) {
+      setReferralCode(installReferralCode);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [installReferralCode]);
 
   function switchMode(m: Mode) {
     setMode(m);

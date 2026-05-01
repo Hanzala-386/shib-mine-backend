@@ -11,6 +11,7 @@ import {
 export const BANNER_HEIGHT = 50;
 
 const REFRESH_INTERVAL_MS = 30_000;
+const RETRY_ON_FAIL_MS    = 10_000;
 
 /*
  * Layout contract:
@@ -21,16 +22,31 @@ const REFRESH_INTERVAL_MS = 30_000;
 
 function AdMobBanner({ unitId }: { unitId: string }) {
   const [refreshKey, setRefreshKey] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef  = useRef<ReturnType<typeof setInterval>  | null>(null);
+  const retryRef  = useRef<ReturnType<typeof setTimeout>   | null>(null);
+
+  const clearTimers = () => {
+    if (timerRef.current)  { clearInterval(timerRef.current);  timerRef.current  = null; }
+    if (retryRef.current)  { clearTimeout(retryRef.current);   retryRef.current  = null; }
+  };
 
   useEffect(() => {
     timerRef.current = setInterval(() => {
       setRefreshKey(k => k + 1);
     }, REFRESH_INTERVAL_MS);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+    return clearTimers;
   }, []);
+
+  const handleFailedToLoad = (e: Error) => {
+    console.warn('[Banner/AdMob] Failed:', e.message);
+    // Retry sooner than the normal 30 s refresh cycle
+    if (!retryRef.current) {
+      retryRef.current = setTimeout(() => {
+        retryRef.current = null;
+        setRefreshKey(k => k + 1);
+      }, RETRY_ON_FAIL_MS);
+    }
+  };
 
   if (!nativeSdkAvailable || !BannerAdComponent) return null;
 
@@ -39,12 +55,10 @@ function AdMobBanner({ unitId }: { unitId: string }) {
       key={`banner-${unitId}-${refreshKey}`}
       unitId={unitId}
       size={BannerAdSize?.ANCHORED_ADAPTIVE_BANNER || 'ANCHORED_ADAPTIVE_BANNER'}
-      requestOptions={{ requestNonPersonalizedAdsOnly: true }}
-      onAdFailedToLoad={(e: Error) =>
-        console.warn('[Banner/AdMob] Failed:', e.message)
-      }
+      requestOptions={{}}
+      onAdFailedToLoad={handleFailedToLoad}
       onAdLoaded={() =>
-        console.log('[Banner/AdMob] Loaded unitId=', unitId, 'refreshKey=', refreshKey)
+        console.log('[Banner/AdMob] Loaded unitId=', unitId, 'key=', refreshKey)
       }
     />
   );
@@ -52,7 +66,7 @@ function AdMobBanner({ unitId }: { unitId: string }) {
 
 /* ── Sticky banner — absolute at bottom, below tab bar ───────────────────── */
 export function StickyBannerAd() {
-  const { settings, sdkReady } = useAds();
+  const { settings } = useAds();
   if (Platform.OS === 'web') return null;
   if (!nativeSdkAvailable) return null;
 
@@ -86,6 +100,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
+    minHeight: BANNER_HEIGHT,
     alignItems: 'center',
     backgroundColor: 'transparent',
     zIndex: 5,
@@ -96,6 +111,7 @@ const styles = StyleSheet.create({
 const inlineStyles = StyleSheet.create({
   wrapper: {
     width: '100%',
+    minHeight: BANNER_HEIGHT,
     alignItems: 'center',
     backgroundColor: 'transparent',
     marginVertical: 8,

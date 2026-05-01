@@ -323,7 +323,9 @@ export default function LeaderboardScreen() {
         return [];
       }
     },
-    staleTime: 120_000,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchInterval: 60_000,
   });
 
   const topPad = insets.top + (Platform.OS === 'web' ? 67 : 0);
