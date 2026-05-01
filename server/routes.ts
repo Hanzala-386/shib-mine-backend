@@ -175,6 +175,54 @@ async function sendOtpEmail(to: string, otp: string) {
   throw lastErr ?? new Error('All SMTP ports failed');
 }
 
+// ─── Add masked_name field to withdrawals + backfill existing records ──────
+async function backfillWithdrawalMaskedNames() {
+  try {
+    // 1. Add the masked_name text field to the withdrawals collection (idempotent)
+    const col = await pbGet("/api/collections/withdrawals");
+    if (!col.code) {
+      const hasField = (col.fields || []).some((f: any) => f.name === "masked_name");
+      if (!hasField) {
+        const token = await getAdminToken();
+        const updatedFields = [
+          ...(col.fields || []),
+          { name: "masked_name", type: "text", required: false },
+        ];
+        await pbHttp("PATCH", `/api/collections/${col.id}`, { fields: updatedFields }, token);
+        console.log("[withdrawals] masked_name field added ✓");
+      }
+    }
+
+    // 2. Fetch all approved/completed withdrawals that still lack masked_name
+    const statuses = ["completed", "approved"];
+    for (const status of statuses) {
+      let page = 1;
+      while (true) {
+        const batch = await pbGet(
+          `/api/collections/withdrawals/records?filter=${encodeURIComponent(`status="${status}" && masked_name=""`)}` +
+          `&expand=user&sort=-created&perPage=50&page=${page}`
+        );
+        const items: any[] = batch.items || [];
+        if (!items.length) break;
+
+        for (const w of items) {
+          let name: string = w.expand?.user?.display_name || w.expand?.user?.username || "";
+          if (name.includes("@")) name = name.split("@")[0];
+          if (!name) continue;
+          await pbPatch(`/api/collections/withdrawals/records/${w.id}`, { masked_name: name })
+            .catch(() => {});
+        }
+
+        if (batch.totalPages <= page) break;
+        page++;
+      }
+    }
+    console.log("[withdrawals] masked_name backfill complete ✓");
+  } catch (e: any) {
+    console.warn("[withdrawals] masked_name backfill failed:", e.message);
+  }
+}
+
 // ─── Ensure daily_usage collection exists in PocketBase ───────────────────
 async function ensureDailyUsageCollection() {
   try {
@@ -767,6 +815,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureMiningSessionsRules())
     .then(() => ensureReferralEarningsLogCollection())
     .then(() => ensureBrevoKeyInSettings())
+    .then(() => backfillWithdrawalMaskedNames())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
@@ -2060,6 +2109,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         shib_balance: user.shib_balance - amount,
       });
 
+      // Resolve masked_name from user's display_name for the ticker
+      let masked_name: string = user.display_name || user.username || "";
+      if (masked_name.includes("@")) masked_name = masked_name.split("@")[0];
+
       // Create withdrawal record
       const withdrawal = await pbPost(
         "/api/collections/withdrawals/records",
@@ -2069,6 +2122,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           address_or_email: addressOrEmail,
           amount,
           status: "pending",
+          masked_name,
         },
       );
 
@@ -2175,19 +2229,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const r = await pbGet(
         `/api/collections/withdrawals/records?filter=${encodeURIComponent(`status="completed" || status="approved"`)}&sort=-created&perPage=10&expand=user`,
       );
-      res.json(
-        (r.items || []).map((w: any) => {
-          // Use display_name (username); strip email domain if stored as email
-          let username: string = w.expand?.user?.display_name || "SHIB Miner";
-          if (username.includes("@")) username = username.split("@")[0];
-          return {
-            id: w.id,
-            maskedName: username,
-            method: w.method,
-            amount: w.amount,
-          };
-        }),
-      );
+      const items = (r.items || []).map((w: any) => {
+        // Prefer the denormalized masked_name field (backfilled at startup)
+        // Fall back to live user expansion (admin-authed, always works on this route)
+        let username: string =
+          w.masked_name ||
+          w.expand?.user?.display_name ||
+          w.expand?.user?.username ||
+          "";
+        if (!username || username.includes("@")) {
+          username = username.includes("@") ? username.split("@")[0] : username;
+        }
+        if (!username) username = "User";
+        return {
+          id: w.id,
+          maskedName: username,
+          method: w.method || "BEP-20",
+          amount: w.amount || 0,
+        };
+      });
+      res.json(items);
     } catch (e: any) {
       console.error("[/api/app/withdrawals/approved/recent]", e.message);
       res.status(500).json({ error: "Failed to fetch recent withdrawals" });

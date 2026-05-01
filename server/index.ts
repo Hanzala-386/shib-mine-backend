@@ -16,6 +16,19 @@ declare module "http" {
 
 function setupCors(app: express.Application) {
   app.use((req, res, next) => {
+    // Public read-only app API endpoints — open to any origin (no credentials)
+    const isPublicRead =
+      (req.method === "GET" || req.method === "OPTIONS") &&
+      req.path.startsWith("/api/app/");
+
+    if (isPublicRead) {
+      res.header("Access-Control-Allow-Origin", "*");
+      res.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      if (req.method === "OPTIONS") return res.sendStatus(200);
+      return next();
+    }
+
     const origins = new Set<string>();
 
     if (process.env.REPLIT_DEV_DOMAIN) {

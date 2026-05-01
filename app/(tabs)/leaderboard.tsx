@@ -298,27 +298,23 @@ export default function LeaderboardScreen() {
         }
       } catch { /* fall through to PB SDK */ }
 
-      // ── Fallback: PB SDK direct (expand may not work without auth) ────────
+      // ── Fallback: PB SDK direct ───────────────────────────────────────────
+      // masked_name is stored directly on each withdrawal record (backfilled
+      // at server startup) so no user relation expansion or auth is needed.
       try {
-        const res = await pb.collection('withdrawals').getList(1, 20, {
+        const res = await pb.collection('withdrawals').getList(1, 10, {
           filter: 'status = "completed" || status = "approved"',
           sort: '-created',
-          expand: 'user',
+          fields: 'id,masked_name,method,amount',
         });
-        return (res.items || []).map((w: any) => {
-          const uname: string =
-            w.expand?.user?.display_name ||
-            w.expand?.user?.username ||
-            w.expand?.user?.name ||
-            w.display_name ||
-            'Miner';
-          return {
+        return (res.items || [])
+          .filter((w: any) => w.masked_name)
+          .map((w: any) => ({
             id: w.id,
-            maskedName: uname,
-            method: w.method || 'BEP-20',
-            amount: w.amount || 0,
-          };
-        });
+            maskedName: w.masked_name as string,
+            method: (w.method as string) || 'BEP-20',
+            amount: (w.amount as number) || 0,
+          }));
       } catch {
         return [];
       }
