@@ -200,6 +200,7 @@ export const api = {
     method: string;
     addressOrEmail: string;
     amount: number;
+    netAmount: number;
   }) => request<WithdrawalResponse>('POST', '/api/app/withdrawals', payload),
 
   getWithdrawals: (pbId: string) =>
@@ -377,6 +378,8 @@ export interface WithdrawalRecord {
   method: string;
   addressOrEmail: string;
   amount: number;
+  grossAmount: number;
+  netAmount: number;
   status: string;
   created: string;
 }
@@ -401,6 +404,8 @@ export interface AdminWithdrawal {
   method: string;
   addressOrEmail: string;
   amount: number;
+  grossAmount: number;
+  netAmount: number;
   status: string;
   created: string;
 }

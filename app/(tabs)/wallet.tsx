@@ -43,7 +43,7 @@ function WithdrawalItem({ w }: { w: WithdrawalRecord }) {
         <Text style={styles.txTime}>{formatDate(w.created)}</Text>
       </View>
       <View style={styles.txAmountWrap}>
-        <Text style={[styles.txAmount, { color }]}>-{formatShib(w.amount)}</Text>
+        <Text style={[styles.txAmount, { color }]}>-{formatShib(w.netAmount ?? w.amount)}</Text>
         <Text style={[styles.txCurrency, { color }]}>{w.status.toUpperCase()}</Text>
       </View>
     </View>
@@ -125,7 +125,7 @@ export default function WalletScreen() {
     await new Promise<void>((resolve) => {
       showMiningInterstitial(() => resolve());
     });
-    const res = await createWithdrawal(method, address.trim(), grossAmt);
+    const res = await createWithdrawal(method, address.trim(), grossAmt, netAmt);
     setSubmitting(false);
     if (res.success) {
       setShowWithdraw(false);

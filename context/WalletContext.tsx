@@ -9,6 +9,8 @@ export interface WithdrawalRecord {
   method: string;
   addressOrEmail: string;
   amount: number;
+  grossAmount: number;
+  netAmount: number;
   status: string;
   created: string;
 }
@@ -22,7 +24,7 @@ interface WalletContextValue {
   isLoading: boolean;
   spendPowerTokens: (amount: number) => Promise<boolean>;
   addPowerTokens: (amount: number, type?: string) => Promise<void>;
-  createWithdrawal: (method: string, addressOrEmail: string, amount: number) => Promise<{ success: boolean; error?: string }>;
+  createWithdrawal: (method: string, addressOrEmail: string, amount: number, netAmount: number) => Promise<{ success: boolean; error?: string }>;
   refetch: () => Promise<void>;
 }
 
@@ -83,6 +85,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           method: w.method,
           addressOrEmail: w.address_or_email,
           amount: w.amount,
+          grossAmount: w.gross_amount || w.amount,
+          netAmount: w.net_amount || w.amount,
           status: w.status,
           created: w.created,
         }));
@@ -163,10 +167,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     method: string,
     addressOrEmail: string,
     amount: number,
+    netAmount: number,
   ): Promise<{ success: boolean; error?: string }> {
     if (!pbId) return { success: false, error: 'Not authenticated' };
     try {
-      await api.createWithdrawal({ pbId, method, addressOrEmail, amount });
+      await api.createWithdrawal({ pbId, method, addressOrEmail, amount, netAmount });
       await refreshBalance();
       await fetchWalletData();
       return { success: true };
@@ -205,6 +210,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             method,
             address_or_email: addressOrEmail,
             amount,
+            gross_amount: amount,
+            net_amount: netAmount,
             status: 'pending',
           });
         } catch (createErr) {
