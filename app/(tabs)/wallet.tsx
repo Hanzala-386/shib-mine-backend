@@ -43,7 +43,7 @@ function WithdrawalItem({ w }: { w: WithdrawalRecord }) {
         <Text style={styles.txTime}>{formatDate(w.created)}</Text>
       </View>
       <View style={styles.txAmountWrap}>
-        <Text style={[styles.txAmount, { color }]}>-{formatShib(w.netAmount ?? w.amount)}</Text>
+        <Text style={[styles.txAmount, { color }]}>-{formatShib(w.amount)}</Text>
         <Text style={[styles.txCurrency, { color }]}>{w.status.toUpperCase()}</Text>
       </View>
     </View>
@@ -56,6 +56,7 @@ export default function WalletScreen() {
   const { pbUser } = useAuth();
   const { showMiningInterstitial } = useAds();
   const [showWithdraw, setShowWithdraw] = useState(false);
+  const [showWarning, setShowWarning] = useState(false);
   const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>('Binance Email');
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
@@ -88,7 +89,7 @@ export default function WalletScreen() {
   const showInsufficientMsg = grossAmt > 0 && fee > 0 && !netMeetsMinimum;
   const canSubmit           = !hasPendingWithdrawal && grossAmt > 0 && hasEnoughBalance && netMeetsMinimum && !!trimmedAddr && isValidEmail && isValidAddress && !submitting;
 
-  async function handleWithdraw() {
+  function handleSubmitPress() {
     if (hasPendingWithdrawal) {
       Alert.alert('Withdrawal Pending', 'Your previous request is currently under review. Please wait for it to be processed before initiating a new one.');
       return;
@@ -120,6 +121,12 @@ export default function WalletScreen() {
       Alert.alert('Invalid Wallet Address', 'Aapka wallet address galat hai (Minimum 30 characters required).');
       return;
     }
+    // All validation passed — show the warning popup before processing
+    setShowWarning(true);
+  }
+
+  async function handleConfirmedWithdraw() {
+    setShowWarning(false);
     setSubmitting(true);
     // Show Unity → AppLovin interstitial before processing (no AdMob per policy)
     await new Promise<void>((resolve) => {
@@ -349,7 +356,7 @@ export default function WalletScreen() {
             {/* ── Submit button ── */}
             <Pressable
               style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
-              onPress={handleWithdraw}
+              onPress={handleSubmitPress}
               disabled={!canSubmit}
             >
               <LinearGradient
@@ -364,6 +371,32 @@ export default function WalletScreen() {
 
             <Pressable onPress={() => setShowWithdraw(false)} style={styles.cancelBtn}>
               <Text style={styles.cancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ══ WARNING POPUP ════════════════════════════════════════════════════ */}
+      <Modal visible={showWarning} transparent animationType="fade" onRequestClose={() => setShowWarning(false)}>
+        <View style={styles.warnOverlay}>
+          <View style={styles.warnSheet}>
+            <View style={styles.warnIconWrap}>
+              <Ionicons name="warning" size={40} color="#FF3B30" />
+            </View>
+            <Text style={styles.warnTitle}>WARNING</Text>
+            <Text style={styles.warnBody}>
+              Please double-check your Email or Wallet Address. If you provide an incorrect address, your funds will be{' '}
+              <Text style={styles.warnBold}>permanently lost</Text> and cannot be recovered. Ensure everything is correct before proceeding.
+            </Text>
+            <View style={styles.warnAddrBox}>
+              <Text style={styles.warnAddrLabel}>{method === 'BEP-20' ? 'Wallet Address' : 'Binance Email'}</Text>
+              <Text style={styles.warnAddrValue} numberOfLines={2}>{address.trim()}</Text>
+            </View>
+            <Pressable style={styles.warnConfirmBtn} onPress={handleConfirmedWithdraw}>
+              <Text style={styles.warnConfirmText}>I Understand — Confirm</Text>
+            </Pressable>
+            <Pressable style={styles.warnCancelBtn} onPress={() => setShowWarning(false)}>
+              <Text style={styles.warnCancelText}>Go Back &amp; Check</Text>
             </Pressable>
           </View>
         </View>
@@ -473,6 +506,24 @@ const styles = StyleSheet.create({
 
   cancelBtn:  { alignItems: 'center', paddingVertical: 8 },
   cancelText: { fontFamily: 'Inter_400Regular', fontSize: 14, color: Colors.textMuted },
+
+  /* ── Warning popup ── */
+  warnOverlay:     { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
+  warnSheet:       { backgroundColor: '#1a0a0a', borderRadius: 24, padding: 28, width: '100%', alignItems: 'center', gap: 14,
+                     borderWidth: 1.5, borderColor: 'rgba(255,59,48,0.5)' },
+  warnIconWrap:    { width: 72, height: 72, borderRadius: 36, backgroundColor: 'rgba(255,59,48,0.12)',
+                     alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  warnTitle:       { fontFamily: 'Inter_700Bold', fontSize: 22, color: '#FF3B30', letterSpacing: 2 },
+  warnBody:        { fontFamily: 'Inter_400Regular', fontSize: 14, color: '#FF3B30', textAlign: 'center', lineHeight: 22, opacity: 0.9 },
+  warnBold:        { fontFamily: 'Inter_700Bold', color: '#FF3B30' },
+  warnAddrBox:     { backgroundColor: 'rgba(255,59,48,0.08)', borderRadius: 12, padding: 14, width: '100%',
+                     borderWidth: 1, borderColor: 'rgba(255,59,48,0.25)' },
+  warnAddrLabel:   { fontFamily: 'Inter_500Medium', fontSize: 11, color: 'rgba(255,59,48,0.7)', marginBottom: 4 },
+  warnAddrValue:   { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#FF3B30' },
+  warnConfirmBtn:  { backgroundColor: '#FF3B30', borderRadius: 14, height: 52, width: '100%', alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  warnConfirmText: { fontFamily: 'Inter_700Bold', fontSize: 15, color: '#fff' },
+  warnCancelBtn:   { paddingVertical: 10, width: '100%', alignItems: 'center' },
+  warnCancelText:  { fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.textMuted },
 
   pendingBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,

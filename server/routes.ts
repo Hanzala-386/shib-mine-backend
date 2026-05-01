@@ -223,53 +223,6 @@ async function backfillWithdrawalMaskedNames() {
   }
 }
 
-// ─── Add gross_amount / net_amount fields to withdrawals + backfill ────────
-async function backfillWithdrawalAmounts() {
-  try {
-    const col = await pbGet("/api/collections/withdrawals");
-    if (!col.code) {
-      const fields: any[] = col.fields || [];
-      const hasGross = fields.some((f: any) => f.name === "gross_amount");
-      const hasNet   = fields.some((f: any) => f.name === "net_amount");
-      if (!hasGross || !hasNet) {
-        const token = await getAdminToken();
-        const updatedFields = [
-          ...fields,
-          ...(!hasGross ? [{ name: "gross_amount", type: "number", required: false }] : []),
-          ...(!hasNet   ? [{ name: "net_amount",   type: "number", required: false }] : []),
-        ];
-        await pbHttp("PATCH", `/api/collections/${col.id}`, { fields: updatedFields }, token);
-        console.log("[withdrawals] gross_amount/net_amount fields added ✓");
-      }
-    }
-
-    // Backfill existing records where net_amount is 0/null (set net = gross = amount)
-    let page = 1;
-    let backfilled = 0;
-    while (true) {
-      const batch = await pbGet(
-        `/api/collections/withdrawals/records?filter=${encodeURIComponent('net_amount=0')}&sort=-created&perPage=50&page=${page}`
-      );
-      const items: any[] = batch.items || [];
-      if (!items.length) break;
-      for (const w of items) {
-        const gross = w.gross_amount || w.amount;
-        await pbPatch(`/api/collections/withdrawals/records/${w.id}`, {
-          gross_amount: gross,
-          net_amount: gross,
-        }).catch(() => {});
-        backfilled++;
-      }
-      if (batch.totalPages <= page) break;
-      page++;
-    }
-    if (backfilled > 0) console.log(`[withdrawals] backfilled ${backfilled} records with gross/net amounts ✓`);
-    else console.log("[withdrawals] gross_amount/net_amount backfill complete (nothing to update) ✓");
-  } catch (e: any) {
-    console.warn("[withdrawals] gross_amount/net_amount backfill failed:", e.message);
-  }
-}
-
 // ─── Ensure daily_usage collection exists in PocketBase ───────────────────
 async function ensureDailyUsageCollection() {
   try {
@@ -863,7 +816,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureReferralEarningsLogCollection())
     .then(() => ensureBrevoKeyInSettings())
     .then(() => backfillWithdrawalMaskedNames())
-    .then(() => backfillWithdrawalAmounts())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
@@ -2163,16 +2115,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let masked_name: string = user.display_name || user.username || "";
       if (masked_name.includes("@")) masked_name = masked_name.split("@")[0];
 
-      // Create withdrawal record
+      // Create withdrawal record — store the net amount (after fees) as the amount
       const withdrawal = await pbPost(
         "/api/collections/withdrawals/records",
         {
           user: pbId,
           method,
           address_or_email: addressOrEmail,
-          amount: grossAmount,
-          gross_amount: grossAmount,
-          net_amount: resolvedNet,
+          amount: resolvedNet,
           status: "pending",
           masked_name,
         },
@@ -2213,8 +2163,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             method: w.method,
             addressOrEmail: w.address_or_email,
             amount: w.amount,
-            grossAmount: w.gross_amount || w.amount,
-            netAmount: w.net_amount || w.amount,
             status: w.status,
             created: w.created,
           })),
@@ -2346,8 +2294,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             method: w.method,
             addressOrEmail: w.address_or_email,
             amount: w.amount,
-            grossAmount: w.gross_amount || w.amount,
-            netAmount: w.net_amount || w.amount,
             status: w.status,
             created: w.created,
           })),
