@@ -221,6 +221,21 @@ export const api = {
       { pbId, amount },
     ),
 
+  // ── Ad reward tokens ──────────────────────────────────────────────────
+  requestAdToken: (pbId: string) =>
+    request<{ token: string; reward: number }>(
+      'POST',
+      '/api/app/ad/token',
+      { pbId },
+    ),
+
+  claimAdToken: (pbId: string, token: string) =>
+    request<{ success: boolean; newPowerTokens: number; reward: number }>(
+      'POST',
+      '/api/app/ad/claim',
+      { pbId, token },
+    ),
+
   // ── Shop ──────────────────────────────────────────────────────────────
   shopGetItems: (pbId: string) =>
     request<{ purchasedItems: string[] }>('GET', `/api/app/shop/items/${pbId}`),

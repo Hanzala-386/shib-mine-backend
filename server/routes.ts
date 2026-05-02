@@ -822,6 +822,40 @@ async function ensureBrevoKeyInSettings(): Promise<void> {
   }
 }
 
+// ─── Per-user in-memory security guards ───────────────────────────────────
+// Hourly game/ad reward limit: max 30 PT claims per hour per user
+const gameRewardHourly = new Map<string, { count: number; windowStart: number }>();
+// Daily PT cap: max 5 000 PT earned per calendar day per user
+const dailyPtEarned   = new Map<string, { earned: number; day: string }>();
+// One-time ad tokens: token → { pbId, reward, expiresAt }
+const adTokenStore    = new Map<string, { pbId: string; reward: number; expiresAt: number }>();
+
+function checkHourlyRewardLimit(pbId: string): boolean {
+  const MAX = 30;
+  const now = Date.now();
+  const e = gameRewardHourly.get(pbId);
+  if (!e || now - e.windowStart > 3_600_000) {
+    gameRewardHourly.set(pbId, { count: 1, windowStart: now });
+    return true;
+  }
+  if (e.count >= MAX) return false;
+  e.count++;
+  return true;
+}
+
+function checkDailyPtCap(pbId: string, amount: number): boolean {
+  const MAX = 5_000;
+  const today = new Date().toISOString().slice(0, 10);
+  const e = dailyPtEarned.get(pbId);
+  if (!e || e.day !== today) {
+    dailyPtEarned.set(pbId, { earned: amount, day: today });
+    return true;
+  }
+  if (e.earned + amount > MAX) return false;
+  e.earned += amount;
+  return true;
+}
+
 // ─── Startup env-var validation ────────────────────────────────────────────
 function validateEnv() {
   const REQUIRED = ['PB_ADMIN_EMAIL', 'PB_ADMIN_PASSWORD'];
@@ -1507,10 +1541,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     async (req: Request, res: Response) => {
       try {
         const { pbId } = req.params;
-        const { shibBalance, powerTokens } = req.body;
+        const { shibBalance } = req.body;
         const update: any = {};
         if (shibBalance !== undefined) update.shib_balance = shibBalance;
-        if (powerTokens !== undefined) update.power_tokens = powerTokens;
+        // power_tokens is intentionally excluded — PT must only be modified via
+        // /api/app/game/reward or /api/app/ad/claim (server-enforced with rate limiting).
         const updated = await pbPatch(
           `/api/collections/users/records/${pbId}`,
           update,
@@ -2392,6 +2427,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           { status },
         );
 
+        // Auto-create personal notification when status → completed
+        if (status === "completed" && updated && !updated.code && updated.user) {
+          pbPost("/api/collections/notifications/records", {
+            title: "Withdrawal Completed ✓",
+            message: "Congratulations! Your withdrawal request has been processed and completed successfully. Please check your wallet/account. Thank you for mining with us!",
+            type: "personal",
+            target_user: updated.user,
+          }).catch((e: any) =>
+            console.warn("[withdrawals/complete] Notification failed:", e.message)
+          );
+        }
+
         // If rejected, refund the amount
         if (status === "rejected") {
           const withdrawal = updated;
@@ -2684,6 +2731,63 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Ad: Request one-time reward token (call BEFORE showing rewarded ad) ──
+  app.post("/api/app/ad/token", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.body;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      // Lock in reward = last_session_score × 2, capped at ABSOLUTE_MAX_SCORE × 2
+      const sessionScore = Math.max(0, Math.round(Number(user.last_session_score) || 0));
+      const reward = Math.min(sessionScore * 2, ABSOLUTE_MAX_SCORE * 2);
+      const token = crypto.randomUUID();
+      // Token expires in 10 minutes — enough time to watch the ad
+      adTokenStore.set(token, { pbId, reward, expiresAt: Date.now() + 10 * 60_000 });
+      console.log(`[ad/token] Issued token for ${pbId}, reward=${reward}PT`);
+      res.json({ token, reward });
+    } catch (e: any) {
+      console.error("[/api/app/ad/token]", e.message);
+      res.status(500).json({ error: "Failed to issue ad token" });
+    }
+  });
+
+  // ── Ad: Claim PT reward after watching ad (validates one-time token) ──────
+  app.post("/api/app/ad/claim", async (req: Request, res: Response) => {
+    try {
+      const { token, pbId } = req.body;
+      if (!token || !pbId) return res.status(400).json({ error: "token and pbId required" });
+      const entry = adTokenStore.get(token);
+      if (!entry) return res.status(400).json({ error: "Invalid or already-used token" });
+      if (entry.pbId !== pbId) return res.status(403).json({ error: "Token/user mismatch" });
+      if (Date.now() > entry.expiresAt) {
+        adTokenStore.delete(token);
+        return res.status(400).json({ error: "Token expired — please try again" });
+      }
+      adTokenStore.delete(token); // single-use: consume immediately
+
+      // Daily cap check
+      if (!checkDailyPtCap(pbId, entry.reward)) {
+        return res.status(429).json({ error: "Daily Power Token limit reached. Come back tomorrow!" });
+      }
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      const newPT    = (Number(user.power_tokens) || 0) + entry.reward;
+      const newTotal = (Number(user.total_accumulated_score) || 0) + entry.reward;
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens:            newPT,
+        total_accumulated_score: newTotal,
+        last_session_score:      0,
+      });
+      console.log(`[ad/claim] pbId=${pbId} claimed ${entry.reward}PT → newPT=${newPT}`);
+      res.json({ success: true, newPowerTokens: newPT, reward: entry.reward });
+    } catch (e: any) {
+      console.error("[/api/app/ad/claim]", e.message);
+      res.status(500).json({ error: "Failed to claim ad reward" });
+    }
+  });
+
   // ── Game: Add power tokens ────────────────────────────────────────────────
   app.post("/api/app/game/reward", async (req: Request, res: Response) => {
     try {
@@ -2699,6 +2803,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
       if (safeAmount !== Number(amount)) {
         console.warn(`[/api/app/game/reward] Amount capped: ${amount} → ${safeAmount}`);
+      }
+
+      // Hourly rate limit: max 30 reward claims per user per hour
+      if (!checkHourlyRewardLimit(pbId)) {
+        console.warn(`[/api/app/game/reward] Rate-limited: ${pbId}`);
+        return res.status(429).json({ error: "Too many reward requests. Please wait before trying again." });
+      }
+
+      // Daily cap: max 5 000 PT earned per user per calendar day
+      if (!checkDailyPtCap(pbId, safeAmount)) {
+        console.warn(`[/api/app/game/reward] Daily cap hit: ${pbId}`);
+        return res.status(429).json({ error: "Daily Power Token limit reached. Come back tomorrow!" });
       }
 
       const user = await pbGet(`/api/collections/users/records/${pbId}`);

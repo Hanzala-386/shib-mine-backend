@@ -145,17 +145,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     try {
       await api.gameReward(pbId, amount, type);
       await refreshBalance();
-    } catch {
-      // PB SDK fallback — increment power_tokens directly
-      try {
-        const userRec = await pb.collection('users').getOne(pbId, { fields: 'id,power_tokens' });
-        await pb.collection('users').update(pbId, {
-          power_tokens: (userRec.power_tokens || 0) + amount,
-        });
-        await refreshBalance();
-      } catch (e) {
-        console.warn('[Wallet] addPowerTokens PB fallback failed', e);
-      }
+    } catch (e) {
+      // Server-side validation must remain the sole authority for PT writes.
+      // Never write power_tokens directly to PocketBase from the client —
+      // doing so bypasses rate limiting, daily caps, and anti-cheat checks.
+      await refreshBalance().catch(() => {});
+      throw e; // re-throw so callers (games.tsx) can handle failure gracefully
     }
   }
 

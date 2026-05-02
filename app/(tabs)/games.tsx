@@ -9,6 +9,7 @@ import * as Haptics from 'expo-haptics';
 import { useWallet } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import { pb } from '@/lib/pocketbase';
+import { api } from '@/lib/api';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
 
@@ -265,22 +266,47 @@ export default function GamesScreen() {
     startSessionTimer();
   }, [sendToGame, fetchGameData, startSessionTimer]);
 
-  /* ── DOUBLE (2×) → rewarded ad (AdMob mediation picks network) → add score × 2 PT ── */
+  /* ── DOUBLE (2×) → rewarded ad → server-validated one-time token → add PT ── */
   const handleDouble = useCallback(async () => {
     setPhase('double_ad');
+
+    // Request a one-time server token BEFORE showing the ad.
+    // The server locks in reward = last_session_score × 2 at this moment,
+    // so the client cannot manipulate the amount after the ad plays.
+    let adToken: string | null = null;
+    let lockedReward: number | null = null;
+    const pbId = pbIdRef.current;
+    if (pbId) {
+      try {
+        const tokenRes = await api.requestAdToken(pbId);
+        adToken = tokenRes.token;
+        lockedReward = tokenRes.reward;
+      } catch { /* fall through — use regular reward path as backup */ }
+    }
+
     showRewarded(async (watched) => {
       if (!watched) { setPhase('summary'); return; }
       setPhase('saving');
-      const pts = Math.min(scoreRef.current * 2, SCORE_LIMIT * 2);
       try {
-        await addPowerTokens(pts, 'knife_hit');
-        await refreshBalance();
+        let pts: number;
+        if (adToken && pbId) {
+          // Secure path: claim the server-issued token (single-use, amount locked server-side)
+          const claimRes = await api.claimAdToken(pbId, adToken);
+          pts = claimRes.reward;
+          await refreshBalance();
+        } else {
+          // Fallback path (no token): use regular reward endpoint with server-side caps
+          pts = Math.min(scoreRef.current * 2, SCORE_LIMIT * 2);
+          await addPowerTokens(pts, 'knife_hit');
+          await refreshBalance();
+        }
         setEarned(pts);
         setPhase('reward');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         if (pbIdRef.current) fetchGameData(pbIdRef.current);
       } catch {
         await refreshBalance().catch(() => {});
+        const pts = lockedReward ?? Math.min(scoreRef.current * 2, SCORE_LIMIT * 2);
         setEarned(pts); setPhase('reward');
       }
     });
