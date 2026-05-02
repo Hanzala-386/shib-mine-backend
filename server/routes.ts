@@ -469,6 +469,114 @@ async function ensureReferralEarningsLogCollection() {
   }
 }
 
+// ─── Ensure session_logs collection exists in PocketBase ──────────────────
+// One record per mining session claim (or fraud attempt).
+// Fields: user (pbId), session_type ("1x"|"2x"|"4x"|"6x"|"10x"|"fraud"),
+//         income (SHIB reward), booster_multiplier, duration_seconds.
+async function ensureSessionLogsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/session_logs");
+    if (!check.code) {
+      console.log("[session_logs] Collection already exists ✓");
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "session_logs",
+      type: "base",
+      schema: [
+        { name: "user",              type: "text",   required: true  },
+        { name: "session_type",      type: "text",   required: true  },
+        { name: "income",            type: "number", required: false },
+        { name: "booster_multiplier",type: "number", required: false },
+        { name: "duration_seconds",  type: "number", required: false },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[session_logs] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    // Admin-only access (server writes via admin token)
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null,
+    }, token);
+    console.log("[session_logs] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[session_logs] Setup failed:", e.message);
+  }
+}
+
+// ─── Ensure game_logs collection exists in PocketBase ─────────────────────
+// One record per game completed (knife-hit game).
+// Fields: user (pbId), raw_score, is_double (bool), final_tokens (PT credited).
+async function ensureGameLogsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/game_logs");
+    if (!check.code) {
+      console.log("[game_logs] Collection already exists ✓");
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "game_logs",
+      type: "base",
+      schema: [
+        { name: "user",         type: "text",   required: true  },
+        { name: "raw_score",    type: "number", required: false },
+        { name: "is_double",    type: "bool",   required: false },
+        { name: "final_tokens", type: "number", required: false },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[game_logs] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null,
+    }, token);
+    console.log("[game_logs] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[game_logs] Setup failed:", e.message);
+  }
+}
+
+// ─── Ensure referral_history collection exists in PocketBase ──────────────
+// One record per referral commission payment (admin analytics only — separate
+// from referral_earnings_log which drives the secure payout pipeline).
+// Fields: referrer_id, claimer_id, referrer_email, claimer_email, amount, source.
+async function ensureReferralHistoryCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/referral_history");
+    if (!check.code) {
+      console.log("[referral_history] Collection already exists ✓");
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "referral_history",
+      type: "base",
+      schema: [
+        { name: "referrer_id",    type: "text",   required: true  },
+        { name: "claimer_id",     type: "text",   required: true  },
+        { name: "referrer_email", type: "text",   required: false },
+        { name: "claimer_email",  type: "text",   required: false },
+        { name: "amount",         type: "number", required: true  },
+        { name: "source",         type: "text",   required: false }, // "mining_claim" | "game_reward"
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[referral_history] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null,
+    }, token);
+    console.log("[referral_history] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[referral_history] Setup failed:", e.message);
+  }
+}
+
 // ─── Ensure notifications collection exists in PocketBase ─────────────────
 async function ensureNotificationsCollection() {
   try {
@@ -897,6 +1005,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureBrevoKeyInSettings())
     .then(() => backfillWithdrawalMaskedNames())
     .then(() => ensureNotificationsCollection())
+    .then(() => ensureSessionLogsCollection())
+    .then(() => ensureGameLogsCollection())
+    .then(() => ensureReferralHistoryCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
@@ -2060,6 +2171,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         console.log(`[FRAUD] Updated user ${pbId}: fraud_attempts=${strikes} blocked=${isBlocked}`);
 
+        // Log fraud attempt for admin analytics
+        pbPost("/api/collections/session_logs/records", {
+          user:              pbId,
+          session_type:      "fraud",
+          income:            0,
+          booster_multiplier: 0,
+          duration_seconds:  durationSec,
+        }).catch(() => {});
+
         // 3. On 3rd strike: save email to fraud_emails so login is blocked with specific message
         if (isBlocked && user.email) {
           await saveFraudEmail(user.email);
@@ -2101,6 +2221,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         fraud_attempts: 0,            // reset strike counter after a legitimate claim
       });
 
+      // Log completed session for admin analytics
+      pbPost("/api/collections/session_logs/records", {
+        user:               pbId,
+        session_type:       `${boosterMultiplier}x`,
+        income:             serverReward,
+        booster_multiplier: boosterMultiplier,
+        duration_seconds:   durationSec,
+      }).catch(() => {});
+
       // 10% referral commission → goes into referral_balance (must be claimed)
       if (user.referred_by) {
         (async () => {
@@ -2122,6 +2251,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   referral_balance:   (referrer.referral_balance || 0) + commission,
                   referral_earnings:  (referrer.referral_earnings || 0) + commission,
                 });
+                // Log referral commission for admin analytics
+                pbPost("/api/collections/referral_history/records", {
+                  referrer_id:    referrer.id,
+                  claimer_id:     pbId,
+                  referrer_email: referrer.email || "",
+                  claimer_email:  user.email || "",
+                  amount:         commission,
+                  source:         "mining_claim",
+                }).catch(() => {});
               }
             }
           } catch (_) {}
@@ -2766,10 +2904,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       adTokenStore.delete(token); // single-use: consume immediately
 
-      // Daily cap check
-      if (!checkDailyPtCap(pbId, entry.reward)) {
-        return res.status(429).json({ error: "Daily Power Token limit reached. Come back tomorrow!" });
-      }
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
@@ -2781,6 +2915,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         last_session_score:      0,
       });
       console.log(`[ad/claim] pbId=${pbId} claimed ${entry.reward}PT → newPT=${newPT}`);
+      // Log 2× game reward for admin analytics
+      pbPost("/api/collections/game_logs/records", {
+        user:         pbId,
+        raw_score:    Math.floor(entry.reward / 2),  // base score before 2× multiplier
+        is_double:    true,
+        final_tokens: entry.reward,
+      }).catch(() => {});
       res.json({ success: true, newPowerTokens: newPT, reward: entry.reward });
     } catch (e: any) {
       console.error("[/api/app/ad/claim]", e.message);
@@ -2811,12 +2952,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(429).json({ error: "Too many reward requests. Please wait before trying again." });
       }
 
-      // Daily cap: max 5 000 PT earned per user per calendar day
-      if (!checkDailyPtCap(pbId, safeAmount)) {
-        console.warn(`[/api/app/game/reward] Daily cap hit: ${pbId}`);
-        return res.status(429).json({ error: "Daily Power Token limit reached. Come back tomorrow!" });
-      }
-
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
@@ -2833,6 +2968,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         last_session_score:      0,        // reset after claim
       });
       console.log(`[/api/app/game/reward] pbId=${pbId} +${safeAmount}PT → newPT=${newPT} totalScore=${newTotal}`);
+      // Log simple (1×) game reward for admin analytics
+      pbPost("/api/collections/game_logs/records", {
+        user:         pbId,
+        raw_score:    safeAmount,
+        is_double:    false,
+        final_tokens: safeAmount,
+      }).catch(() => {});
 
       // 10% referral commission on game earnings → referral_balance (claimable)
       if (user.referred_by) {
@@ -2856,6 +2998,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   referral_balance:  (referrer.referral_balance || 0) + commission,
                   referral_earnings: (referrer.referral_earnings || 0) + commission,
                 });
+                // Log referral commission for admin analytics
+                pbPost("/api/collections/referral_history/records", {
+                  referrer_id:    referrer.id,
+                  claimer_id:     pbId,
+                  referrer_email: referrer.email || "",
+                  claimer_email:  user.email || "",
+                  amount:         commission,
+                  source:         "game_reward",
+                }).catch(() => {});
               }
             }
           } catch (_) {}
