@@ -22,6 +22,8 @@ import { NotificationsProvider } from "@/context/NotificationsContext";
 import Colors from "@/constants/colors";
 import { requestNotificationPermission } from "@/lib/notifications";
 import { TermsGateModal } from "@/components/TermsGateModal";
+import { SecurityProvider } from "@/context/SecurityContext";
+import { SecurityModal } from "@/components/SecurityModal";
 import { View, StyleSheet } from "react-native";
 import SpinningCoin from "@/components/SpinningCoin";
 
@@ -78,17 +80,21 @@ function RootLayoutNav() {
 
 function ProvidedApp() {
   return (
-    <AdProvider>
-      <WalletProvider>
-        <MiningProvider>
-          <AdminProvider>
-            <NotificationsProvider>
-              <RootLayoutNav />
-            </NotificationsProvider>
-          </AdminProvider>
-        </MiningProvider>
-      </WalletProvider>
-    </AdProvider>
+    <SecurityProvider>
+      <AdProvider>
+        <WalletProvider>
+          <MiningProvider>
+            <AdminProvider>
+              <NotificationsProvider>
+                <RootLayoutNav />
+              </NotificationsProvider>
+            </AdminProvider>
+          </MiningProvider>
+        </WalletProvider>
+      </AdProvider>
+      {/* SecurityModal renders on top of all navigation — blocks the entire UI when triggered */}
+      <SecurityModal />
+    </SecurityProvider>
   );
 }
 
