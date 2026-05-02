@@ -372,26 +372,9 @@ export default function HomeScreen() {
   const { unreadCount } = useNotifications();
   const router = useRouter();
 
-  // Live withdrawal ticker — same query as leaderboard.tsx
+  // Live withdrawal ticker — fetched from backend (admin-authed, returns correct maskedName)
   const { data: ticker = [] } = useQuery<TickerItem[]>({
     queryKey: ['/api/app/withdrawals/approved/recent'],
-    queryFn: async () => {
-      try {
-        const res = await pb.collection('withdrawals').getList(1, 20, {
-          filter: 'status = "completed" || status = "approved"',
-          sort: '-created',
-          expand: 'user',
-        });
-        return (res.items || []).map((w: any) => ({
-          id: w.id,
-          maskedName: w.expand?.user?.display_name || w.expand?.user?.name || 'Miner',
-          method: w.method || 'BEP-20',
-          amount: w.amount || 0,
-        }));
-      } catch {
-        return [];
-      }
-    },
     staleTime: 120_000,
   });
 

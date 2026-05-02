@@ -577,6 +577,57 @@ async function ensureReferralHistoryCollection() {
   }
 }
 
+// ─── Ensure tasks collection exists in PocketBase ─────────────────────────
+async function ensureTasksCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/tasks");
+    if (!check.code) { console.log("[tasks] Collection already exists ✓"); return; }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "tasks",
+      type: "base",
+      schema: [
+        { name: "title",         type: "text",   required: true  },
+        { name: "description",   type: "text",   required: false },
+        { name: "link",          type: "url",    required: false },
+        { name: "reward_amount", type: "number", required: true  },
+        { name: "reward_type",   type: "text",   required: true  },
+        { name: "is_active",     type: "bool",   required: false },
+      ],
+    }, token);
+    if (created.code) { console.warn("[tasks] Could not create:", JSON.stringify(created).slice(0, 200)); return; }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, { listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null }, token);
+    console.log("[tasks] Collection created ✓");
+  } catch (e: any) { console.warn("[tasks] Setup failed:", e.message); }
+}
+
+// ─── Ensure task_submissions collection exists in PocketBase ───────────────
+async function ensureTaskSubmissionsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/task_submissions");
+    if (!check.code) { console.log("[task_submissions] Collection already exists ✓"); return; }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "task_submissions",
+      type: "base",
+      schema: [
+        { name: "user_id",          type: "text",   required: true  },
+        { name: "task_id",          type: "text",   required: true  },
+        { name: "task_title",       type: "text",   required: false },
+        { name: "user_email",       type: "text",   required: false },
+        { name: "proof_screenshot", type: "text",   required: false },
+        { name: "status",           type: "text",   required: true  },
+        { name: "admin_notes",      type: "text",   required: false },
+        { name: "reward_amount",    type: "number", required: false },
+        { name: "reward_type",      type: "text",   required: false },
+      ],
+    }, token);
+    if (created.code) { console.warn("[task_submissions] Could not create:", JSON.stringify(created).slice(0, 200)); return; }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, { listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null }, token);
+    console.log("[task_submissions] Collection created ✓");
+  } catch (e: any) { console.warn("[task_submissions] Setup failed:", e.message); }
+}
+
 // ─── Ensure notifications collection exists in PocketBase ─────────────────
 async function ensureNotificationsCollection() {
   try {
@@ -1008,6 +1059,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureSessionLogsCollection())
     .then(() => ensureGameLogsCollection())
     .then(() => ensureReferralHistoryCollection())
+    .then(() => ensureTasksCollection())
+    .then(() => ensureTaskSubmissionsCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
@@ -3042,6 +3095,196 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error("[/api/app/game/spend]", e.message);
       res.status(500).json({ error: "Failed to spend tokens" });
+    }
+  });
+
+  // ── Tasks: list active tasks with user submission status ─────────────────
+  app.get("/api/app/tasks", async (req: Request, res: Response) => {
+    try {
+      const { userId } = req.query as { userId?: string };
+      const tasksRes = await pbGet(
+        `/api/collections/tasks/records?filter=${encodeURIComponent("is_active=true")}&sort=created&perPage=50`,
+      );
+      const tasks = tasksRes.items || [];
+
+      let submissionsMap: Record<string, any> = {};
+      if (userId) {
+        const subsRes = await pbGet(
+          `/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${userId}"`)}&perPage=200`,
+        );
+        for (const sub of (subsRes.items || [])) {
+          if (!submissionsMap[sub.task_id] || sub.status === "approved") {
+            submissionsMap[sub.task_id] = { id: sub.id, status: sub.status, admin_notes: sub.admin_notes || "" };
+          }
+        }
+      }
+
+      res.json(tasks.map((t: any) => ({
+        id: t.id,
+        title: t.title,
+        description: t.description || "",
+        link: t.link || "",
+        reward_amount: t.reward_amount || 0,
+        reward_type: t.reward_type || "PT",
+        submission: submissionsMap[t.id] || null,
+      })));
+    } catch (e: any) {
+      console.error("[/api/app/tasks]", e.message);
+      res.status(500).json({ error: "Failed to fetch tasks" });
+    }
+  });
+
+  // ── Tasks: submit proof ────────────────────────────────────────────────────
+  app.post("/api/app/tasks/submit", async (req: Request, res: Response) => {
+    try {
+      const { pbId, taskId, proofBase64 } = req.body;
+      if (!pbId || !taskId) return res.status(400).json({ error: "pbId and taskId required" });
+
+      const task = await pbGet(`/api/collections/tasks/records/${taskId}`);
+      if (task.code) return res.status(404).json({ error: "Task not found" });
+      if (!task.is_active) return res.status(400).json({ error: "Task is no longer active" });
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,email`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      const existing = await pbGet(
+        `/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${pbId}" && task_id="${taskId}" && (status="pending" || status="approved")`)}&perPage=1`,
+      );
+      if ((existing.items || []).length > 0) {
+        return res.status(409).json({ error: "Already submitted or approved for this task" });
+      }
+
+      const sub = await pbPost("/api/collections/task_submissions/records", {
+        user_id: pbId,
+        task_id: taskId,
+        task_title: task.title,
+        user_email: user.email || "",
+        proof_screenshot: proofBase64 || "",
+        status: "pending",
+        admin_notes: "",
+        reward_amount: task.reward_amount || 0,
+        reward_type: task.reward_type || "PT",
+      });
+      if (!sub.id) return res.status(500).json({ error: "Failed to create submission" });
+
+      res.json({ success: true, submissionId: sub.id });
+    } catch (e: any) {
+      console.error("[/api/app/tasks/submit]", e.message);
+      res.status(500).json({ error: "Failed to submit task" });
+    }
+  });
+
+  // ── Admin: list all tasks ─────────────────────────────────────────────────
+  app.get("/api/admin/tasks", async (_req: Request, res: Response) => {
+    try {
+      const r = await pbGet(`/api/collections/tasks/records?sort=-created&perPage=100`);
+      res.json(r.items || []);
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to fetch tasks" });
+    }
+  });
+
+  // ── Admin: create task ────────────────────────────────────────────────────
+  app.post("/api/admin/tasks", async (req: Request, res: Response) => {
+    try {
+      const { title, description, link, reward_amount, reward_type, is_active } = req.body;
+      if (!title || !reward_amount || !reward_type) {
+        return res.status(400).json({ error: "title, reward_amount, reward_type required" });
+      }
+      const task = await pbPost("/api/collections/tasks/records", {
+        title,
+        description: description || "",
+        link: link || "",
+        reward_amount: Number(reward_amount),
+        reward_type,
+        is_active: is_active !== false,
+      });
+      if (!task.id) return res.status(500).json({ error: "Failed to create task" });
+      res.json(task);
+    } catch (e: any) {
+      console.error("[admin/tasks POST]", e.message);
+      res.status(500).json({ error: "Failed to create task" });
+    }
+  });
+
+  // ── Admin: update task (toggle active etc.) ───────────────────────────────
+  app.patch("/api/admin/tasks/:id", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const result = await pbPatch(`/api/collections/tasks/records/${id}`, req.body);
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to update task" });
+    }
+  });
+
+  // ── Admin: list task submissions ──────────────────────────────────────────
+  app.get("/api/admin/tasks/submissions", async (req: Request, res: Response) => {
+    try {
+      const { status } = req.query as { status?: string };
+      const filter = status ? `status="${status}"` : `status="pending"`;
+      const r = await pbGet(
+        `/api/collections/task_submissions/records?filter=${encodeURIComponent(filter)}&sort=-created&perPage=100`,
+      );
+      res.json(r.items || []);
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to fetch submissions" });
+    }
+  });
+
+  // ── Admin: approve submission + auto-reward ───────────────────────────────
+  app.post("/api/admin/tasks/submissions/:id/approve", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { notes } = req.body;
+
+      const sub = await pbGet(`/api/collections/task_submissions/records/${id}`);
+      if (sub.code) return res.status(404).json({ error: "Submission not found" });
+      if (sub.status !== "pending") return res.status(400).json({ error: "Already processed" });
+
+      const user = await pbGet(`/api/collections/users/records/${sub.user_id}?fields=id,shib_balance,power_tokens`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // Apply reward
+      const patch: Record<string, number> = {};
+      if (sub.reward_type === "SHIB") {
+        patch.shib_balance = (user.shib_balance || 0) + (sub.reward_amount || 0);
+      } else {
+        patch.power_tokens = (user.power_tokens || 0) + (sub.reward_amount || 0);
+      }
+      await pbPatch(`/api/collections/users/records/${sub.user_id}`, patch);
+
+      // Mark approved
+      await pbPatch(`/api/collections/task_submissions/records/${id}`, {
+        status: "approved",
+        admin_notes: notes || "",
+      });
+
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[tasks/approve]", e.message);
+      res.status(500).json({ error: "Failed to approve submission" });
+    }
+  });
+
+  // ── Admin: reject submission ──────────────────────────────────────────────
+  app.post("/api/admin/tasks/submissions/:id/reject", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { notes } = req.body;
+
+      const sub = await pbGet(`/api/collections/task_submissions/records/${id}`);
+      if (sub.code) return res.status(404).json({ error: "Submission not found" });
+      if (sub.status !== "pending") return res.status(400).json({ error: "Already processed" });
+
+      await pbPatch(`/api/collections/task_submissions/records/${id}`, {
+        status: "rejected",
+        admin_notes: notes || "",
+      });
+
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to reject submission" });
     }
   });
 

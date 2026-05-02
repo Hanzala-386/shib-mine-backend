@@ -114,6 +114,11 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
   }, [runFullCheck]);
 
   useEffect(() => {
+    // ⚠ Skip ALL security checks in development (Expo Go, Replit preview).
+    // Replit/corporate networks block Google Ads domains, causing false positives.
+    // In production native builds __DEV__ is always false — checks run normally.
+    if (__DEV__) return;
+
     // Initial checks on mount (non-blocking — app can load while ad probe runs)
     (async () => {
       // Root + VPN are fast — run immediately

@@ -1,0 +1,38 @@
+We have some urgent bugs to fix and a major new feature to implement. Please follow these instructions carefully:
+
+1. Critical Bug Fixes (Urgent):
+
+App Preview Crash: The app preview is currently failing to load or keeps refreshing. This happened after the recent security hardening. Check if the DNS filter detection or root check is accidentally blocking the preview environment itself and bypass it for development/preview.
+
+Miner Bug Returns: The live withdrawal ticker is again showing 'Miner' instead of display_name. Ensure the backend fetch logic for the last 10 completed withdrawals is correctly pulling and sending the user's name.
+
+2. Task Management System (New Feature):
+Create a system where users earn rewards (SHIB or Power Tokens) by completing manual tasks (e.g., Play Store reviews, social media follows).
+
+Database Requirements:
+
+tasks Collection: Fields for title, description, link, reward_amount, reward_type (SHIB/PT), and is_active.
+
+task_submissions Collection: Fields for user_id, task_id, proof_screenshot (Image), status (Pending/Approved/Rejected), and submitted_at.
+
+User Application Side:
+
+Add a new page/tab called 'Tasks'.
+
+Display active tasks in a clean list. Each task should have a 'Go' button (opens the link) and an 'Upload Proof' button (to select an image from gallery).
+
+Once submitted, the status should show as 'Under Review'.
+
+Admin Panel Side:
+
+Create Task Page: A simple form to add new tasks with specific rewards.
+
+Approve Tasks Page ('Task Verification'): A list of all pending submissions. Admin must be able to click on the screenshot to view it clearly.
+
+Automation: Once the Admin clicks 'Approve', the system must automatically add the reward amount to the user's balance based on the reward_type defined in the task.
+
+3. Final Confirmation (EAS Builds):
+
+Please confirm that all implemented security features (Root check, VPN check, Ad-blocker check) and the Play Store Referrer logic will function correctly once we generate the final APK and .aab files using EAS builds.
+
+Constraint: Keep the UI clean, follow our dark/gold theme, and do not break any existing withdrawal or security logic.

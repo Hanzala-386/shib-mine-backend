@@ -287,6 +287,33 @@ export const api = {
 
   adminGetStats: () => request<AdminStats>('GET', '/api/app/admin/stats'),
 
+  // ── Tasks ─────────────────────────────────────────────────────────────
+  getTasks: (pbId: string) =>
+    request<TaskItem[]>('GET', `/api/app/tasks?userId=${encodeURIComponent(pbId)}`),
+
+  submitTaskProof: (payload: { pbId: string; taskId: string; proofBase64: string }) =>
+    request<{ success: boolean; submissionId: string }>('POST', '/api/app/tasks/submit', payload),
+
+  // ── Admin: Tasks ──────────────────────────────────────────────────────
+  adminGetTasks: () => request<AdminTask[]>('GET', '/api/admin/tasks'),
+
+  adminCreateTask: (payload: {
+    title: string; description: string; link: string;
+    reward_amount: number; reward_type: 'SHIB' | 'PT'; is_active: boolean;
+  }) => request<AdminTask>('POST', '/api/admin/tasks', payload),
+
+  adminToggleTask: (id: string, is_active: boolean) =>
+    request('PATCH', `/api/admin/tasks/${id}`, { is_active }),
+
+  adminGetSubmissions: (status = 'pending') =>
+    request<AdminTaskSubmission[]>('GET', `/api/admin/tasks/submissions?status=${status}`),
+
+  adminApproveSubmission: (id: string, notes?: string) =>
+    request<{ success: boolean }>('POST', `/api/admin/tasks/submissions/${id}/approve`, { notes: notes || '' }),
+
+  adminRejectSubmission: (id: string, notes: string) =>
+    request<{ success: boolean }>('POST', `/api/admin/tasks/submissions/${id}/reject`, { notes }),
+
   // Uses robustPost (globalThis.fetch, 30s timeout, 1 retry) — avoids expo/fetch
   // AbortController cancellation bug on Android for this critical user action.
   requestDeleteOtp: (pbId: string, email: string) =>
@@ -426,4 +453,39 @@ export interface AdminStats {
   totalSessions: number;
   totalWithdrawals: number;
   pendingWithdrawals: number;
+}
+
+export interface TaskItem {
+  id: string;
+  title: string;
+  description: string;
+  link: string;
+  reward_amount: number;
+  reward_type: 'SHIB' | 'PT';
+  submission: { id: string; status: 'pending' | 'approved' | 'rejected'; admin_notes: string } | null;
+}
+
+export interface AdminTask {
+  id: string;
+  title: string;
+  description: string;
+  link: string;
+  reward_amount: number;
+  reward_type: string;
+  is_active: boolean;
+  created: string;
+}
+
+export interface AdminTaskSubmission {
+  id: string;
+  user_id: string;
+  task_id: string;
+  task_title: string;
+  user_email: string;
+  proof_screenshot: string;
+  status: string;
+  admin_notes: string;
+  reward_amount: number;
+  reward_type: string;
+  created: string;
 }
