@@ -267,9 +267,9 @@ export default function TasksScreen() {
 
       <ProofPreviewModal
         visible={!!pendingTask}
-        uri={pendingBase64}
+        uri={pendingUri}
         onConfirm={handleConfirmSubmit}
-        onCancel={() => { setPendingTask(null); setPendingBase64(''); }}
+        onCancel={() => { setPendingTask(null); setPendingUri(''); }}
         isSubmitting={submitMut.isPending}
       />
     </View>
