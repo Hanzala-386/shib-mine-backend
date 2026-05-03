@@ -7,7 +7,6 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
-import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -447,7 +446,7 @@ export default function ProfileScreen() {
               </View>
               <View style={styles.referralInfo}>
                 <Text style={styles.referralTitle}>Your Referral Code</Text>
-                <Text style={styles.referralDesc}>Share to earn 10% commission on friends' mining</Text>
+                <Text style={styles.referralDesc}>Share to earn 10% commission on friends&apos; mining</Text>
               </View>
             </View>
             <Pressable
@@ -694,7 +693,7 @@ export default function ProfileScreen() {
         statusBarTranslucent
       >
         <RNAnimated.View style={[styles.claimOverlay, { opacity: claimAnim }]}>
-          <BlurView intensity={50} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.72)' }]} />
         </RNAnimated.View>
         <Pressable style={styles.claimOverlay} onPress={() => !isClaiming && setShowClaimModal(false)} />
         <RNAnimated.View
@@ -721,7 +720,7 @@ export default function ProfileScreen() {
               </LinearGradient>
             </View>
             <Text style={styles.claimModalTitle}>Referral Rewards</Text>
-            <Text style={styles.claimModalSub}>Earned from your friends' mining sessions</Text>
+            <Text style={styles.claimModalSub}>Earned from your friends&apos; mining sessions</Text>
 
             {/* Balance display */}
             <View style={styles.claimBalanceBox}>
@@ -919,8 +918,8 @@ export default function ProfileScreen() {
             <View style={otpStyles.spamHint}>
               <Ionicons name="information-circle-outline" size={14} color={Colors.gold} />
               <Text style={otpStyles.spamHintText}>
-                Open the email to confirm it's you, then tap the button below to permanently delete your account.
-                {'\n'}Check <Text style={{ color: Colors.textPrimary }}>Spam / Junk</Text> if you don't see it.
+                Open the email to confirm it&apos;s you, then tap the button below to permanently delete your account.
+                {'\n'}Check <Text style={{ color: Colors.textPrimary }}>Spam / Junk</Text> if you don&apos;t see it.
               </Text>
             </View>
 

@@ -94,7 +94,7 @@ export default function ForgotPasswordScreen() {
             <>
               <Text style={styles.title}>Forgot Password?</Text>
               <Text style={styles.subtitle}>
-                Enter the email address linked to your account and we'll send you a reset link.
+                Enter the email address linked to your account and we&apos;ll send you a reset link.
               </Text>
 
               {/* Email input */}
@@ -138,7 +138,7 @@ export default function ForgotPasswordScreen() {
               </Pressable>
 
               <Text style={styles.hint}>
-                Check your spam folder if you don't see the email within a few minutes.
+                Check your spam folder if you don&apos;t see the email within a few minutes.
               </Text>
             </>
           ) : (

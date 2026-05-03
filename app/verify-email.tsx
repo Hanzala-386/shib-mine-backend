@@ -104,7 +104,7 @@ export default function VerifyEmailScreen() {
           <View style={styles.spamNote}>
             <Ionicons name="information-circle-outline" size={14} color={Colors.textMuted} />
             <Text style={styles.spamNoteText}>
-              Note: If you don't see the email in your inbox, please check your Spam or Junk folder.
+              Note: If you don&apos;t see the email in your inbox, please check your Spam or Junk folder.
             </Text>
           </View>
         </View>
@@ -144,7 +144,7 @@ export default function VerifyEmailScreen() {
             ) : (
               <>
                 <Ionicons name="checkmark-circle-outline" size={20} color="#000" />
-                <Text style={styles.primaryBtnText}>I've verified my email</Text>
+                <Text style={styles.primaryBtnText}>I&apos;ve verified my email</Text>
               </>
             )}
           </LinearGradient>
