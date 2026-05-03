@@ -3254,10 +3254,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       await pbPatch(`/api/collections/users/records/${sub.user_id}`, patch);
 
-      // Mark approved
+      // Mark approved + clear screenshot from storage (no longer needed after decision)
       await pbPatch(`/api/collections/task_submissions/records/${id}`, {
         status: "approved",
         admin_notes: notes || "",
+        proof_screenshot: "",
       });
 
       res.json({ success: true });
@@ -3277,9 +3278,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (sub.code) return res.status(404).json({ error: "Submission not found" });
       if (sub.status !== "pending") return res.status(400).json({ error: "Already processed" });
 
+      // Mark rejected + clear screenshot from storage (no longer needed after decision)
       await pbPatch(`/api/collections/task_submissions/records/${id}`, {
         status: "rejected",
         admin_notes: notes || "",
+        proof_screenshot: "",
       });
 
       res.json({ success: true });

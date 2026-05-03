@@ -8,11 +8,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { api, TaskItem } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import Colors from '@/constants/colors';
+
+// 2 MB hard limit for proof screenshots (base64 string chars ≈ raw bytes * 1.37)
+const MAX_PROOF_BYTES = 2 * 1024 * 1024;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function RewardBadge({ amount, type }: { amount: number; type: string }) {
@@ -59,16 +63,42 @@ function TaskCard({ item, pbId, onProofSelected }: {
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaType.Images,
-      allowsEditing: true,
-      quality: 0.5,
-      base64: true,
+      // Guard: both MediaTypeOptions and MediaType may be undefined on some platforms/builds
+      mediaTypes: (ImagePicker.MediaTypeOptions?.Images ?? ImagePicker.MediaType?.Images ?? 'Images') as any,
+      allowsEditing: false,
+      quality: 1, // keep full quality here — we compress manually below
+      base64: false, // we get base64 from the manipulator step
     });
-    if (!result.canceled && result.assets[0].base64) {
-      const ext = result.assets[0].uri.split('.').pop() || 'jpg';
-      const b64 = `data:image/${ext === 'png' ? 'png' : 'jpeg'};base64,${result.assets[0].base64}`;
-      onProofSelected(item, b64);
+    if (result.canceled || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+
+    // ── Resize to max 1024px wide + compress to JPEG 0.65 ──
+    const manipulated = await ImageManipulator.manipulateAsync(
+      asset.uri,
+      [{ resize: { width: Math.min(asset.width || 1024, 1024) } }],
+      { compress: 0.65, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+    );
+
+    if (!manipulated.base64) {
+      Alert.alert('Error', 'Could not process image. Please try another one.');
+      return;
     }
+
+    const b64 = `data:image/jpeg;base64,${manipulated.base64}`;
+
+    // ── 2 MB hard cap ──
+    // base64 string length ≈ raw byte size * 1.37; compare against 2MB raw
+    const rawBytes = (manipulated.base64.length * 3) / 4;
+    if (rawBytes > MAX_PROOF_BYTES) {
+      Alert.alert(
+        'Image Too Large',
+        'Your screenshot is still over 2 MB after compression. Please crop or choose a smaller image.',
+      );
+      return;
+    }
+
+    onProofSelected(item, b64);
   }, [item, onProofSelected]);
 
   const openLink = useCallback(() => {
@@ -103,6 +133,10 @@ function TaskCard({ item, pbId, onProofSelected }: {
           <StatusPill status={item.submission.status} />
         )}
       </View>
+
+      {!item.submission && (
+        <Text style={card.formatHint}>Accepted: JPG, PNG · Max 2 MB</Text>
+      )}
 
       {item.submission?.status === 'rejected' && !!item.submission.admin_notes && (
         <Text style={card.rejection}>Reason: {item.submission.admin_notes}</Text>
@@ -277,6 +311,7 @@ const card = StyleSheet.create({
     backgroundColor: Colors.gold, borderRadius: 10, paddingVertical: 8,
   },
   submitBtnText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#0A0A0F' },
+  formatHint: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, marginTop: -4 },
   rejection: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.error, fontStyle: 'italic' },
 });
 
