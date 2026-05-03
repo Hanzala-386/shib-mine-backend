@@ -91,6 +91,8 @@
   var lastPostedScore    = -1;     /* last score sent via SCORE_UPDATE */
   var sessionStartMs     = 0;      /* set when bridge becomes ready */
   var gameOverSent       = false;  /* prevents double GAME_OVER per session */
+  var lastServerScore    = 0;      /* last score the server was told about (for hit detection) */
+  var pendingHits        = 0;      /* hits detected but not yet sent — drained one per tick */
 
   /* ── Runtime accessor ────────────────────────────────────────────────── */
   function rt() {
@@ -397,11 +399,31 @@
         currentScore = cappedScore;
       }
       lastTrackedScore = currentScore;
+
+      /* ── Detect hits from score delta → queue for per-hit WS reporting ─ */
+      if (!gameOverSent && currentScore > lastServerScore) {
+        var scoreDelta = currentScore - lastServerScore;
+        /* Each hit = 5 pts in Weapon Master; clamp to at most MAX_DELTA_PER_TICK/5 */
+        var newHits = Math.min(Math.max(1, Math.floor(scoreDelta / 5)), 4);
+        pendingHits += newHits;
+        lastServerScore = currentScore;
+        console.log('[Bridge] Hit detected: +' + scoreDelta + 'pts → queue=' + pendingHits);
+      }
     } else if (currentScore < lastTrackedScore) {
       lastTrackedScore = currentScore;
       lastPostedScore  = -1;
       /* Score dropped (game restarted in C3) — reset gameOverSent for new round */
-      if (currentScore === 0) gameOverSent = false;
+      if (currentScore === 0) {
+        gameOverSent    = false;
+        lastServerScore = 0;
+        pendingHits     = 0;
+      }
+    }
+
+    /* ── Drain one queued hit per tick → server gets max ~3.3 hits/sec ── */
+    if (pendingHits > 0 && !gameOverSent) {
+      pendingHits--;
+      wsSend('KNIFE_HIT', {});
     }
 
     /* ── Score-limit check (2000 cap): force GAME_OVER ───────────────── */
