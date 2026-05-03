@@ -21,14 +21,14 @@ if (Platform.OS !== 'web') {
 
 const { width: SW, height: SH } = Dimensions.get('window');
 
-// Knife Hit game is served from the same Express/Railway server — this ensures
-// the WebSocket connection always points to the right backend host automatically.
+// Weapon Master (Construct 3) is served from the Railway server at /arcade/index.html.
+// Using the dynamic API URL ensures it always resolves to the correct Railway host.
 function buildGameUrl(): string {
   try {
     const base = getApiUrl();
-    return new URL('/game/index.html', base).toString();
+    return new URL('/arcade/index.html', base).toString();
   } catch {
-    return 'https://webcod.in/game/index.html';
+    return 'https://webcod.in/arcade/index.html';
   }
 }
 const GAME_URL = buildGameUrl();
@@ -141,7 +141,7 @@ export default function GamesScreen() {
         `window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(json)}}));true;`
       );
     } else {
-      const frame = document.querySelector<HTMLIFrameElement>('iframe[title="KnifeHit"]');
+      const frame = document.querySelector<HTMLIFrameElement>('iframe[title="WeaponMaster"]');
       frame?.contentWindow?.postMessage(json, '*');
     }
   }, []);
@@ -163,7 +163,7 @@ export default function GamesScreen() {
     if (Platform.OS !== 'web') {
       wvRef.current?.reload();
     } else {
-      const f = document.querySelector<HTMLIFrameElement>('iframe[title="KnifeHit"]');
+      const f = document.querySelector<HTMLIFrameElement>('iframe[title="WeaponMaster"]');
       if (f) { const s = f.src; f.src = ''; f.src = s; }
     }
   }, [stopSessionTimer, warningPulse]);
@@ -312,7 +312,7 @@ export default function GamesScreen() {
         } else {
           // Fallback path (no token): use regular reward endpoint with server-side caps
           pts = Math.min(scoreRef.current * 2, SCORE_LIMIT * 2);
-          await addPowerTokens(pts, 'knife_hit');
+          await addPowerTokens(pts, 'weapon_master');
           await refreshBalance();
         }
         setEarned(pts);
@@ -336,7 +336,7 @@ export default function GamesScreen() {
     setPhase('saving');
     const pts = scoreRef.current;
     try {
-      await addPowerTokens(pts, 'knife_hit');
+      await addPowerTokens(pts, 'weapon_master');
       await refreshBalance();
       setEarned(pts);
       setPhase('reward');
@@ -405,7 +405,7 @@ export default function GamesScreen() {
   const renderGame = () => {
     if (Platform.OS === 'web') {
       return (
-        <iframe src={GAME_URL} title="KnifeHit"
+        <iframe src={GAME_URL} title="WeaponMaster"
           style={{ flex: 1, border: 'none', width: '100%', height: '100%' } as any}
           allow="autoplay" />
       );

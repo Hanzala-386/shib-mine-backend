@@ -99,10 +99,16 @@ async function getAdminToken(): Promise<string> {
 }
 
 // ─── WebSocket game session anti-cheat ────────────────────────────────────
-// Server is the authoritative score keeper.  The game sends one KNIFE_HIT
-// signal per successful throw; the server validates timing, counts hits, and
-// stores the final PT total as last_session_score so the existing claim/double
-// flow can read it without change.
+// Supports two game modes on the same /api/ws/game endpoint:
+//
+//  Weapon Master (Construct 3) — score-validation mode:
+//    GAME_START → SESSION_READY → ... play ... → GAME_OVER {score, elapsed_ms}
+//    Server validates score ≤ elapsed_ms/1000 × 15 pts/sec and ≤ 2000, then
+//    stores last_session_score.  No per-action signals needed.
+//
+//  Knife Hit — per-hit mode (legacy, kept for possible future use):
+//    GAME_START → SESSION_READY → KNIFE_HIT × N → GAME_OVER
+//    Server counts hits at 5 PT each with timing/burst guards.
 
 const WS_PT_PER_HIT   = 5;           // tokens awarded per validated hit
 const WS_MAX_PT       = 2000;        // hard session cap
@@ -217,6 +223,17 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           if (!sid) return;
           const session = wsSessions.get(sid);
           if (!session || session.committed) { send({ type: "COMMITTED", serverPT: session?.serverPT ?? 0 }); return; }
+
+          // Weapon Master mode: no KNIFE_HITs were sent — validate score from message
+          if (session.hits === 0 && msg.score !== undefined) {
+            const rawScore  = Math.max(0, Number(msg.score) || 0);
+            const elapsedMs = Math.max(1000, Number(msg.elapsed_ms) || (Date.now() - session.startMs));
+            // Time-based cap mirrors bridge.js client check: max 15 pts/sec
+            const maxForTime = Math.ceil((elapsedMs / 1000) * 15);
+            session.serverPT = Math.min(rawScore, WS_MAX_PT, maxForTime);
+            console.log(`[ws/game] WeaponMaster score: raw=${rawScore} elapsed=${Math.round(elapsedMs/1000)}s cap=${maxForTime} validated=${session.serverPT} (${session.pbId})`);
+          }
+
           await wsCommitSession(sid, session);
           send({ type: "COMMITTED", serverPT: session.serverPT });
           break;
@@ -229,7 +246,8 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
       const session = wsSessions.get(sid);
       if (!session || session.committed) return;
       // Commit any earned PT on disconnect so players don't lose progress
-      if (session.hits > 0) {
+      // serverPT > 0 covers both Weapon Master (score set on GAME_OVER) and Knife Hit (per-hit accumulation)
+      if (session.hits > 0 || session.serverPT > 0) {
         wsCommitSession(sid, session).catch(() => {});
       } else {
         if (session.timer) clearTimeout(session.timer);

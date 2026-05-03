@@ -40,6 +40,46 @@
   var navBlocked  = false;
   var pendingNav  = null;
 
+  /* ── WebSocket — server-side score validation ─────────────────────────────
+   *  After INJECT_VARS is received, opens a WebSocket to the Railway server
+   *  and sends GAME_OVER with the final validated score so the server can
+   *  store last_session_score.  Gracefully no-ops if WS is unavailable.
+   * ──────────────────────────────────────────────────────────────────────── */
+  var wsApiUrl = '';
+  var wsConn   = null;
+  var wsReady  = false;
+
+  function wsOpen(pbId) {
+    if (!wsApiUrl || wsConn) return;
+    try {
+      var base = wsApiUrl.replace(/\/+$/, '').replace(/^https?:\/\//, '');
+      var url  = 'wss://' + base + '/api/ws/game';
+      wsConn = new WebSocket(url);
+      wsConn.onopen = function () {
+        wsReady = true;
+        wsConn.send(JSON.stringify({ type: 'GAME_START', pbId: pbId }));
+        console.log('[Bridge] WS connected → GAME_START sent');
+      };
+      wsConn.onmessage = function (e) {
+        try { console.log('[Bridge] WS <<<', e.data); } catch (err) {}
+      };
+      wsConn.onerror = function () { wsReady = false; wsConn = null; };
+      wsConn.onclose = function () { wsReady = false; wsConn = null; };
+      console.log('[Bridge] WS opening:', url);
+    } catch (err) {
+      console.warn('[Bridge] WS open failed:', err);
+      wsConn = null;
+    }
+  }
+
+  function wsSend(type, extra) {
+    if (!wsReady || !wsConn) return;
+    try {
+      wsConn.send(JSON.stringify(Object.assign({ type: type }, extra || {})));
+      console.log('[Bridge] WS >>>', type, JSON.stringify(extra || {}));
+    } catch (err) { wsReady = false; }
+  }
+
   /* ── Score integrity guards ──────────────────────────────────────────────
    *  MAX_DELTA_PER_TICK  – max points we allow per 300 ms polling tick.
    *  ABSOLUTE_MAX_SCORE  – hard cap for a single session (2000 pts rule).
@@ -218,6 +258,8 @@
       elapsed_ms:         elapsedMs,
       reason:             reason || 'death',
     });
+    /* Also notify server via WebSocket so it can validate + store the score */
+    wsSend('GAME_OVER', { score: score, elapsed_ms: elapsedMs });
 
     /* Reset session for next round */
     sessionStartMs   = Date.now();
@@ -303,6 +345,9 @@
     if (msg.type === 'INJECT_VARS') {
       if (runtime) applyInject(runtime, msg);
       else         injectQueue = msg;
+      /* Open server WS for score validation once we have pbId + apiUrl */
+      wsApiUrl = msg.apiUrl || '';
+      if (wsApiUrl && msg.pbId) wsOpen(msg.pbId);
     }
 
     /* TIME_UP — 2-minute timer from React Native expired */
@@ -421,6 +466,8 @@
             elapsed_ms:         elapsedMs,
             reason:             'death',
           });
+          /* Also notify server via WebSocket so it can validate + store the score */
+          wsSend('GAME_OVER', { score: score, elapsed_ms: elapsedMs });
 
           sessionStartMs   = Date.now();
           lastTrackedScore = 0;
