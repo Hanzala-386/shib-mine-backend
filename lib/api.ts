@@ -291,16 +291,25 @@ export const api = {
   getTasks: (pbId: string) =>
     request<TaskItem[]>('GET', `/api/app/tasks?userId=${encodeURIComponent(pbId)}`),
 
-  submitTaskProof: async (params: { pbId: string; taskId: string; uri: string }): Promise<{ success: boolean; submissionId: string }> => {
+  submitTaskProof: async (params: { pbId: string; taskId: string; uri: string; base64: string }): Promise<{ success: boolean; submissionId: string }> => {
     const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
     const form = new FormData();
     form.append('pbId',   params.pbId);
     form.append('taskId', params.taskId);
-    // React Native FormData file upload: { uri, name, type } is the RN-specific blob format
-    form.append('proof_screenshot', { uri: params.uri, name: 'proof.jpg', type: 'image/jpeg' } as any);
-    const res = await globalThis.fetch(url, { method: 'POST', body: form });
+    // Convert base64 → Uint8Array → Blob for reliable binary upload on all RN/web platforms.
+    // The { uri, name, type } FormData trick only works with the native RN fetch polyfill.
+    // globalThis.fetch / expo/fetch bypass that polyfill, so the file bytes are never sent.
+    // Using an explicit Blob avoids all polyfill ambiguity.
+    const binaryStr = atob(params.base64);
+    const len = binaryStr.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'image/jpeg' });
+    form.append('proof_screenshot', blob, 'proof.jpg');
+    const res = await fetch(url, { method: 'POST', body: form });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    if (!data.submissionId) throw new Error('Upload failed — screenshot was not saved on the server');
     return data;
   },
 

@@ -54,7 +54,7 @@ function StatusPill({ status }: { status: string }) {
 function TaskCard({ item, pbId, onProofSelected }: {
   item: TaskItem;
   pbId: string;
-  onProofSelected: (task: TaskItem, base64: string) => void;
+  onProofSelected: (task: TaskItem, uri: string, base64: string) => void;
 }) {
   const pickProof = useCallback(async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -97,8 +97,8 @@ function TaskCard({ item, pbId, onProofSelected }: {
       }
     }
 
-    // Pass the local compressed file URI — uploaded as real multipart (no base64 string)
-    onProofSelected(item, manipulated.uri);
+    // Pass both URI (for preview) and base64 (for reliable binary upload)
+    onProofSelected(item, manipulated.uri, manipulated.base64!);
   }, [item, onProofSelected]);
 
   const openLink = useCallback(() => {
@@ -185,8 +185,9 @@ export default function TasksScreen() {
   const qc = useQueryClient();
 
   const [pendingTask, setPendingTask] = useState<TaskItem | null>(null);
-  // Store the local compressed file URI (not base64) — uploaded as a real file
   const [pendingUri, setPendingUri] = useState('');
+  // base64 is kept alongside the URI: URI is used for the preview image, base64 for the upload
+  const [pendingBase64, setPendingBase64] = useState('');
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top + 8;
 
@@ -198,28 +199,30 @@ export default function TasksScreen() {
   });
 
   const submitMut = useMutation({
-    mutationFn: ({ taskId, uri }: { taskId: string; uri: string }) =>
-      api.submitTaskProof({ pbId: user!.pbId, taskId, uri }),
+    mutationFn: ({ taskId, uri, base64 }: { taskId: string; uri: string; base64: string }) =>
+      api.submitTaskProof({ pbId: user!.pbId, taskId, uri, base64 }),
     onSuccess: () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       qc.invalidateQueries({ queryKey: ['/api/app/tasks', user?.pbId] });
       setPendingTask(null);
       setPendingUri('');
+      setPendingBase64('');
       Alert.alert('Submitted!', 'Your proof is under review. You\'ll receive your reward once approved.');
     },
     onError: (e: any) => {
-      Alert.alert('Error', e.message || 'Submission failed. Please try again.');
+      Alert.alert('Upload Failed', e.message || 'Submission failed. Please try again.');
     },
   });
 
-  const handleProofSelected = useCallback((task: TaskItem, uri: string) => {
+  const handleProofSelected = useCallback((task: TaskItem, uri: string, base64: string) => {
     setPendingTask(task);
     setPendingUri(uri);
+    setPendingBase64(base64);
   }, []);
 
   const handleConfirmSubmit = () => {
-    if (!pendingTask) return;
-    submitMut.mutate({ taskId: pendingTask.id, uri: pendingUri });
+    if (!pendingTask || !pendingBase64) return;
+    submitMut.mutate({ taskId: pendingTask.id, uri: pendingUri, base64: pendingBase64 });
   };
 
   return (
@@ -269,7 +272,7 @@ export default function TasksScreen() {
         visible={!!pendingTask}
         uri={pendingUri}
         onConfirm={handleConfirmSubmit}
-        onCancel={() => { setPendingTask(null); setPendingUri(''); }}
+        onCancel={() => { setPendingTask(null); setPendingUri(''); setPendingBase64(''); }}
         isSubmitting={submitMut.isPending}
       />
     </View>

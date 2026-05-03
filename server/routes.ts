@@ -3200,6 +3200,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { pbId, taskId } = req.body;
       if (!pbId || !taskId) return res.status(400).json({ error: "pbId and taskId required" });
 
+      if (!req.file) {
+        return res.status(400).json({ error: "Proof screenshot is required — no file received by server. Please try again." });
+      }
+
       const task = await pbGet(`/api/collections/tasks/records/${taskId}`);
       if (task.code) return res.status(404).json({ error: "Task not found" });
       if (!task.is_active) return res.status(400).json({ error: "Task is no longer active" });
