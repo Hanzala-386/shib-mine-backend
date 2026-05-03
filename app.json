@@ -3,7 +3,7 @@
     "name": "Shiba Hit",
     "slug": "shib-mine",
     "owner": "hanzalasha",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "myapp",
@@ -20,6 +20,7 @@
     },
     "android": {
       "package": "com.hanzalasha.shibmine",
+      "versionCode": 4,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
