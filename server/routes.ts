@@ -4,6 +4,13 @@ import https from "node:https";
 import http from "node:http";
 import crypto from "node:crypto";
 import nodemailer from "nodemailer";
+import multer from "multer";
+
+// ─── Multer — memory storage for proof screenshot uploads ─────────────────
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
+});
 
 
 const PB_URL = "https://api.webcod.in";
@@ -55,6 +62,18 @@ function pbHttp(
     if (data) req.write(data);
     req.end();
   });
+}
+
+// ─── PocketBase multipart helpers (file uploads) ──────────────────────────
+async function pbFetchMultipart(method: string, path: string, form: FormData): Promise<any> {
+  const token = await getAdminToken();
+  const url = new URL(path, PB_URL).toString();
+  const res = await globalThis.fetch(url, {
+    method,
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  return res.json();
 }
 
 // ─── Admin token cache ─────────────────────────────────────────────────────
@@ -628,6 +647,46 @@ async function ensureTaskSubmissionsCollection() {
   } catch (e: any) { console.warn("[task_submissions] Setup failed:", e.message); }
 }
 
+// ─── Migrate proof_screenshot field: text → file ───────────────────────────
+async function migrateProofScreenshotToFile() {
+  try {
+    const token = await getAdminToken();
+    const col = await pbGet("/api/collections/task_submissions");
+    if (col.code) { console.log("[task_submissions] Collection not found — skip migration"); return; }
+
+    // Detect current field type (schema key = older PB API; fields key = newer)
+    const schema: any[] = col.schema || col.fields || [];
+    const field = schema.find((f: any) => f.name === "proof_screenshot");
+    if (!field) { console.log("[task_submissions] proof_screenshot field not found — skip"); return; }
+    if (field.type === "file") { console.log("[task_submissions] proof_screenshot already file type ✓"); return; }
+
+    // Build updated schema with proof_screenshot as file type
+    const updatedSchema = schema.map((f: any) =>
+      f.name === "proof_screenshot"
+        ? {
+            name: "proof_screenshot",
+            type: "file",
+            required: false,
+            options: { maxSelect: 1, maxSize: 5242880, mimeTypes: ["image/jpeg", "image/png", "image/webp"] },
+          }
+        : f,
+    );
+
+    // Try schema key first (older PB), then fields key (newer PB)
+    let r = await pbHttp("PATCH", `/api/collections/${col.id}`, { schema: updatedSchema }, token);
+    if (r.code) {
+      r = await pbHttp("PATCH", `/api/collections/${col.id}`, { fields: updatedSchema }, token);
+    }
+    if (!r.code) {
+      console.log("[task_submissions] proof_screenshot migrated text→file ✓");
+    } else {
+      console.warn("[task_submissions] Field migration failed:", JSON.stringify(r).slice(0, 300));
+    }
+  } catch (e: any) {
+    console.warn("[task_submissions] Migration error:", e.message);
+  }
+}
+
 // ─── Ensure notifications collection exists in PocketBase ─────────────────
 async function ensureNotificationsCollection() {
   try {
@@ -1061,6 +1120,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
+    .then(() => migrateProofScreenshotToFile())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
@@ -3134,10 +3194,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ── Tasks: submit proof ────────────────────────────────────────────────────
-  app.post("/api/app/tasks/submit", async (req: Request, res: Response) => {
+  // ── Tasks: submit proof (multipart — stores real file in PocketBase) ───────
+  app.post("/api/app/tasks/submit", upload.single("proof_screenshot"), async (req: Request, res: Response) => {
     try {
-      const { pbId, taskId, proofBase64 } = req.body;
+      const { pbId, taskId } = req.body;
       if (!pbId || !taskId) return res.status(400).json({ error: "pbId and taskId required" });
 
       const task = await pbGet(`/api/collections/tasks/records/${taskId}`);
@@ -3154,18 +3214,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(409).json({ error: "Already submitted or approved for this task" });
       }
 
-      const sub = await pbPost("/api/collections/task_submissions/records", {
-        user_id: pbId,
-        task_id: taskId,
-        task_title: task.title,
-        user_email: user.email || "",
-        proof_screenshot: proofBase64 || "",
-        status: "pending",
-        admin_notes: "",
-        reward_amount: task.reward_amount || 0,
-        reward_type: task.reward_type || "PT",
-      });
-      if (!sub.id) return res.status(500).json({ error: "Failed to create submission" });
+      // Forward to PocketBase as multipart so the image is stored as a real file
+      const form = new FormData();
+      form.append("user_id",      pbId);
+      form.append("task_id",      taskId);
+      form.append("task_title",   task.title || "");
+      form.append("user_email",   user.email || "");
+      form.append("status",       "pending");
+      form.append("admin_notes",  "");
+      form.append("reward_amount", String(task.reward_amount || 0));
+      form.append("reward_type",  task.reward_type || "PT");
+
+      if (req.file) {
+        const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "image/jpeg" });
+        form.append("proof_screenshot", blob, req.file.originalname || "proof.jpg");
+      }
+
+      const sub = await pbFetchMultipart("POST", "/api/collections/task_submissions/records", form);
+      if (!sub.id) {
+        console.error("[/api/app/tasks/submit] PB error:", JSON.stringify(sub).slice(0, 300));
+        return res.status(500).json({ error: "Failed to create submission" });
+      }
 
       res.json({ success: true, submissionId: sub.id });
     } catch (e: any) {
@@ -3254,12 +3323,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       await pbPatch(`/api/collections/users/records/${sub.user_id}`, patch);
 
-      // Mark approved + clear screenshot from storage (no longer needed after decision)
-      await pbPatch(`/api/collections/task_submissions/records/${id}`, {
-        status: "approved",
-        admin_notes: notes || "",
-        proof_screenshot: "",
-      });
+      // Mark approved via multipart so we can delete the stored screenshot file
+      const approveForm = new FormData();
+      approveForm.append("status",      "approved");
+      approveForm.append("admin_notes", notes || "");
+      // PocketBase file-delete syntax: fieldname- = filename to remove
+      if (sub.proof_screenshot) {
+        approveForm.append("proof_screenshot-", sub.proof_screenshot);
+      }
+      await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, approveForm);
 
       res.json({ success: true });
     } catch (e: any) {
@@ -3278,12 +3350,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (sub.code) return res.status(404).json({ error: "Submission not found" });
       if (sub.status !== "pending") return res.status(400).json({ error: "Already processed" });
 
-      // Mark rejected + clear screenshot from storage (no longer needed after decision)
-      await pbPatch(`/api/collections/task_submissions/records/${id}`, {
-        status: "rejected",
-        admin_notes: notes || "",
-        proof_screenshot: "",
-      });
+      // Mark rejected via multipart so we can delete the stored screenshot file
+      const rejectForm = new FormData();
+      rejectForm.append("status",      "rejected");
+      rejectForm.append("admin_notes", notes || "");
+      // PocketBase file-delete syntax: fieldname- = filename to remove
+      if (sub.proof_screenshot) {
+        rejectForm.append("proof_screenshot-", sub.proof_screenshot);
+      }
+      await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, rejectForm);
 
       res.json({ success: true });
     } catch (e: any) {

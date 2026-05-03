@@ -15,7 +15,7 @@ import { api, TaskItem } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import Colors from '@/constants/colors';
 
-// 2 MB hard limit for proof screenshots (base64 string chars ≈ raw bytes * 1.37)
+// 2 MB hard limit checked against compressed file size (manipulator gives us the URI)
 const MAX_PROOF_BYTES = 2 * 1024 * 1024;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -85,20 +85,20 @@ function TaskCard({ item, pbId, onProofSelected }: {
       return;
     }
 
-    const b64 = `data:image/jpeg;base64,${manipulated.base64}`;
-
-    // ── 2 MB hard cap ──
-    // base64 string length ≈ raw byte size * 1.37; compare against 2MB raw
-    const rawBytes = (manipulated.base64.length * 3) / 4;
-    if (rawBytes > MAX_PROOF_BYTES) {
-      Alert.alert(
-        'Image Too Large',
-        'Your screenshot is still over 2 MB after compression. Please crop or choose a smaller image.',
-      );
-      return;
+    // ── 2 MB hard cap — use base64 length to estimate raw bytes ──
+    if (manipulated.base64) {
+      const rawBytes = (manipulated.base64.length * 3) / 4;
+      if (rawBytes > MAX_PROOF_BYTES) {
+        Alert.alert(
+          'Image Too Large',
+          'Your screenshot is still over 2 MB after compression. Please crop or choose a smaller image.',
+        );
+        return;
+      }
     }
 
-    onProofSelected(item, b64);
+    // Pass the local compressed file URI — uploaded as real multipart (no base64 string)
+    onProofSelected(item, manipulated.uri);
   }, [item, onProofSelected]);
 
   const openLink = useCallback(() => {
@@ -185,7 +185,8 @@ export default function TasksScreen() {
   const qc = useQueryClient();
 
   const [pendingTask, setPendingTask] = useState<TaskItem | null>(null);
-  const [pendingBase64, setPendingBase64] = useState('');
+  // Store the local compressed file URI (not base64) — uploaded as a real file
+  const [pendingUri, setPendingUri] = useState('');
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top + 8;
 
@@ -197,13 +198,13 @@ export default function TasksScreen() {
   });
 
   const submitMut = useMutation({
-    mutationFn: ({ taskId, proofBase64 }: { taskId: string; proofBase64: string }) =>
-      api.submitTaskProof({ pbId: user!.pbId, taskId, proofBase64 }),
+    mutationFn: ({ taskId, uri }: { taskId: string; uri: string }) =>
+      api.submitTaskProof({ pbId: user!.pbId, taskId, uri }),
     onSuccess: () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       qc.invalidateQueries({ queryKey: ['/api/app/tasks', user?.pbId] });
       setPendingTask(null);
-      setPendingBase64('');
+      setPendingUri('');
       Alert.alert('Submitted!', 'Your proof is under review. You\'ll receive your reward once approved.');
     },
     onError: (e: any) => {
@@ -211,14 +212,14 @@ export default function TasksScreen() {
     },
   });
 
-  const handleProofSelected = useCallback((task: TaskItem, base64: string) => {
+  const handleProofSelected = useCallback((task: TaskItem, uri: string) => {
     setPendingTask(task);
-    setPendingBase64(base64);
+    setPendingUri(uri);
   }, []);
 
   const handleConfirmSubmit = () => {
     if (!pendingTask) return;
-    submitMut.mutate({ taskId: pendingTask.id, proofBase64: pendingBase64 });
+    submitMut.mutate({ taskId: pendingTask.id, uri: pendingUri });
   };
 
   return (

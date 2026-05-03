@@ -14,6 +14,11 @@ import { useAuth } from '@/context/AuthContext';
 import { api, type AdminTask, type AdminTaskSubmission } from '@/lib/api';
 import Colors from '@/constants/colors';
 
+// Build a PocketBase file URL for a given collection record and filename
+function pbFileUrl(recordId: string, filename: string): string {
+  return `https://api.webcod.in/api/files/task_submissions/${recordId}/${filename}`;
+}
+
 export default function AdminScreen() {
   const insets = useSafeAreaInsets();
   const { settings, updateSettings } = useAdmin();
@@ -310,8 +315,8 @@ export default function AdminScreen() {
                     <Text style={styles.subTask}>{s.task_title}</Text>
                     <Text style={styles.subReward}>{s.reward_amount} {s.reward_type}</Text>
                     {!!s.proof_screenshot && (
-                      <Pressable onPress={() => setProofModal(s.proof_screenshot)}>
-                        <Image source={{ uri: s.proof_screenshot }} style={styles.subProofThumb} resizeMode="cover" />
+                      <Pressable onPress={() => setProofModal(pbFileUrl(s.id, s.proof_screenshot))}>
+                        <Image source={{ uri: pbFileUrl(s.id, s.proof_screenshot) }} style={styles.subProofThumb} resizeMode="cover" />
                         <Text style={styles.subProofHint}>Tap to enlarge</Text>
                       </Pressable>
                     )}

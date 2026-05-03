@@ -291,8 +291,18 @@ export const api = {
   getTasks: (pbId: string) =>
     request<TaskItem[]>('GET', `/api/app/tasks?userId=${encodeURIComponent(pbId)}`),
 
-  submitTaskProof: (payload: { pbId: string; taskId: string; proofBase64: string }) =>
-    request<{ success: boolean; submissionId: string }>('POST', '/api/app/tasks/submit', payload),
+  submitTaskProof: async (params: { pbId: string; taskId: string; uri: string }): Promise<{ success: boolean; submissionId: string }> => {
+    const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
+    const form = new FormData();
+    form.append('pbId',   params.pbId);
+    form.append('taskId', params.taskId);
+    // React Native FormData file upload: { uri, name, type } is the RN-specific blob format
+    form.append('proof_screenshot', { uri: params.uri, name: 'proof.jpg', type: 'image/jpeg' } as any);
+    const res = await globalThis.fetch(url, { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    return data;
+  },
 
   // ── Admin: Tasks ──────────────────────────────────────────────────────
   adminGetTasks: () => request<AdminTask[]>('GET', '/api/admin/tasks'),
