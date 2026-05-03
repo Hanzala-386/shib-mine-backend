@@ -16,7 +16,16 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
 4. **Speed Boosters** — 2x/4x/6x/10x, time-limited 1 hour, single active at a time, countdown timer on active card; decoupled from mining start
 5. **Server-Side Claim Verification** — Server computes expected reward from rate × 3600 × booster_multiplier; client reward validated within 5% tolerance
 6. **Rolling Counter** — Smooth animated SHIB balance display during mining
-7. **Weapon Master Game (Construct 3)** — Full HTML5 game hosted at `/arcade/`, rendered via WebView (iOS/Android) or iframe (web). bridge.js reads C3 score via `esm._allGlobalVars[]` (each var has `._name` / `._value`). On "death" layout: GAME_OVER postMessage with score & tomatoes → syncScore API. 1 score = 1 PT. "Double My Tokens" rewarded ad (2x).
+7. **Knife Hit Game — Server-Authoritative WebSocket Scoring** — Vanilla JS knife-throw game at `public/game/Knife hit Template/index.html`, served from the Express server at `/game/index.html`. Anti-cheat architecture:
+   - **Per-hit WebSocket signals**: On each valid knife hit, game sends `KNIFE_HIT` to `wss://[server]/api/ws/game`
+   - **Server counts hits**: 5 PT per validated hit, 2000 PT cap, 3-minute hard timer — all enforced server-side
+   - **Anti-cheat checks**: min 300ms between hits (knife physics minimum), burst detection (max 15 hits per 5-second window)
+   - **Session flow**: game sends `BRIDGE_READY` → RN sends `INJECT_VARS {pbId, apiUrl}` → game connects WebSocket → `GAME_START` → `SESSION_READY {sessionId}` → per-hit `HIT_ACK {serverPT}` → `GAME_OVER` → `COMMITTED {finalPT}`
+   - **Commit strategy**: on game over, server stores `last_session_score = serverPT` in PocketBase; existing claim/double flow reads this
+   - **Reward validation**: `/api/app/game/reward` validates `amount ≤ last_session_score × 2` (×2 for ad double reward)
+   - **Game URL**: dynamically built from `getApiUrl()` so WebSocket always points to the correct Railway host
+   - **Static serving**: `/game` and `/arcade` served before Metro proxy in dev; Metro pathFilter excludes them
+   - **WebSocket setup**: `WebSocketServer({noServer:true})` + `server.on('upgrade')` handler for `/api/ws/game`; Metro proxy pathFilter starts with `/api` so it doesn't intercept WS upgrades for this path
 8. **Professional Ad Integration** — `react-native-google-mobile-ads` SDK (requires custom EAS build for real ads; simulates gracefully in Expo Go). Architecture:
    - `context/AdContext.tsx`: SDK init + fetches all unit IDs from PocketBase settings; exposes `showInterstitial()` / `showRewarded()` with loading state
    - `components/StickyBannerAd.tsx`: Persistent banner above tab bar, 30s auto-refresh via key remount

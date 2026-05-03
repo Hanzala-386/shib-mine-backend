@@ -105,6 +105,106 @@ let bossIndex = 0;
 let gameSentToApp = false;
 let selectedKnife = 0;
 
+/* ── Server-authoritative WebSocket scoring ──────────── */
+let pbId      = '';      // injected from React Native
+let apiUrl    = '';      // injected from React Native (https://...)
+let injected  = false;   // true once INJECT_VARS received
+let ws        = null;    // WebSocket connection
+let sessionId = null;    // assigned by server on GAME_START
+let serverPT  = 0;       // server-confirmed power tokens this session
+let wsReady   = false;   // true once SESSION_READY received
+let pendingHit = false;  // debounce: don't queue two hits at once
+
+function connectWs() {
+  if (!apiUrl) { wsReady = false; return; }
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+  // Convert https:// → wss://, http:// → ws://
+  const wsUrl = apiUrl.replace(/^https/, 'wss').replace(/^http(?!s)/, 'ws').replace(/\/$/, '') + '/api/ws/game';
+
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch(e) {
+    console.warn('[ws] Could not create WebSocket:', e);
+    ws = null; wsReady = false; return;
+  }
+
+  ws.onopen = function() {
+    if (pbId) {
+      ws.send(JSON.stringify({ type: 'GAME_START', pbId: pbId }));
+    } else {
+      ws.close();
+    }
+  };
+
+  ws.onmessage = function(e) {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch(err) { return; }
+
+    if (msg.type === 'SESSION_READY') {
+      sessionId = msg.sessionId;
+      wsReady   = true;
+      serverPT  = 0;
+
+    } else if (msg.type === 'HIT_ACK') {
+      serverPT = msg.serverPT;
+      pendingHit = false;
+
+    } else if (msg.type === 'HIT_REJECTED') {
+      pendingHit = false;
+
+    } else if (msg.type === 'GAME_OVER') {
+      // Server forced game over (time limit or score cap)
+      serverPT = msg.serverPT || serverPT;
+      if (state !== 'gameover') {
+        finalizeGameOver();
+      }
+
+    } else if (msg.type === 'COMMITTED') {
+      // Server has committed last_session_score — now safe to notify React Native
+      serverPT = msg.serverPT || serverPT;
+      if (!gameSentToApp) {
+        gameSentToApp = true;
+        sendToApp('GAME_OVER', { score: serverPT, serverPT: serverPT, level: level });
+      }
+    } else if (msg.type === 'ERROR') {
+      console.warn('[ws] Server error:', msg.reason);
+      wsReady = false;
+    }
+  };
+
+  ws.onerror = function(e) {
+    console.warn('[ws] WebSocket error — falling back to local score');
+    wsReady = false;
+  };
+
+  ws.onclose = function() {
+    wsReady = false;
+    sessionId = null;
+  };
+}
+
+function sendHitToServer() {
+  if (!wsReady || !ws || ws.readyState !== WebSocket.OPEN || !sessionId) return;
+  if (pendingHit) return;   // server hasn't acked last hit yet — don't spam
+  pendingHit = true;
+  try {
+    ws.send(JSON.stringify({ type: 'KNIFE_HIT', sessionId: sessionId }));
+  } catch(e) {
+    pendingHit = false;
+  }
+}
+
+function closeWs() {
+  if (ws) {
+    try { ws.close(); } catch(e) {}
+    ws = null;
+  }
+  wsReady = false;
+  sessionId = null;
+  pendingHit = false;
+}
+
 /* ── Helpers ─────────────────────────────────────────── */
 function norm(a){ return ((a%Math.PI*2)+Math.PI*2)%(Math.PI*2); }
 function angleDiff(a,b){
@@ -153,6 +253,10 @@ function checkCollision(){
     knivesLeft--;
     score += 10;
     triggerShake(3);
+
+    // ── Notify server of this valid hit ──
+    sendHitToServer();
+
     if(knivesLeft <= 0){
       setTimeout(()=>{ nextLevel(); }, 600);
       playSound(SND.defeated, 0.8);
@@ -168,14 +272,34 @@ function nextLevel(){
   startLevel();
 }
 
-function gameOver(){
+// finalizeGameOver: triggers the visual game-over state and tells server
+function finalizeGameOver() {
   state = 'gameover';
-  if(score > highScore){ highScore = score; localStorage.setItem('kh_hi',highScore); }
-  if(!gameSentToApp){
-    gameSentToApp = true;
-    const pt = Math.max(1, Math.floor(score / 20));
-    sendToApp('GAME_OVER', { score, pt, level });
+  if(score > highScore){ highScore = score; localStorage.setItem('kh_hi', highScore); }
+
+  if (wsReady && ws && ws.readyState === WebSocket.OPEN && sessionId) {
+    // Tell server game is over — wait for COMMITTED message to notify React Native
+    try { ws.send(JSON.stringify({ type: 'GAME_OVER', sessionId: sessionId })); } catch(e) {}
+    // Safety fallback: if COMMITTED doesn't arrive in 3 s, send local score to RN
+    setTimeout(function() {
+      if (!gameSentToApp) {
+        gameSentToApp = true;
+        sendToApp('GAME_OVER', { score: serverPT || score, serverPT: serverPT, level: level });
+      }
+    }, 3000);
+  } else {
+    // No WebSocket — fall back to local score (not server-validated)
+    if (!gameSentToApp) {
+      gameSentToApp = true;
+      const pt = Math.max(1, Math.floor(score / 20));
+      sendToApp('GAME_OVER', { score: pt, serverPT: 0, level: level });
+    }
   }
+}
+
+function gameOver(){
+  if (state === 'gameover') return;
+  finalizeGameOver();
 }
 
 function triggerShake(amt){ shakeAmt = amt; shakeTimer = 10; }
@@ -185,6 +309,7 @@ function sendToApp(type, data){
   if(window.ReactNativeWebView){
     window.ReactNativeWebView.postMessage(msg);
   } else {
+    window.parent.postMessage(msg, '*');
     console.log('[game→app]', msg);
   }
 }
@@ -264,7 +389,6 @@ function draw(ts){
   ctx.save();
   ctx.translate(shake, shake*0.5);
 
-  /* background */
   if(BG_IMG.complete && BG_IMG.naturalWidth){
     ctx.drawImage(BG_IMG, 0, 0, W, H);
   } else {
@@ -299,14 +423,20 @@ function drawMenu(){
     ctx.fillText('BEST: ' + highScore, W/2, H/2 - 36);
   }
 
-  drawRoundedRect(W/2-90, H/2-5, 180, 56, 14, '#f5c542');
+  // Show connection status on menu screen
+  if (injected) {
+    ctx.font = '13px BAUHS93, sans-serif';
+    ctx.fillStyle = wsReady ? '#4cff91' : 'rgba(255,255,255,0.45)';
+    ctx.fillText(wsReady ? '● Server connected' : '○ Connecting…', W/2, H/2 - 10);
+  }
+
+  drawRoundedRect(W/2-90, H/2+10, 180, 56, 14, '#f5c542');
   ctx.font = 'bold 22px BAUHS93, sans-serif';
   ctx.fillStyle = '#1a0a05';
-  ctx.fillText('TAP TO PLAY', W/2, H/2+28);
+  ctx.fillText('TAP TO PLAY', W/2, H/2+43);
 }
 
 function drawGame(){
-  /* Log / Boss */
   ctx.save();
   ctx.translate(LOG_CX, LOG_CY);
   ctx.rotate(logAngle);
@@ -321,7 +451,6 @@ function drawGame(){
     ctx.strokeStyle='#3D2A15'; ctx.lineWidth=6; ctx.stroke();
   }
 
-  /* Stuck knives on log */
   for(const k of knivesOnLog){
     ctx.save();
     ctx.rotate(k.localAngle);
@@ -336,34 +465,35 @@ function drawGame(){
   }
   ctx.restore();
 
-  /* Flying knife */
   if(flying){
     drawFlyingKnifeImg(flying.x, flying.y);
   }
 
-  /* Waiting knife at bottom */
   if(!flying && !levelComplete && knivesLeft > 0 && state === 'playing'){
     drawFlyingKnifeImg(LOG_CX, H - 80);
   }
 
-  /* HUD */
   drawHUD();
 }
 
 function drawHUD(){
-  /* Level badge */
   ctx.font = 'bold 20px BAUHS93, sans-serif';
   ctx.textAlign = 'left';
   ctx.fillStyle='rgba(255,255,255,0.9)';
   ctx.shadowColor='#000'; ctx.shadowBlur=4;
   ctx.fillText('LVL ' + level, 16, 48);
 
-  /* Score */
+  // Show server-confirmed PT (green) when connected, local estimate when offline
   ctx.textAlign = 'right';
-  ctx.fillText('PT ' + Math.max(1,Math.floor(score/20)), W-16, 48);
+  if (wsReady) {
+    ctx.fillStyle = '#f5c542';
+    ctx.fillText(serverPT + ' PT', W-16, 48);
+  } else {
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fillText(Math.max(1, Math.floor(score/20)) + ' PT', W-16, 48);
+  }
   ctx.shadowBlur = 0;
 
-  /* Knife dots */
   const total = totalKnives;
   const left  = knivesLeft;
   const dot   = 10;
@@ -393,6 +523,7 @@ function drawGameOver(ts){
     drawRoundedRect(-120,-70,240,140,20,'rgba(30,10,0,0.9)','#f5c542');
   }
 
+  const displayScore = wsReady || serverPT > 0 ? serverPT : Math.max(1, Math.floor(score/20));
   const isNew = score >= highScore && score > 0;
   if(isNew){
     const nbImg = NEWBEST_IMG;
@@ -404,14 +535,13 @@ function drawGameOver(ts){
   ctx.textAlign = 'center';
   ctx.fillStyle = '#f5c542';
   ctx.shadowColor='#000'; ctx.shadowBlur=10;
-  ctx.fillText(String(score), 0, 16);
+  ctx.fillText(String(displayScore), 0, 16);
   ctx.shadowBlur=0;
   ctx.font='16px BAUHS93,sans-serif';
   ctx.fillStyle='rgba(255,255,255,0.7)';
-  ctx.fillText('SCORE', 0, 42);
+  ctx.fillText(wsReady || serverPT > 0 ? 'POWER TOKENS' : 'SCORE', 0, 42);
   ctx.restore();
 
-  /* Restart button */
   const rImg = RESTART_IMG;
   if(rImg.complete && rImg.naturalWidth){
     ctx.drawImage(rImg, W/2-45, H/2+78, 90, 90);
@@ -429,16 +559,20 @@ function handleTap(){
   if(state === 'menu'){
     playSound(SND.button, 0.6);
     gameSentToApp = false;
-    level = 1; score = 0;
+    level = 1; score = 0; serverPT = 0;
     selectedKnife = Math.floor(Math.random()*20);
+    closeWs();
+    connectWs();
     startLevel();
     return;
   }
   if(state === 'gameover'){
     playSound(SND.button, 0.6);
     gameSentToApp = false;
-    level = 1; score = 0;
+    level = 1; score = 0; serverPT = 0;
     selectedKnife = Math.floor(Math.random()*20);
+    closeWs();
+    connectWs();
     startLevel();
     return;
   }
@@ -451,26 +585,41 @@ canvas.addEventListener('pointerdown', e => { e.preventDefault(); handleTap(); }
 document.addEventListener('keydown', e => { if(e.code==='Space'||e.code==='ArrowUp') handleTap(); });
 
 /* ── App bridge: receive messages from React Native ──── */
+function handleAppMessage(raw) {
+  let d;
+  try { d = JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw)); } catch(err) { return; }
+
+  if (d.type === 'INJECT_VARS') {
+    pbId    = d.pbId    || '';
+    apiUrl  = d.apiUrl  || '';
+    injected = true;
+    // Start connecting immediately so the server session is ready when the user taps
+    if (apiUrl && pbId) connectWs();
+  }
+
+  if (d.type === 'TIME_UP') {
+    // React Native session timer expired — treat as game over
+    if (state === 'playing') gameOver();
+  }
+
+  if (d.type === 'DOUBLE_REWARD') {
+    sendToApp('DOUBLE_REWARD_ACK', {});
+  }
+}
+
 window.addEventListener('message', e => {
-  try{
-    const d = JSON.parse(e.data);
-    if(d.type === 'DOUBLE_REWARD'){
-      sendToApp('DOUBLE_REWARD_ACK', {});
-    }
-  }catch(err){}
+  try { handleAppMessage(typeof e.data === 'string' ? e.data : JSON.stringify(e.data)); } catch(err) {}
 });
 document.addEventListener('message', e => {
-  try{
-    const d = JSON.parse(e.data);
-    if(d.type === 'DOUBLE_REWARD'){
-      sendToApp('DOUBLE_REWARD_ACK', {});
-    }
-  }catch(err){}
+  try { handleAppMessage(typeof e.data === 'string' ? e.data : JSON.stringify(e.data)); } catch(err) {}
 });
 
 /* ── Boot ────────────────────────────────────────────── */
 lastTime = performance.now();
 requestAnimationFrame(update);
+
+// Signal React Native that the game is ready for INJECT_VARS
+sendToApp('BRIDGE_READY', {});
 </script>
 </body>
 </html>

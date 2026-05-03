@@ -1,8 +1,9 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
-import { registerRoutes } from "./routes";
+import { registerRoutes, setupGameWebSocket } from "./routes";
 import * as fs from "fs";
 import * as path from "path";
+import { WebSocketServer } from "ws";
 import { createProxyMiddleware } from "http-proxy-middleware";
 
 const app = express();
@@ -251,15 +252,24 @@ function setupErrorHandler(app: express.Application) {
 }
 
 (async () => {
+  // ── Static game files — served before the Metro proxy so they are available
+  // in both dev and production without Metro intercepting /game and /arcade.
+  app.use("/game",   express.static(path.resolve(process.cwd(), "public/game/Knife hit Template")));
+  app.use("/arcade", express.static(path.resolve(process.cwd(), "public/arcade")));
+
   // ── DEV-ONLY: Metro proxy — registered FIRST so it wins before anything else ──
   // Non-API requests are forwarded directly to Metro on :8081.
+  // /game and /arcade are excluded so the static middleware above serves them.
   // This block is completely absent in production (NODE_ENV=production on Railway).
   if (process.env.NODE_ENV !== "production") {
     const metroProxy = createProxyMiddleware({
       target: "http://localhost:8081",
       changeOrigin: true,
       ws: true,
-      pathFilter: (pathname) => !pathname.startsWith("/api"),
+      pathFilter: (pathname) =>
+        !pathname.startsWith("/api") &&
+        !pathname.startsWith("/game") &&
+        !pathname.startsWith("/arcade"),
       on: {
         error: (_err, _req, res) => {
           if (res && "status" in res) {
@@ -271,7 +281,7 @@ function setupErrorHandler(app: express.Application) {
       },
     });
     app.use(metroProxy);
-    log("Dev proxy: Metro on :8081 registered as FIRST middleware (all non-/api traffic)");
+    log("Dev proxy: Metro on :8081 registered (excludes /api, /game, /arcade)");
   }
 
   setupCors(app);
@@ -283,6 +293,25 @@ function setupErrorHandler(app: express.Application) {
   const server = await registerRoutes(app);
 
   setupErrorHandler(app);
+
+  // ── WebSocket server for server-authoritative game scoring ──────────────
+  // Path: /api/ws/game — starts with /api so the Metro proxy pathFilter
+  // excludes it and lets our noServer handler pick it up instead.
+  const gameWss = new WebSocketServer({ noServer: true });
+  setupGameWebSocket(gameWss);
+
+  // Handle WebSocket upgrade requests for the game scoring path.
+  // The Metro proxy upgrade handler skips paths starting with /api (pathFilter),
+  // so this listener receives /api/ws/game upgrades cleanly.
+  server.on("upgrade", (request, socket, head) => {
+    const url = request.url || "";
+    if (url.startsWith("/api/ws/game")) {
+      gameWss.handleUpgrade(request, socket as any, head, (ws) => {
+        gameWss.emit("connection", ws, request);
+      });
+    }
+    // All other upgrade requests (e.g. Metro HMR on /hot) are handled by the proxy.
+  });
 
   const port = parseInt(process.env.SERVER_PORT || process.env.PORT || "5000", 10);
   server.listen(

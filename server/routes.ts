@@ -5,6 +5,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import nodemailer from "nodemailer";
 import multer from "multer";
+import { WebSocketServer } from "ws";
 
 // ─── Multer — memory storage for proof screenshot uploads ─────────────────
 const upload = multer({
@@ -95,6 +96,147 @@ async function getAdminToken(): Promise<string> {
   adminToken = res.token;
   tokenExpiry = Date.now() + 23 * 60 * 60 * 1000; // 23 hours
   return adminToken;
+}
+
+// ─── WebSocket game session anti-cheat ────────────────────────────────────
+// Server is the authoritative score keeper.  The game sends one KNIFE_HIT
+// signal per successful throw; the server validates timing, counts hits, and
+// stores the final PT total as last_session_score so the existing claim/double
+// flow can read it without change.
+
+const WS_PT_PER_HIT   = 5;           // tokens awarded per validated hit
+const WS_MAX_PT       = 2000;        // hard session cap
+const WS_MAX_HITS     = WS_MAX_PT / WS_PT_PER_HIT;  // 400 hits
+const WS_MIN_HIT_MS   = 300;         // knife physics minimum — can't throw faster
+const WS_BURST_WINDOW = 5_000;       // rolling ms window for burst detection
+const WS_BURST_MAX    = 15;          // max hits allowed in any BURST_WINDOW ms span
+const WS_SESSION_MS   = 3 * 60_000; // 3-minute hard timer
+
+interface WsGameSession {
+  pbId: string;
+  hits: number;
+  serverPT: number;
+  startMs: number;
+  lastHitMs: number;
+  hitLog: number[];   // timestamps of recent hits
+  committed: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const wsSessions = new Map<string, WsGameSession>();
+
+async function wsCommitSession(sid: string, session: WsGameSession): Promise<void> {
+  if (session.committed) return;
+  session.committed = true;
+  if (session.timer) { clearTimeout(session.timer); session.timer = null; }
+  const finalPT = session.serverPT;
+  console.log(`[ws/game] commit ${sid.slice(0, 8)}: ${session.hits} hits = ${finalPT} PT (${session.pbId})`);
+  try {
+    // Store as last_session_score — the existing REST claim/double flow reads it
+    await pbPatch(`/api/collections/users/records/${session.pbId}`, {
+      last_session_score: finalPT,
+    });
+    pbPost("/api/collections/game_logs/records", {
+      user: session.pbId, raw_score: finalPT, is_double: false, final_tokens: finalPT,
+    }).catch(() => {});
+  } catch (e: any) {
+    console.error(`[ws/game] commit error (${session.pbId}):`, e.message);
+  }
+  wsSessions.delete(sid);
+}
+
+export function setupGameWebSocket(wss: WebSocketServer): void {
+  wss.on("connection", (ws) => {
+    let sid: string | null = null;
+    const send = (obj: object) => { try { ws.send(JSON.stringify(obj)); } catch {} };
+
+    ws.on("message", async (raw) => {
+      let msg: any;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+      switch (msg.type) {
+
+        case "GAME_START": {
+          const { pbId } = msg;
+          if (!pbId) { send({ type: "ERROR", reason: "pbId_required" }); return; }
+          const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
+          if (user.code) { send({ type: "ERROR", reason: "user_not_found" }); return; }
+          // Clean up any prior session on this connection
+          if (sid) {
+            const old = wsSessions.get(sid);
+            if (old && !old.committed) { old.committed = true; if (old.timer) clearTimeout(old.timer); wsSessions.delete(sid); }
+          }
+          sid = crypto.randomUUID();
+          const session: WsGameSession = {
+            pbId, hits: 0, serverPT: 0, startMs: Date.now(),
+            lastHitMs: 0, hitLog: [], committed: false, timer: null,
+          };
+          // Auto-commit when the 3-minute server timer fires
+          session.timer = setTimeout(async () => {
+            const s = wsSessions.get(sid!);
+            if (s) await wsCommitSession(sid!, s);
+            send({ type: "GAME_OVER", reason: "time", serverPT: session.serverPT });
+          }, WS_SESSION_MS);
+          wsSessions.set(sid, session);
+          send({ type: "SESSION_READY", sessionId: sid });
+          console.log(`[ws/game] session ${sid.slice(0, 8)} started for ${pbId}`);
+          break;
+        }
+
+        case "KNIFE_HIT": {
+          if (!sid) { send({ type: "HIT_REJECTED", reason: "no_session" }); return; }
+          const session = wsSessions.get(sid);
+          if (!session || session.committed) { send({ type: "HIT_REJECTED", reason: "session_invalid" }); return; }
+          const now = Date.now();
+          // Guard: minimum time between throws (physics-enforced minimum ~300 ms)
+          if (session.lastHitMs > 0 && (now - session.lastHitMs) < WS_MIN_HIT_MS) {
+            console.warn(`[ws/game] ${sid.slice(0, 8)} too_fast (${now - session.lastHitMs}ms)`);
+            send({ type: "HIT_REJECTED", reason: "too_fast" }); return;
+          }
+          // Guard: burst detection — max 15 valid hits in any 5-second window
+          session.hitLog = session.hitLog.filter(t => now - t < WS_BURST_WINDOW);
+          if (session.hitLog.length >= WS_BURST_MAX) {
+            console.warn(`[ws/game] ${sid.slice(0, 8)} burst (${session.hitLog.length} hits/${WS_BURST_WINDOW}ms)`);
+            send({ type: "HIT_REJECTED", reason: "burst_detected" }); return;
+          }
+          // Guard: hard session cap — force end if 400 hits reached
+          if (session.hits >= WS_MAX_HITS) {
+            await wsCommitSession(sid, session);
+            send({ type: "GAME_OVER", reason: "score_limit", serverPT: session.serverPT }); return;
+          }
+          // Valid hit ─ increment authoritative counters
+          session.hits++;
+          session.serverPT = session.hits * WS_PT_PER_HIT;
+          session.lastHitMs = now;
+          session.hitLog.push(now);
+          send({ type: "HIT_ACK", serverPT: session.serverPT, serverHits: session.hits });
+          break;
+        }
+
+        case "GAME_OVER": {
+          if (!sid) return;
+          const session = wsSessions.get(sid);
+          if (!session || session.committed) { send({ type: "COMMITTED", serverPT: session?.serverPT ?? 0 }); return; }
+          await wsCommitSession(sid, session);
+          send({ type: "COMMITTED", serverPT: session.serverPT });
+          break;
+        }
+      }
+    });
+
+    ws.on("close", () => {
+      if (!sid) return;
+      const session = wsSessions.get(sid);
+      if (!session || session.committed) return;
+      // Commit any earned PT on disconnect so players don't lose progress
+      if (session.hits > 0) {
+        wsCommitSession(sid, session).catch(() => {});
+      } else {
+        if (session.timer) clearTimeout(session.timer);
+        wsSessions.delete(sid);
+      }
+    });
+  });
 }
 
 // ─── PB convenience helpers ────────────────────────────────────────────────
@@ -3051,7 +3193,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Cap incoming amount to prevent inflated rewards from client tampering.
       // ABSOLUTE_MAX_SCORE * 2 covers the double-reward (2×) ad scenario.
-      const safeAmount = Math.min(
+      let safeAmount = Math.min(
         Math.max(0, Math.round(Number(amount) || 0)),
         ABSOLUTE_MAX_SCORE * 2
       );
@@ -3067,6 +3209,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // Anti-cheat: if the server set a validated last_session_score via WebSocket,
+      // the claim amount must not exceed 2× that value (2× covers the ad double-reward).
+      // If last_session_score is 0 or unset we skip this check to avoid blocking
+      // legacy clients that still use the REST-only score path.
+      const serverValidatedScore = Number(user.last_session_score) || 0;
+      if (serverValidatedScore > 0 && safeAmount > serverValidatedScore * 2) {
+        console.warn(
+          `[/api/app/game/reward] ${pbId} amount ${safeAmount} > 2× last_session_score ${serverValidatedScore} — capping`
+        );
+        safeAmount = serverValidatedScore * 2;
+      }
 
       const newPT   = (Number(user.power_tokens) || 0) + safeAmount;
       const newTotal = (Number(user.total_accumulated_score) || 0) + safeAmount;

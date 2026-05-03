@@ -12,6 +12,7 @@ import { pb } from '@/lib/pocketbase';
 import { api } from '@/lib/api';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
+import { getApiUrl } from '@/lib/query-client';
 
 let WebView: any = null;
 if (Platform.OS !== 'web') {
@@ -19,8 +20,18 @@ if (Platform.OS !== 'web') {
 }
 
 const { width: SW, height: SH } = Dimensions.get('window');
-// Game is hosted on shared hosting (different domain from the PocketBase API)
-const GAME_URL = 'https://webcod.in/arcade/index.html';
+
+// Knife Hit game is served from the same Express/Railway server — this ensures
+// the WebSocket connection always points to the right backend host automatically.
+function buildGameUrl(): string {
+  try {
+    const base = getApiUrl();
+    return new URL('/game/index.html', base).toString();
+  } catch {
+    return 'https://webcod.in/game/index.html';
+  }
+}
+const GAME_URL = buildGameUrl();
 
 const SESSION_SECONDS = 180; // 3-minute session
 const SCORE_LIMIT     = 2000;
@@ -130,7 +141,7 @@ export default function GamesScreen() {
         `window.dispatchEvent(new MessageEvent('message',{data:${JSON.stringify(json)}}));true;`
       );
     } else {
-      const frame = document.querySelector<HTMLIFrameElement>('iframe[title="WeaponMaster"]');
+      const frame = document.querySelector<HTMLIFrameElement>('iframe[title="KnifeHit"]');
       frame?.contentWindow?.postMessage(json, '*');
     }
   }, []);
@@ -152,7 +163,7 @@ export default function GamesScreen() {
     if (Platform.OS !== 'web') {
       wvRef.current?.reload();
     } else {
-      const f = document.querySelector<HTMLIFrameElement>('iframe[title="WeaponMaster"]');
+      const f = document.querySelector<HTMLIFrameElement>('iframe[title="KnifeHit"]');
       if (f) { const s = f.src; f.src = ''; f.src = s; }
     }
   }, [stopSessionTimer, warningPulse]);
@@ -248,9 +259,13 @@ export default function GamesScreen() {
   /* ── Bridge ready → inject server data + start session timer ── */
   const handleBridgeReady = useCallback(() => {
     const pbId = pbIdRef.current;
+    let apiUrl = '';
+    try { apiUrl = getApiUrl(); } catch {}
+
     const buildInject = (data: GameData) => ({
       type:              'INJECT_VARS',
       pbId,
+      apiUrl,                              // game uses this for WebSocket URL
       powerTokens:       data.power_tokens,
       collectedTomatoes: data.collected_tomatoes,
       lastSessionScore:  data.last_session_score,
@@ -262,7 +277,7 @@ export default function GamesScreen() {
     } else if (pbId) {
       fetchGameData(pbId).then(d => { if (d) sendToGame(buildInject(d)); });
     }
-    // Start the 2-minute session timer
+    // Start the 3-minute client-side session timer (server also enforces its own)
     startSessionTimer();
   }, [sendToGame, fetchGameData, startSessionTimer]);
 
@@ -390,7 +405,7 @@ export default function GamesScreen() {
   const renderGame = () => {
     if (Platform.OS === 'web') {
       return (
-        <iframe src={GAME_URL} title="WeaponMaster"
+        <iframe src={GAME_URL} title="KnifeHit"
           style={{ flex: 1, border: 'none', width: '100%', height: '100%' } as any}
           allow="autoplay" />
       );
