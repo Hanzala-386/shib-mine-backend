@@ -349,6 +349,18 @@
           }
           return;
         }
+        /* ── Back button pressed during an active session (navBlocked=false) ──
+         *  'claim' = GoToLayout (back/restart arrow).  Treat as GAME_OVER so
+         *  the player cannot farm level 1 without penalty.  Score is locked at
+         *  the current localPT and committed to the server immediately.
+         * ─────────────────────────────────────────────────────────────────── */
+        var liveIntent = intentFn(arguments[0]);
+        if (liveIntent === 'claim' && !gameOverSent) {
+          console.log('[Bridge] Back button mid-session → GAME_OVER (back_button exploit blocked)');
+          fireGameOver(rt(), 'back_button');
+          return;  /* navigation blocked — game ends here */
+        }
+
         return orig.apply(lm, arguments);
       };
       console.log('[Bridge] Hooked', method);
