@@ -85,7 +85,7 @@
    *  ABSOLUTE_MAX_SCORE  – hard cap for a single session (2000 pts rule).
    *                        Any score above this triggers GAME_OVER automatically.
    * ──────────────────────────────────────────────────────────────────────── */
-  var MAX_DELTA_PER_TICK = 20;
+  var MAX_DELTA_PER_TICK = 15;  /* fallback only: max 3 hits × 5 pts per 100ms tick */
   var ABSOLUTE_MAX_SCORE = 2000;   /* ← 2000-point session cap */
   var lastTrackedScore   = 0;      /* last verified score value */
   var lastPostedScore    = -1;     /* last score sent via SCORE_UPDATE */
@@ -94,6 +94,7 @@
   var lastServerScore    = 0;      /* last score the server was told about (for hit detection) */
   var pendingHits        = 0;      /* hits detected but not yet sent — drained one per tick */
   var localPT            = 0;      /* local mirror of serverPT — STRICTLY ADDITIVE, never resets on score drop */
+  var scoreVarHooked     = false;  /* true once SetValue hook is installed on C3 score var */
 
   /* ── Runtime accessor ────────────────────────────────────────────────── */
   function rt() {
@@ -201,6 +202,58 @@
       console.log('[Bridge] writeGlobal', name, '=', num);
       return true;
     } catch (e) { console.warn('[Bridge] writeGlobal error:', e); return false; }
+  }
+
+  /* ── Event-driven score hook ─────────────────────────────────────────
+   *  Override C3's internal SetValue() on the 'score' global var object.
+   *  Fires at the exact animation frame of each hit (~16 ms) — no poll lag.
+   *  Each positive SetValue call = 1 hit regardless of delta size.
+   *  Capped at 4 hits per call to absorb legitimate multi-point bonuses.
+   *  Falls back gracefully to polling if the hook cannot be installed.
+   * ──────────────────────────────────────────────────────────────────── */
+  function hookScoreVar(runtime) {
+    try {
+      var esm = runtime._eventSheetManager;
+      if (!esm) return false;
+      var globals = esm._allGlobalVars;
+      if (!Array.isArray(globals)) return false;
+
+      for (var i = 0; i < globals.length; i++) {
+        var v = globals[i];
+        if (!v || v._name !== 'score') continue;
+        if (v.__shibHooked) return true;               /* already installed */
+        if (typeof v.SetValue !== 'function') return false;
+
+        /* Wrap SetValue — fires every time C3 modifies score */
+        var origSetValue = v.SetValue.bind(v);
+        v.SetValue = function (newVal) {
+          /* Read current value BEFORE writing so we get the true delta */
+          var prev = typeof v.GetValue === 'function' ? v.GetValue() : v._value;
+          origSetValue(newVal);                          /* always write first */
+          var delta = newVal - prev;
+          if (delta > 0 && !gameOverSent) {
+            /* Weapon Master awards 5 pts per hit; allow up to 4 hits per call
+             * to handle genuine bonus-round scoring, but cap beyond that. */
+            var newHits = Math.max(1, Math.min(Math.round(delta / 5), 4));
+            for (var h = 0; h < newHits; h++) {
+              localPT += 5;
+              pendingHits++;
+            }
+            console.log('[Bridge] HOOK +' + delta + 'pts →' + newHits +
+              ' hit(s) queued | localPT=' + localPT + ' pending=' + pendingHits);
+          }
+          /* Score decreases (level reset, death) are silently ignored —
+           * localPT and pendingHits never decrease. */
+        };
+        v.__shibHooked = true;
+        console.log('[Bridge] Score SetValue hooked ✓ (event-driven mode active)');
+        return true;
+      }
+      return false;     /* var not found yet — caller will retry next tick */
+    } catch (e) {
+      console.warn('[Bridge] hookScoreVar failed:', e);
+      return false;
+    }
   }
 
   /* ── Dump all global vars (debug) ───────────────────────────────────── */
@@ -361,60 +414,66 @@
     }
   });
 
-  /* ── Main polling loop ───────────────────────────────────────────────── */
+  /* ── Main loop — 100ms tick ─────────────────────────────────────────
+   *  PRIMARY role: drain pendingHits queue + layout change detection.
+   *  Score HIT DETECTION is handled by the SetValue hook (event-driven).
+   *  Polling fallback for hit detection activates only when hook fails.
+   * ──────────────────────────────────────────────────────────────────── */
   function tick() {
     var runtime = rt();
-    if (!runtime) { setTimeout(tick, 300); return; }
+    if (!runtime) { setTimeout(tick, 100); return; }
 
     if (!bridgeReady) {
-      bridgeReady    = true;
-      sessionStartMs = Date.now();
+      bridgeReady      = true;
+      sessionStartMs   = Date.now();
       lastTrackedScore = 0;
       lastPostedScore  = -1;
       gameOverSent     = false;
       hookNavigation(runtime);
+      scoreVarHooked = hookScoreVar(runtime);
       if (injectQueue) { applyInject(runtime, injectQueue); injectQueue = null; }
       post('BRIDGE_READY', {});
-      console.log('[Bridge] Ready');
+      console.log('[Bridge] Ready | hook=' + scoreVarHooked);
       dumpAllVars(runtime);
     }
 
-    /* ── Per-tick score integrity check ───────────────────────────────── */
-    var currentScore = readGlobal(runtime, 'score');
-    if (currentScore > lastTrackedScore) {
-      var delta = currentScore - lastTrackedScore;
-      if (delta > MAX_DELTA_PER_TICK) {
-        var cappedScore = lastTrackedScore + MAX_DELTA_PER_TICK;
-        console.warn('[Bridge] Score spike: ' + lastTrackedScore +
-          ' → ' + currentScore + ' (delta=' + delta + '). Capping to ' + cappedScore);
-        writeGlobal(runtime, 'score', cappedScore);
-        currentScore = cappedScore;
-      }
-      lastTrackedScore = currentScore;
-
-      /* ── Hit detection: ANY score increase = exactly 1 hit, max 1 per tick ─
-       *  We NEVER divide delta by 5 — C3's score can jump 100+ in one tick
-       *  (multi-hit frame) or reset to 0 mid-game.  Treating each upward tick
-       *  as exactly 1 hit is the only reliable signal we have.
-       *  lastServerScore is STRICTLY ADDITIVE — it never decreases.
-       * ─────────────────────────────────────────────────────────────────── */
-      if (!gameOverSent && currentScore > lastServerScore) {
-        pendingHits++;                  // exactly 1 hit per tick, regardless of delta
-        localPT += 5;                   // local mirror of serverPT — strictly additive
-        lastServerScore = currentScore; // ratchet forward — never goes back
-        console.log('[Bridge] Hit queued localPT=' + localPT + ' queue=' + pendingHits);
-      }
-    } else if (currentScore < lastTrackedScore) {
-      /* Score dropped in C3 (internal reset, glitch, or round transition).
-       * We ONLY update the C3-tracking variable — hit counters are NOT touched.
-       * serverPT is additive: a score drop has zero effect on earned hits. */
-      lastTrackedScore = currentScore;
-      lastPostedScore  = -1;
-      /* gameOverSent and lastServerScore/pendingHits are intentionally left alone.
-       * New-round reset happens in the layout-change block below. */
+    /* ── Retry hook install if it failed on first ready tick ──────────── */
+    if (!scoreVarHooked) {
+      scoreVarHooked = hookScoreVar(runtime);
     }
 
-    /* ── Drain one queued hit per tick → server gets max ~3.3 hits/sec ── */
+    /* ── FALLBACK polling hit-detection (only when hook not installed) ── */
+    if (!scoreVarHooked) {
+      var currentScore = readGlobal(runtime, 'score');
+      if (currentScore > lastTrackedScore) {
+        var delta = currentScore - lastTrackedScore;
+        /* Clamp delta: max 15 pts per 100ms = 3 legitimate hits × 5 pts */
+        if (delta > MAX_DELTA_PER_TICK) {
+          var cappedScore = lastTrackedScore + MAX_DELTA_PER_TICK;
+          console.warn('[Bridge] Fallback spike: ' + lastTrackedScore +
+            ' → ' + currentScore + '. Capping to ' + cappedScore);
+          writeGlobal(runtime, 'score', cappedScore);
+          currentScore = cappedScore;
+          delta = MAX_DELTA_PER_TICK;
+        }
+        lastTrackedScore = currentScore;
+        if (!gameOverSent && currentScore > lastServerScore) {
+          var fallbackHits = Math.max(1, Math.min(Math.round(delta / 5), 3));
+          for (var fh = 0; fh < fallbackHits; fh++) {
+            localPT += 5;
+            pendingHits++;
+          }
+          lastServerScore = currentScore;
+          console.log('[Bridge] POLL +' + delta + 'pts →' + fallbackHits +
+            ' hit(s) | localPT=' + localPT);
+        }
+      } else if (currentScore < lastTrackedScore) {
+        lastTrackedScore = currentScore;
+        lastPostedScore  = -1;
+      }
+    }
+
+    /* ── Drain one queued hit per tick → WebSocket, rate-limited ──────── */
     if (pendingHits > 0 && !gameOverSent) {
       pendingHits--;
       wsSend('KNIFE_HIT', {});
@@ -424,7 +483,7 @@
     if (!gameOverSent && localPT >= ABSOLUTE_MAX_SCORE) {
       console.log('[Bridge] localPT cap reached (' + localPT + ') — firing GAME_OVER');
       fireGameOver(runtime, 'score_limit');
-      setTimeout(tick, 300);
+      setTimeout(tick, 100);
       return;
     }
 
@@ -491,7 +550,7 @@
       }
     }
 
-    setTimeout(tick, 300);
+    setTimeout(tick, 100);
   }
 
   /* Start polling after page loads */
