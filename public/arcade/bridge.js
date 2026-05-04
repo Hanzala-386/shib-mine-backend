@@ -93,6 +93,7 @@
   var gameOverSent       = false;  /* prevents double GAME_OVER per session */
   var lastServerScore    = 0;      /* last score the server was told about (for hit detection) */
   var pendingHits        = 0;      /* hits detected but not yet sent — drained one per tick */
+  var localPT            = 0;      /* local mirror of serverPT — STRICTLY ADDITIVE, never resets on score drop */
 
   /* ── Runtime accessor ────────────────────────────────────────────────── */
   function rt() {
@@ -229,26 +230,17 @@
     if (gameOverSent) return;
     gameOverSent = true;
 
-    var score = Math.min(lastTrackedScore, ABSOLUTE_MAX_SCORE);
-
+    /* localPT is the authoritative score — it only ever went up by +5 per hit,
+     * so it is immune to C3's internal score resets and jumps.            */
+    var score = Math.min(localPT, ABSOLUTE_MAX_SCORE);
     var elapsedMs = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
-
-    /* Time-based sanity: max 15 pts/sec */
-    if (elapsedMs > 0) {
-      var maxForTime = Math.ceil((elapsedMs / 1000) * 15);
-      if (score > maxForTime) {
-        console.warn('[Bridge] Score ' + score + ' exceeds time-based max ' + maxForTime + '. Capping.');
-        score = maxForTime;
-        if (runtime) writeGlobal(runtime, 'score', score);
-      }
-    }
 
     var prevTomatoes = (window.__shibGameState && typeof window.__shibGameState.collectedTomatoes === 'number')
       ? window.__shibGameState.collectedTomatoes : 0;
     var newTomatoes = prevTomatoes + score;
     if (window.__shibGameState) window.__shibGameState.collectedTomatoes = newTomatoes;
 
-    console.log('[Bridge] GAME_OVER reason=' + reason + ' score=' + score +
+    console.log('[Bridge] GAME_OVER reason=' + reason + ' localPT=' + score +
       ' tomatoes=' + newTomatoes + ' elapsed=' + Math.round(elapsedMs / 1000) + 's');
 
     navBlocked = true;
@@ -260,13 +252,16 @@
       elapsed_ms:         elapsedMs,
       reason:             reason || 'death',
     });
-    /* Also notify server via WebSocket so it can validate + store the score */
+    /* Notify server to commit session */
     wsSend('GAME_OVER', { score: score, elapsed_ms: elapsedMs });
 
-    /* Reset session for next round */
+    /* Reset ALL hit tracking for the next round */
     sessionStartMs   = Date.now();
     lastTrackedScore = 0;
     lastPostedScore  = -1;
+    localPT          = 0;
+    lastServerScore  = 0;
+    pendingHits      = 0;
   }
 
   /* ── Hook C3 navigation ──────────────────────────────────────────────
@@ -287,12 +282,9 @@
           console.log('[Bridge] Nav BLOCKED (' + method + ' → "' + dest + '") intent=' + intent);
           pendingNav = { fn: orig, args: Array.prototype.slice.call(arguments) };
           if (intent === 'double') {
-            var score2x = Math.min(lastTrackedScore, ABSOLUTE_MAX_SCORE);
+            /* Use localPT — the only score that never reset during gameplay */
+            var score2x   = Math.min(localPT, ABSOLUTE_MAX_SCORE);
             var elapsed2x = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
-            if (elapsed2x > 0) {
-              var maxForTime2x = Math.ceil((elapsed2x / 1000) * 15);
-              if (score2x > maxForTime2x) score2x = maxForTime2x;
-            }
             var prevTomatoes = (window.__shibGameState && typeof window.__shibGameState.collectedTomatoes === 'number')
               ? window.__shibGameState.collectedTomatoes : 0;
             post('DOUBLE_REWARD', {
@@ -408,8 +400,9 @@
        * ─────────────────────────────────────────────────────────────────── */
       if (!gameOverSent && currentScore > lastServerScore) {
         pendingHits++;                  // exactly 1 hit per tick, regardless of delta
+        localPT += 5;                   // local mirror of serverPT — strictly additive
         lastServerScore = currentScore; // ratchet forward — never goes back
-        console.log('[Bridge] Hit queued (score ' + lastServerScore + ') queue=' + pendingHits);
+        console.log('[Bridge] Hit queued localPT=' + localPT + ' queue=' + pendingHits);
       }
     } else if (currentScore < lastTrackedScore) {
       /* Score dropped in C3 (internal reset, glitch, or round transition).
@@ -427,21 +420,18 @@
       wsSend('KNIFE_HIT', {});
     }
 
-    /* ── Score-limit check (2000 cap): force GAME_OVER ───────────────── */
-    if (!gameOverSent && currentScore >= ABSOLUTE_MAX_SCORE) {
-      console.log('[Bridge] Score cap reached (' + currentScore + ') — firing GAME_OVER');
-      /* Write the capped score back into C3 first */
-      writeGlobal(runtime, 'score', ABSOLUTE_MAX_SCORE);
-      lastTrackedScore = ABSOLUTE_MAX_SCORE;
+    /* ── PT cap: 2000 hit-based points → force GAME_OVER ─────────────── */
+    if (!gameOverSent && localPT >= ABSOLUTE_MAX_SCORE) {
+      console.log('[Bridge] localPT cap reached (' + localPT + ') — firing GAME_OVER');
       fireGameOver(runtime, 'score_limit');
       setTimeout(tick, 300);
       return;
     }
 
-    /* ── Broadcast SCORE_UPDATE when score changes ────────────────────── */
-    if (!gameOverSent && currentScore !== lastPostedScore) {
-      post('SCORE_UPDATE', { score: currentScore });
-      lastPostedScore = currentScore;
+    /* ── Broadcast SCORE_UPDATE using localPT (never drops mid-game) ─── */
+    if (!gameOverSent && localPT !== lastPostedScore) {
+      post('SCORE_UPDATE', { score: localPT });
+      lastPostedScore = localPT;
     }
 
     /* ── Layout change detection ──────────────────────────────────────── */
@@ -451,22 +441,12 @@
       lastLayout = name;
 
       if (name.toLowerCase() === 'death') {
-        /* Re-read after per-tick correction, then apply absolute cap */
-        var score = Math.min(readGlobal(runtime, 'score'), ABSOLUTE_MAX_SCORE);
+        /* Use localPT — the validated, additive count that never reset during gameplay */
+        var score     = Math.min(localPT, ABSOLUTE_MAX_SCORE);
         var elapsedMs = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
 
-        if (elapsedMs > 0) {
-          var maxForTime = Math.ceil((elapsedMs / 1000) * 15);
-          if (score > maxForTime) {
-            console.warn('[Bridge] Score ' + score + ' exceeds time-based max ' + maxForTime + '. Capping.');
-            score = maxForTime;
-            writeGlobal(runtime, 'score', score);
-          }
-        }
-
         if (score === 0) {
-          console.error('[Bridge] [ERROR] Score is 0 on death. Dumping vars:');
-          dumpAllVars(runtime);
+          console.warn('[Bridge] DEATH with 0 localPT — no hits recorded this session');
         }
 
         var prevTomatoes = (window.__shibGameState &&
@@ -475,7 +455,7 @@
         var newTomatoes = prevTomatoes + score;
         if (window.__shibGameState) window.__shibGameState.collectedTomatoes = newTomatoes;
 
-        console.log('[Bridge] DEATH — score=' + score +
+        console.log('[Bridge] DEATH — localPT=' + score +
           ' tomatoes=' + newTomatoes + ' elapsed=' + Math.round(elapsedMs / 1000) + 's');
 
         if (!gameOverSent) {
@@ -489,14 +469,14 @@
             elapsed_ms:         elapsedMs,
             reason:             'death',
           });
-          /* Also notify server via WebSocket so it can validate + store the score */
           wsSend('GAME_OVER', { score: score, elapsed_ms: elapsedMs });
 
           /* ── Reset ALL hit tracking for the NEXT round ── */
           sessionStartMs   = Date.now();
           lastTrackedScore = 0;
           lastPostedScore  = -1;
-          lastServerScore  = 0;   // safe to zero — game over committed
+          localPT          = 0;
+          lastServerScore  = 0;
           pendingHits      = 0;
         }
 
@@ -505,7 +485,8 @@
         navBlocked      = false;
         gameOverSent    = false;
         lastPostedScore = -1;
-        lastServerScore = 0;   // fresh round: start hit tracking from 0
+        localPT         = 0;   // fresh round
+        lastServerScore = 0;
         pendingHits     = 0;
       }
     }

@@ -210,9 +210,9 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
             await wsCommitSession(sid, session);
             send({ type: "GAME_OVER", reason: "score_limit", serverPT: session.serverPT }); return;
           }
-          // Valid hit ─ increment authoritative counters
+          // Valid hit — strictly additive: only ever += 5, never synced to client score
           session.hits++;
-          session.serverPT = session.hits * WS_PT_PER_HIT;
+          session.serverPT += WS_PT_PER_HIT;
           session.lastHitMs = now;
           session.hitLog.push(now);
           send({ type: "HIT_ACK", serverPT: session.serverPT, serverHits: session.hits });
