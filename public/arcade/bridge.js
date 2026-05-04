@@ -242,8 +242,17 @@
             console.log('[Bridge] HOOK +' + delta + 'pts →' + newHits +
               ' hit(s) queued | localPT=' + localPT + ' pending=' + pendingHits);
           }
-          /* Score decreases (level reset, death) are silently ignored —
-           * localPT and pendingHits never decrease. */
+          /* ── Score-reset-to-zero guard (Layer 2 exploit detection) ─────
+           *  If the score is forcibly reset to 0 while the session is active,
+           *  that is the signature of RestartLayout / any back-button call we
+           *  may have missed in hookNavigation.  Fire GAME_OVER immediately.
+           *  We defer by 0 ms so C3 finishes its current event before we fire.
+           * ──────────────────────────────────────────────────────────────── */
+          if (newVal === 0 && prev > 0 && localPT > 0 && !gameOverSent) {
+            console.warn('[Bridge] HOOK: score reset 0 mid-session (prev=' + prev +
+              ' localPT=' + localPT + ') → GAME_OVER (exploit blocked)');
+            setTimeout(function () { if (!gameOverSent) fireGameOver(rt(), 'back_button'); }, 0);
+          }
         };
         v.__shibHooked = true;
         console.log('[Bridge] Score SetValue hooked ✓ (event-driven mode active)');
@@ -318,56 +327,74 @@
   }
 
   /* ── Hook C3 navigation ──────────────────────────────────────────────
-   *  sprite14 (circle/refresh icon) → GoToLayoutByName → DOUBLE_REWARD (2× PT)
-   *  rstrt    (back-arrow icon)     → GoToLayout       → claim modal (GAME_OVER)
+   *  GoToLayoutByName → DOUBLE_REWARD modal (circle/refresh icon)
+   *  GoToLayout       → GAME_OVER (back arrow — if intercepted)
+   *  RestartLayout    → GAME_OVER (most likely method the back button uses)
+   *  startLayout / _startLayout → GAME_OVER (C3 internal variants)
+   *
+   *  Rule: during an active session (localPT > 0, !gameOverSent), ANY call
+   *  to a layout-change method = exploit attempt → fire GAME_OVER immediately.
+   *  When navBlocked=true (post-death waiting for claim), navigation is queued.
    * ─────────────────────────────────────────────────────────────────── */
   function hookNavigation(runtime) {
     var lm = runtime._layoutManager;
     if (!lm) { console.warn('[Bridge] No _layoutManager — nav blocking unavailable'); return; }
 
-    function makeHook(method, intentFn) {
+    /* ── GoToLayoutByName: double-reward button (circle icon) ─────────── */
+    if (typeof lm.GoToLayoutByName === 'function') {
+      var origGTLBN = lm.GoToLayoutByName.bind(lm);
+      lm.GoToLayoutByName = function () {
+        if (navBlocked) {
+          console.log('[Bridge] Nav BLOCKED (GoToLayoutByName → "' + arguments[0] + '") → DOUBLE_REWARD');
+          pendingNav = { fn: origGTLBN, args: Array.prototype.slice.call(arguments) };
+          var score2x   = Math.min(localPT, ABSOLUTE_MAX_SCORE);
+          var elapsed2x = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
+          var prevTomatoes = (window.__shibGameState &&
+            typeof window.__shibGameState.collectedTomatoes === 'number')
+            ? window.__shibGameState.collectedTomatoes : 0;
+          post('DOUBLE_REWARD', {
+            score:              score2x,
+            collected_tomatoes: prevTomatoes + score2x,
+            pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || '',
+            elapsed_ms:         elapsed2x,
+          });
+          return;
+        }
+        /* Active session: GoToLayoutByName during play = back-button exploit */
+        if (!gameOverSent && localPT > 0) {
+          console.log('[Bridge] GoToLayoutByName mid-session → GAME_OVER (exploit blocked)');
+          fireGameOver(rt(), 'back_button');
+          return;
+        }
+        return origGTLBN.apply(lm, arguments);
+      };
+      console.log('[Bridge] Hooked GoToLayoutByName');
+    }
+
+    /* ── All other layout-change methods: GoToLayout, RestartLayout, etc. ─
+     *  RestartLayout is the most likely method behind the back button since
+     *  it restarts the current layout (keeping the same layout name, which
+     *  is why our tick() layout-change detector misses it entirely).
+     * ─────────────────────────────────────────────────────────────────── */
+    ['GoToLayout', 'RestartLayout', 'startLayout', '_startLayout'].forEach(function (method) {
       if (typeof lm[method] !== 'function') return;
       var orig = lm[method].bind(lm);
       lm[method] = function () {
         if (navBlocked) {
-          var dest = arguments[0];
-          var intent = intentFn(dest);
-          console.log('[Bridge] Nav BLOCKED (' + method + ' → "' + dest + '") intent=' + intent);
+          console.log('[Bridge] Nav BLOCKED (' + method + ') — queued');
           pendingNav = { fn: orig, args: Array.prototype.slice.call(arguments) };
-          if (intent === 'double') {
-            /* Use localPT — the only score that never reset during gameplay */
-            var score2x   = Math.min(localPT, ABSOLUTE_MAX_SCORE);
-            var elapsed2x = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
-            var prevTomatoes = (window.__shibGameState && typeof window.__shibGameState.collectedTomatoes === 'number')
-              ? window.__shibGameState.collectedTomatoes : 0;
-            post('DOUBLE_REWARD', {
-              score:              score2x,
-              collected_tomatoes: prevTomatoes + score2x,
-              pb_id:              (window.__shibGameState && window.__shibGameState.pbId) || '',
-              elapsed_ms:         elapsed2x,
-            });
-          }
           return;
         }
-        /* ── Back button pressed during an active session (navBlocked=false) ──
-         *  'claim' = GoToLayout (back/restart arrow).  Treat as GAME_OVER so
-         *  the player cannot farm level 1 without penalty.  Score is locked at
-         *  the current localPT and committed to the server immediately.
-         * ─────────────────────────────────────────────────────────────────── */
-        var liveIntent = intentFn(arguments[0]);
-        if (liveIntent === 'claim' && !gameOverSent) {
-          console.log('[Bridge] Back button mid-session → GAME_OVER (back_button exploit blocked)');
+        /* Active session: back/restart button → lock score and end session */
+        if (!gameOverSent && localPT > 0) {
+          console.log('[Bridge] ' + method + ' mid-session → GAME_OVER (exploit blocked)');
           fireGameOver(rt(), 'back_button');
-          return;  /* navigation blocked — game ends here */
+          return;
         }
-
         return orig.apply(lm, arguments);
       };
       console.log('[Bridge] Hooked', method);
-    }
-
-    makeHook('GoToLayoutByName', function () { return 'double'; });
-    makeHook('GoToLayout', function () { return 'claim'; });
+    });
   }
 
   /* ── Inject server data into C3 globals ─────────────────────────────── */
