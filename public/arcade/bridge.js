@@ -400,24 +400,25 @@
       }
       lastTrackedScore = currentScore;
 
-      /* ── Detect hits from score delta → queue for per-hit WS reporting ─ */
+      /* ── Hit detection: ANY score increase = exactly 1 hit, max 1 per tick ─
+       *  We NEVER divide delta by 5 — C3's score can jump 100+ in one tick
+       *  (multi-hit frame) or reset to 0 mid-game.  Treating each upward tick
+       *  as exactly 1 hit is the only reliable signal we have.
+       *  lastServerScore is STRICTLY ADDITIVE — it never decreases.
+       * ─────────────────────────────────────────────────────────────────── */
       if (!gameOverSent && currentScore > lastServerScore) {
-        var scoreDelta = currentScore - lastServerScore;
-        /* Each hit = 5 pts in Weapon Master; clamp to at most MAX_DELTA_PER_TICK/5 */
-        var newHits = Math.min(Math.max(1, Math.floor(scoreDelta / 5)), 4);
-        pendingHits += newHits;
-        lastServerScore = currentScore;
-        console.log('[Bridge] Hit detected: +' + scoreDelta + 'pts → queue=' + pendingHits);
+        pendingHits++;                  // exactly 1 hit per tick, regardless of delta
+        lastServerScore = currentScore; // ratchet forward — never goes back
+        console.log('[Bridge] Hit queued (score ' + lastServerScore + ') queue=' + pendingHits);
       }
     } else if (currentScore < lastTrackedScore) {
+      /* Score dropped in C3 (internal reset, glitch, or round transition).
+       * We ONLY update the C3-tracking variable — hit counters are NOT touched.
+       * serverPT is additive: a score drop has zero effect on earned hits. */
       lastTrackedScore = currentScore;
       lastPostedScore  = -1;
-      /* Score dropped (game restarted in C3) — reset gameOverSent for new round */
-      if (currentScore === 0) {
-        gameOverSent    = false;
-        lastServerScore = 0;
-        pendingHits     = 0;
-      }
+      /* gameOverSent and lastServerScore/pendingHits are intentionally left alone.
+       * New-round reset happens in the layout-change block below. */
     }
 
     /* ── Drain one queued hit per tick → server gets max ~3.3 hits/sec ── */
@@ -491,16 +492,21 @@
           /* Also notify server via WebSocket so it can validate + store the score */
           wsSend('GAME_OVER', { score: score, elapsed_ms: elapsedMs });
 
+          /* ── Reset ALL hit tracking for the NEXT round ── */
           sessionStartMs   = Date.now();
           lastTrackedScore = 0;
           lastPostedScore  = -1;
+          lastServerScore  = 0;   // safe to zero — game over committed
+          pendingHits      = 0;
         }
 
       } else if (navBlocked && name.toLowerCase() !== 'death') {
-        navBlocked = false;
-        /* If game re-entered from menu, reset for new session */
-        gameOverSent = false;
+        /* Player re-entered the game from the menu — genuine new session */
+        navBlocked      = false;
+        gameOverSent    = false;
         lastPostedScore = -1;
+        lastServerScore = 0;   // fresh round: start hit tracking from 0
+        pendingHits     = 0;
       }
     }
 

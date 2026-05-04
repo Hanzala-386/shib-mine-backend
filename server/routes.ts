@@ -115,7 +115,7 @@ const WS_MAX_PT       = 2000;        // hard session cap
 const WS_MAX_HITS     = WS_MAX_PT / WS_PT_PER_HIT;  // 400 hits
 const WS_MIN_HIT_MS   = 280;         // 300ms poll interval - 20ms jitter tolerance
 const WS_BURST_WINDOW = 5_000;       // rolling ms window for burst detection
-const WS_BURST_MAX    = 15;          // max hits allowed in any BURST_WINDOW ms span
+const WS_BURST_MAX    = 18;          // max hits in BURST_WINDOW: 1/300ms tick × 5s ≈ 16-17
 const WS_SESSION_MS   = 3 * 60_000; // 3-minute hard timer
 
 interface WsGameSession {
