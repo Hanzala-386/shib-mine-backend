@@ -1,0 +1,34 @@
+URGENT: Final Fixes for Deployment & Account Logic
+"Hi,
+
+I am still seeing critical failures in the latest build. While Firebase Auth is now working, the following 4 core issues must be resolved immediately. I have attached screenshots of the  permission errors.
+
+1. Power Token Per Click (Data Fetching Error):
+
+As mentioned before, the settings collection in PocketBase has the value 1000, but the App is not displaying or using it.
+
+Action: Fix the AdminContext to correctly map the power_token_per_click field. If it's returning null, your query logic is wrong.
+
+2. Top 100 Players & Leaderboard (Missing Data/Fields):
+
+The Leaderboard is still empty.
+
+Action: If you need specific fields to make the rank logic work, create the necessary collections and fields in PocketBase yourself. I want the Top 100 players to show their Rank, Username, and Total Tokens.
+
+Ensure the query is authenticated so it can actually fetch the user list.
+
+3. Delete Account Logic & Permission Error: [Ref: Attached Screenshot]
+
+When clicking 'Confirm & Send OTP', the app says: "Only admins can perform this action."
+
+Fix: This is a PocketBase API Rule issue. Any authenticated user must be able to trigger their own account deletion. You need to fix the collection permissions.
+
+Flow Requirement: User clicks button -> OTP is sent -> User enters OTP -> Account is deleted -> The deleted email is automatically added to the deleted_emails collection to prevent re-registration.
+
+4. Fraud & Claim Logic (Anti-Cheat):
+
+The fraud_attempts and status fields are still not being utilized.
+
+Action: Implement server-side verification. If a user tries to claim tokens by changing their local device time, the claim must be rejected, and the fraud count must increase in the database.
+
+Strict Note: Please stop pointing to Express routes that don't exist. Everything must go through the PocketBase SDK with proper authenticated sessions. I need a build where the Leaderboard is populated and the 'Delete Account' process is accessible to all users."

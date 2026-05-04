@@ -1,0 +1,148 @@
+# Shiba Hit - Crypto Mining App
+
+## Overview
+A gold & neon orange glassmorphism React Native mobile app for mining SHIB cryptocurrency. Users earn SHIB tokens through 60-minute mining sessions and Power Tokens through a Knife Hit mini-game. Built with Firebase Auth + PocketBase backend and Expo Router.
+
+## Architecture
+- **Frontend**: Expo Router (file-based routing), React Native
+- **Backend**: Express.js on port 5000 (server/routes.ts) + PocketBase at https://api.webcod.in
+- **Auth**: Firebase Authentication (Email/Password) + Firebase native email verification link (free, zero cost)
+- **State**: React Context (Auth, Wallet, Mining, Admin)
+
+## Key Features
+1. **Firebase Email Verification** — Signup → `sendEmailVerification()` → verify-email screen (no OTP inputs, just "check inbox" UI); Sign-in checks `firebaseUser.emailVerified`; `POST /api/app/auth/confirm-verified` syncs verified status to PB
+2. **Verify Email Screen** — "Check inbox" screen: tap to check status (polls Firebase), resend button with 60s cooldown, sign out link
+3. **Mining** — 60-minute timer, server-persisted start/claim with booster_multiplier stored in session; 24 PT entry fee
+4. **Speed Boosters** — 2x/4x/6x/10x, time-limited 1 hour, single active at a time, countdown timer on active card; decoupled from mining start
+5. **Server-Side Claim Verification** — Server computes expected reward from rate × 3600 × booster_multiplier; client reward validated within 5% tolerance
+6. **Rolling Counter** — Smooth animated SHIB balance display during mining
+7. **Knife Hit Game — Server-Authoritative WebSocket Scoring** — Vanilla JS knife-throw game at `public/game/Knife hit Template/index.html`, served from the Express server at `/game/index.html`. Anti-cheat architecture:
+   - **Per-hit WebSocket signals**: On each valid knife hit, game sends `KNIFE_HIT` to `wss://[server]/api/ws/game`
+   - **Server counts hits**: 5 PT per validated hit, 2000 PT cap, 3-minute hard timer — all enforced server-side
+   - **Anti-cheat checks**: min 300ms between hits (knife physics minimum), burst detection (max 15 hits per 5-second window)
+   - **Session flow**: game sends `BRIDGE_READY` → RN sends `INJECT_VARS {pbId, apiUrl}` → game connects WebSocket → `GAME_START` → `SESSION_READY {sessionId}` → per-hit `HIT_ACK {serverPT}` → `GAME_OVER` → `COMMITTED {finalPT}`
+   - **Commit strategy**: on game over, server stores `last_session_score = serverPT` in PocketBase; existing claim/double flow reads this
+   - **Reward validation**: `/api/app/game/reward` validates `amount ≤ last_session_score × 2` (×2 for ad double reward)
+   - **Game URL**: dynamically built from `getApiUrl()` so WebSocket always points to the correct Railway host
+   - **Static serving**: `/game` and `/arcade` served before Metro proxy in dev; Metro pathFilter excludes them
+   - **WebSocket setup**: `WebSocketServer({noServer:true})` + `server.on('upgrade')` handler for `/api/ws/game`; Metro proxy pathFilter starts with `/api` so it doesn't intercept WS upgrades for this path
+8. **Professional Ad Integration** — `react-native-google-mobile-ads` SDK (requires custom EAS build for real ads; simulates gracefully in Expo Go). Architecture:
+   - `context/AdContext.tsx`: SDK init + fetches all unit IDs from PocketBase settings; exposes `showInterstitial()` / `showRewarded()` with loading state
+   - `components/StickyBannerAd.tsx`: Persistent banner above tab bar, 30s auto-refresh via key remount
+   - `lib/nativeAds.ts`: SDK wrapper with `createForAdRequest` → LOADED → show → CLOSED/EARNED_REWARD callbacks; graceful fallback to simulation when native module not available
+   - `metro.config.js`: Web stub for `react-native-google-mobile-ads` + @iabtcf ESM `.js` extension resolver fix
+   - PocketBase settings fields: `admob_unit_id` (interstitial), `admob_banner_unit_id`, `admob_rewarded_id`, `unity_game_id`, `unity_rewarded_id`, `applovin_sdk_key`, `applovin_rewarded_id`
+   - Mediation waterfall: AdMob primary → Unity Ads → AppLovin MAX (configured via AdMob dashboard mediation groups)
+   - app.json plugin: `react-native-google-mobile-ads` with test App IDs (update to production IDs before release)
+8. **Admin Panel** — Restricted to hanzala386@gmail.com, controls all economic settings
+9. **Wallet** — SHIB balance & Power Token tracking (BEP-20 + Binance Email withdrawal)
+10. **Invite** — Referral code sharing, 10% commission via deferred referral_earnings_log pipeline
+11. **Profile** — User stats, settings, admin access button
+
+## PocketBase Schema (https://api.webcod.in)
+### users collection
+- `firebase_uid`, `email`, `display_name`, `referral_code`, `referred_by`
+- `shib_balance`, `power_tokens`, `total_claims`, `total_wins`
+- `is_verified` (bool) — set to true via `POST /api/app/auth/confirm-verified` after Firebase email link verified
+- `active_booster_multiplier` (number), `booster_expires` (text) — booster state
+
+### mining_sessions collection
+- `user` (relation to users), `start_time` (date), `claimed_amount` (number), `booster_multiplier` (number), `is_verified` (bool), `ip_address` (text)
+- NO `status`, `duration`, or `reward` fields — status is derived from `claimed_amount === 0`
+
+### referral_earnings_log collection
+- `referrer_id` (text, required), `claimer_id` (text, required), `amount` (number), `processed` (bool)
+- listRule/viewRule/updateRule: `referrer_id = @request.auth.id` — only referrer can read/update their own entries
+- createRule: `@request.auth.id != ""` — any authenticated user (claimer) can write
+- **Architecture**: Claimer writes entry on mining claim; referrer's client calls `processPendingReferralEarnings(pbId)` on login to credit their own balance (self-update, always allowed). Key bug fixed: was calling `pbRecord.id` (undefined) instead of `pbRecord.pbId`.
+
+### settings collection
+- All admin-configurable values: mining rates, booster costs, ad IDs, withdrawal tiers
+- `brevo_api_key` (text) — Brevo **REST** API key (`xkeysib-...`) used by app to send Delete Account OTP emails directly. Admin sets this in PocketBase admin panel. **Note**: the SMTP key (`xsmtpsib-...`) stored here currently only works with nodemailer SMTP — a REST key (`xkeysib-...`) from Brevo dashboard → API Keys section is required for the direct REST call path.
+- listRule/viewRule: `""` (public read — allows APK to fetch `brevo_api_key` without auth)
+
+### otp_codes collection
+- `user` (relation to users), `code` (text), `expires_at` (text)
+- listRule/viewRule/createRule/deleteRule: `user = @request.auth.id` — users manage their own OTPs via PB SDK
+
+## Auth Flow
+1. New user → Firebase signup → save pending data in AsyncStorage → `sendOtp(email)` → OTP screen
+2. Existing user login → Firebase signin → `getUser(firebaseUid)` → if `is_verified=true` → tabs; else → `sendOtp(email)` → OTP screen
+3. OTP verification → `verifyOtp(email, code)` → PB patches `is_verified=true` → `syncWithServer()` → tabs shown
+
+## Auth Fixes (Session 3)
+- **Auth buttons unresponsive on web** — Root cause: Reanimated `entering` animations leave views invisible on web. Fixed by replacing with React Native built-in `Animated.timing` in auth.tsx and verify-email.tsx
+- **LinearGradient pointer event blocking** — Moved `pointerEvents="none"` from prop to `style.pointerEvents` to prevent overlay blocking taps
+- **Double OTP generation** — verify-email.tsx was calling `resendOtp` on mount via `useEffect`, overwriting the OTP from signUp/signIn. Fixed by removing auto-send on mount
+- **Double submit prevention** — Added `verifyAttemptedRef` to prevent the OTP form from submitting twice
+- **Post-verification navigation** — Added `router.replace('/(tabs)')` in `syncWithServer()` after successful auth, and `router.replace('/auth')` in `signOut()`
+- **Auth errors now inline** — Replaced `Alert.alert` with inline red error boxes in auth.tsx for better visibility and testability
+- **Sign Out no longer needs confirmation** — Removed Alert.alert confirmation from Sign Out button; direct immediate sign-out
+- **Dev OTP endpoint** — Added `GET /api/dev/peek-otp/:email` for development/testing only (not available in production)
+
+## Key Bug Fixed (Session 2)
+- `formatUser()` previously only returned `isVerified` but client code checked `is_verified`; now both are returned
+
+## Firebase Config
+- Project: shib-mine
+- API Key: AIzaSyDQnt9_QENqlHtMprocQnJVQkB-4IyBgjg
+
+## Navigation
+5-tab layout: Home, Games, Invite, Wallet, Profile
+- NativeTabs with liquid glass on iOS 26+
+- Classic Tabs with BlurView for older iOS
+- Ionicons for Android/Web
+
+## Admin Controls
+- Email: hanzala386@gmail.com
+- Controls: Mining rate, entry fee, booster costs, AdMob IDs, Unity IDs, withdrawal tiers
+
+## Theme
+Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
+
+## File Structure
+- `lib/firebase.ts` — Firebase SDK init and exports
+- `lib/api.ts` — All API calls + PBUser/AppSettings types
+- `context/AuthContext.tsx` — Firebase + OTP auth state management
+- `context/WalletContext.tsx` — SHIB + Power Token balances + transactions
+- `context/MiningContext.tsx` — Mining session timer, booster state
+- `context/AdminContext.tsx` — Admin settings
+- `app/auth.tsx` — Login/Signup with Forgot Password
+- `app/verify-email.tsx` — 6-digit OTP input screen
+- `app/admin.tsx` — Admin control panel
+- `app/(tabs)/index.tsx` — Home/Mining with rolling counter + booster cards
+- `app/(tabs)/games.tsx` — Knife Hit game (native React Native, canvas-style with Animated API)
+- `public/game/Knife hit Template/` — All game assets: backgrounds, knives, bosses, sounds
+- Express `/game` route → maps to `public/game/Knife hit Template/` (server/index.ts line 202)
+- **CRITICAL**: Asset BASE in code = `${getApiUrl()}/game/` (NOT `/game/Knife hit Template/`)
+- URL encoding required: spaces → `%20` e.g. `GamePlay%20Screen/CrossKnife.png`, `item%20knife-01.png`
+- `components/KnifeShop.tsx` — Knife skin shop (10 skins, 200PT sequential unlock, syncs to PocketBase)
+- `app/(tabs)/invite.tsx` — Referral system
+- `app/(tabs)/wallet.tsx` — Wallet with BEP-20 + Binance Email withdrawal
+- `app/(tabs)/profile.tsx` — Profile with admin access
+- `server/routes.ts` — All Express routes including OTP, boosters, mining
+
+## CRITICAL: Backend Architecture
+- **Express (port 5000)** runs ONLY in Replit dev environment. `api.webcod.in` hosts PocketBase ONLY.
+- All `/api/app/*` routes return 404 on the published APK. Every Express call MUST have a PocketBase SDK fallback.
+- **Delete Account OTP** — fully direct, no Railway: app generates OTP on-device → stores in PB `otp_codes` via SDK → fetches `brevo_api_key` from PB `settings` → calls `api.brevo.com/v3/smtp/email` directly. Verification: app reads `otp_codes` directly from PB. `api.confirmDelete` (Railway route) is no longer called. In-memory OTP (`localOtp`) is the final fallback if PB is temporarily unreachable.
+- **Game** is now LIVE at `https://webcod.in/arcade/index.html` (shared hosting — different domain from PocketBase API).
+- `GAME_URL` in `games.tsx` is hardcoded to `https://webcod.in/arcade/index.html` (NOT constructed from `getApiUrl()`).
+- `games.tsx` fetches game stats and syncs scores **directly via PocketBase SDK** (`pb.collection('users')`) — no Express dependency.
+- The game's JS files do NOT call PocketBase — all bridge logic (score sync, PT awards, AdMob) is in the RN app.
+- Referral count is queried directly via `pb.collection('users').getList(filter: referred_by = "CODE")` as fallback.
+- **Settings** (`AdminContext.tsx`) now tries Express first → falls back to `pb.collection('settings').getList()` with `formatPbSettings()` mapper (snake_case → camelCase). Mining rates, boost costs, and ad IDs all load from PocketBase directly on device.
+- **Dead code removed**: `PocketBaseAPI` class and `PBMiningSession`/`PBSettings`/`PBTransaction` interfaces removed from `lib/pocketbase.ts` (all used wrong field names and were unused).
+- **PB password pattern**: `SHIB_${firebaseUid}_SECURE` — used for direct PB auth
+- **Auth flow**: Firebase → `confirmAndLoadUser` tries Express → falls back to `pbDirectLogin` → saves PB token to AsyncStorage → restored on next startup
+- **Mining flow**: `startMining`/`claimReward`/`activateBooster`/`startMiningWithBooster` try Express → fall back to direct PB SDK calls
+
+## Tab Bar Layout
+- **Custom tabBar** in `app/(tabs)/_layout.tsx` renders banner ABOVE tab buttons in one absolutely-positioned container
+- Layout from bottom up: `[safe area] [tab buttons ~56px] [banner ~50px] [screen content]`
+- React Navigation measures the combined height and applies correct screen content paddingBottom automatically
+- `StickyBannerAd.tsx` exports `InlineBannerAd` (inline, no absolute positioning) and `BANNER_HEIGHT=50`
+
+## Ports
+- Frontend (Expo): 8081
+- Backend (Express): 5000

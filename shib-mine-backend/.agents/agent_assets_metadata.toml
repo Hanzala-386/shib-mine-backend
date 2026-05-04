@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "stg5f5dwQykswOQ_uXUMe"
+uri = "file://ADMIN_PANEL_GUIDE.md"
+type = "text"
+title = "Admin Panel Technical Guide"

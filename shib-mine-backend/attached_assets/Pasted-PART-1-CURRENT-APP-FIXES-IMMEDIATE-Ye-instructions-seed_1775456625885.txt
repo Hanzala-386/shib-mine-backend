@@ -1,0 +1,59 @@
+PART 1: CURRENT APP FIXES (IMMEDIATE)
+Ye instructions seedha agent ko bhej do, isme logic wahi rahega bas "Words" aur "Icons" sahi ho jayenge:
+
+URGENT FIXES REQUIRED - DO NOT CHANGE LOGIC, ONLY UI/TEXT:
+
+Profile Screen Icon Reversion: In the Sessions section of the Profile page, replace the Shiba Coin with the original Pickaxe icon. We only want the coin in SHIB balance areas, not for session counts.
+
+Withdrawal Validation Text: Remove the Hindi error message "aapka wallet address galat hai...".
+
+Requirement: Only show the text "Invalid Address" in red.
+
+Constraint: This message must stay visible until the user enters more than 30 characters. Do NOT show character counts to the user; keep the length check in the background logic.
+
+Professional English for Pending Withdrawals: Replace the Hindi alert "Aapka pichla withdrawal abhi pending hai..." with a professional English notification.
+
+New Text: "Withdrawal Pending: Your previous request is currently under review. Please wait for it to be processed before initiating a new one."
+
+Note: Do not touch the backend logic for balance deduction or status checks. Only update the strings and the specific icon mentioned.
+
+PART 2: THE "FUTURISTIC" ADMIN PANEL PROMPT (FOR NEW PROJECT)
+Bhai, ye prompt maine aisa likha hai ki jab aap naya Replit project khologe, toh agent aapko HTML, CSS, aur JS ki files bana kar dega jise aap seedha webcod.in ke file manager mein daal sakoge.
+
+Naye Project mein ye bhej dena:
+
+PROJECT: DYNAMIC STATIC ADMIN PANEL FOR SHIBA HIT
+
+Goal: Create a futuristic, high-performance Admin Panel using HTML5, Tailwind CSS, and Vanilla JavaScript to be hosted on Shared Hosting (webcod.in).
+
+1. Connection & Security:
+
+Connect to the Railway Backend API (provide the endpoint URL).
+
+Login System: Implement a secure login page that requires an Admin Password to access the dashboard.
+
+2. Dashboard & Navigation:
+
+Design a sleek, dark-themed dashboard with a sidebar for: Dashboard Overview, User Management, Withdrawal Requests, App Settings, and Collection Logs.
+
+3. Withdrawal Management (Core Feature):
+
+Create three distinct sections: Pending, Completed, and Rejected.
+
+One-Click Action: Admin should be able to "Approve" or "Reject" a request with a single click. Approval must update the status in the Railway/PocketBase database instantly.
+
+4. App Settings & Fields:
+
+All app settings (e.g., mining rates, minimum withdrawal limits, maintenance mode) should be editable from a dedicated "Settings" page.
+
+Use clean forms and toggles for easy management.
+
+5. Database Integration:
+
+Show all collection data in searchable/sortable tables.
+
+Ensure the panel is Dynamic (updates data via API) but Static/Portable (can be uploaded to any shared hosting File Manager).
+
+Design Note: Use a futuristic UI (Glassmorphism, Neon accents) to match the Shiba Hit brand. The panel must be fully responsive for mobile and desktop.
+
+Deliverable: Provide all .html, .css, and .js files ready for upload.

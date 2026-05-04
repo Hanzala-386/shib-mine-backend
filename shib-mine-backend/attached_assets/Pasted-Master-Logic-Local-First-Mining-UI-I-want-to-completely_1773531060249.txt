@@ -1,0 +1,38 @@
+Master Logic: Local-First Mining UI
+"I want to completely overhaul the Mining Dashboard logic to prioritize User Experience (UX) using Local State & UI Animation. The goal is to stop the 'NaN' errors and the logout-refresh requirement.
+
+1. The "Live UI" Logic (Frontend Only):
+
+The Concept: Once a mining session starts, the SHIB balance increment and the 1-hour timer must run locally on the frontend.
+
+The Math: Get the mining_rate_per_sec and the multiplier (e.g., 10x).
+
+Action: Use a setInterval (1 second) to manually increase the displayed balance on the screen: current_display_balance += (rate * multiplier).
+
+Persistence: Save this 'Visual Balance' and the 'Start Timestamp' in AsyncStorage. If the user closes the app and reopens it, calculate how much time has passed and jump the numbers forward instantly.
+
+2. Backend Sync (Silent Operator):
+
+The backend (PocketBase) should only be called at the Start (to deduct tokens and save booster_expiry) and at the Claim (to verify and add funds).
+
+During the 1-hour mining, the UI should NOT depend on server responses for the live counter. This will permanently kill the NaN error.
+
+3. The "Power Button" Popup Experience:
+
+When a user clicks 2x, 4x, 6x, or 10x, do NOT start mining immediately. Instead, show a Beautiful Custom Modal.
+
+Design: The popup should have a glass-morphism effect, a clear '10x' badge, the cost of the booster, and a big 'START MINING' button.
+
+Validation: If power_tokens are insufficient, the popup must change its text to "Insufficient Tokens" and show a "Play Games" button that links to the games screen.
+
+4. The 'Claim' Logic:
+
+Only when the local timer hits 00:00:00, show the 'Claim' button.
+
+Upon clicking 'Claim', send the final request to the server to finalize the transaction. After success, clear the local storage and return the UI to 'Idle' state.
+
+Technical Requirement: - Fix the MiningContext.tsx to use this local-timer logic.
+
+Ensure AsyncStorage is used to keep the timer running even if the app is killed.
+
+Ensure no math is done on null values; always use (value || 0)."

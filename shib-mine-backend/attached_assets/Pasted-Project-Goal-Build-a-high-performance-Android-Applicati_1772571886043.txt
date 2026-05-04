@@ -1,0 +1,59 @@
+Project Goal: Build a high-performance Android Application for SHIB Cloud Mining using React Native. The app must be scalable, secure, and integrated with Firebase and PocketBase.
+
+1. Authentication & Backend Setup
+Auth: Integrate Firebase Authentication. Use Email + Password with OTP Verification (Email OTP) for Signup and "Forgot Password".
+
+Database: Use PocketBase as the primary database. Create a centralized api.js to handle all CRUD operations.
+
+Security: Ensure independent sessions using unique User IDs to prevent timer collisions between different accounts.
+
+2. Knife Hit Mini-Game (Retention Engine)
+Gameplay: A high-quality Knife Hit game. Users throw knives at a rotating wooden log.
+
+Physics: Add collision detection (knives cannot hit other knives) and haptic feedback.
+
+Rewards: 1 Level Win = 3 Power Tokens.
+
+AdMob Loop: After winning, show a "Double Tokens (6)" button that triggers an AdMob Rewarded Video.
+
+3. Core Mining Logic (Token-Gated)
+Mining Session: 60-minute cycle. Use a server-synced timer that persists even if the app is closed.
+
+The Entry Fee: User must spend 5 Power Tokens and watch a Unity Interstitial Ad to start the mining session.
+
+The Claim: After 60 mins, a "Claim" button appears. On click, verify the session on the backend and add SHIB coins to the Main Wallet.
+
+Boosters: Implement 2x, 4x, 6x, and 10x speed boosters, purchasable with Power Tokens. Costs must be fetched from the Admin settings.
+
+4. Admin Control Panel (Internal Dashboard)
+Access: Restricted to hanzala386@gmail.com. Require Email OTP on every login.
+
+Dynamic Ad Management: Admin must have fields to input and update:
+
+AdMob App ID, Banner ID, Interstitial ID, Rewarded ID.
+
+Unity Game ID, Interstitial Placement ID.
+
+Financial Control: Set "Minimum Withdrawal" levels (Tier 1/2/3) and "Fees" (Binance Email % vs BEP-20 Flat Fee).
+
+Global Settings: Update Mining Rates and Booster costs in real-time.
+
+5. Referral & Sharing System
+Logic: Users enter a 6-digit Referral Code during signup.
+
+Commission: The referrer gets a 10% bonus of every claim made by the referred user (calculated server-side).
+
+Sharing: Integrate the Native Share API so users can share their code via WhatsApp, Telegram, etc.
+
+6. UI/UX & Ads Placement
+Theme: Modern Gold & Neon Orange Glassmorphism.
+
+Ads Placement:
+
+Banner: Sticky AdMob banner at the bottom of the screen.
+
+Interstitial (Unity): Triggered when 'Start Mining' is clicked.
+
+Rewarded (AdMob): Triggered in the Game for token doubling and when 'Withdrawing' (optional).
+
+Navigation: Premium Bottom Tab Bar [Home, Games, Invite, Wallet, Profile].

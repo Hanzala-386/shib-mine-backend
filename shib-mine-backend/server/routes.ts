@@ -1,0 +1,3571 @@
+import type { Express, Request, Response } from "express";
+import { createServer, type Server } from "node:http";
+import https from "node:https";
+import http from "node:http";
+import crypto from "node:crypto";
+import nodemailer from "nodemailer";
+import multer from "multer";
+import { WebSocketServer } from "ws";
+
+// ─── Multer — memory storage for proof screenshot uploads ─────────────────
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
+});
+
+
+const PB_URL = "https://api.webcod.in";
+
+// ─── PocketBase HTTP helper ────────────────────────────────────────────────
+function pbHttp(
+  method: string,
+  path: string,
+  body: object | null,
+  token?: string,
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : null;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (data) headers["Content-Length"] = String(Buffer.byteLength(data));
+
+    const url = new URL(path, PB_URL);
+    const isHttps = url.protocol === "https:";
+    const lib = isHttps ? https : http;
+
+    const req = lib.request(
+      {
+        hostname: url.hostname,
+        port: url.port || (isHttps ? 443 : 80),
+        path: url.pathname + url.search,
+        method,
+        headers,
+      },
+      (res) => {
+        let b = "";
+        res.on("data", (d) => (b += d));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(b));
+          } catch {
+            resolve({ raw: b });
+          }
+        });
+      },
+    );
+    // 30-second hard timeout for all PocketBase requests
+    req.setTimeout(30_000, () => {
+      req.destroy(new Error("PocketBase request timed out after 30s"));
+    });
+    req.on("error", reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+// ─── PocketBase multipart helpers (file uploads) ──────────────────────────
+async function pbFetchMultipart(method: string, path: string, form: FormData): Promise<any> {
+  const token = await getAdminToken();
+  const url = new URL(path, PB_URL).toString();
+  const res = await globalThis.fetch(url, {
+    method,
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  return res.json();
+}
+
+// ─── Admin token cache ─────────────────────────────────────────────────────
+let adminToken = "";
+let tokenExpiry = 0;
+
+async function getAdminToken(): Promise<string> {
+  if (adminToken && Date.now() < tokenExpiry) return adminToken;
+  const res = await pbHttp(
+    "POST",
+    "/api/admins/auth-with-password",
+    {
+      identity: process.env.PB_ADMIN_EMAIL,
+      password: process.env.PB_ADMIN_PASSWORD,
+    },
+    undefined,
+  );
+  if (!res.token) throw new Error(`PB admin auth failed: ${JSON.stringify(res)}`);
+  adminToken = res.token;
+  tokenExpiry = Date.now() + 23 * 60 * 60 * 1000; // 23 hours
+  return adminToken;
+}
+
+// ─── WebSocket game session anti-cheat ────────────────────────────────────
+// Supports two game modes on the same /api/ws/game endpoint:
+//
+//  Weapon Master (Construct 3) — score-validation mode:
+//    GAME_START → SESSION_READY → ... play ... → GAME_OVER {score, elapsed_ms}
+//    Server validates score ≤ elapsed_ms/1000 × 15 pts/sec and ≤ 2000, then
+//    stores last_session_score.  No per-action signals needed.
+//
+//  Knife Hit — per-hit mode (legacy, kept for possible future use):
+//    GAME_START → SESSION_READY → KNIFE_HIT × N → GAME_OVER
+//    Server counts hits at 5 PT each with timing/burst guards.
+
+const WS_PT_PER_HIT   = 5;           // tokens awarded per validated hit
+const WS_MAX_PT       = 2000;        // hard session cap
+const WS_MAX_HITS     = WS_MAX_PT / WS_PT_PER_HIT;  // 400 hits
+const WS_MIN_HIT_MS   = 280;         // 300ms poll interval - 20ms jitter tolerance
+const WS_BURST_WINDOW = 5_000;       // rolling ms window for burst detection
+const WS_BURST_MAX    = 15;          // max hits allowed in any BURST_WINDOW ms span
+const WS_SESSION_MS   = 3 * 60_000; // 3-minute hard timer
+
+interface WsGameSession {
+  pbId: string;
+  hits: number;
+  serverPT: number;
+  startMs: number;
+  lastHitMs: number;
+  hitLog: number[];   // timestamps of recent hits
+  committed: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const wsSessions = new Map<string, WsGameSession>();
+
+async function wsCommitSession(sid: string, session: WsGameSession): Promise<void> {
+  if (session.committed) return;
+  session.committed = true;
+  if (session.timer) { clearTimeout(session.timer); session.timer = null; }
+  const finalPT = session.serverPT;
+  console.log(`[ws/game] commit ${sid.slice(0, 8)}: ${session.hits} hits = ${finalPT} PT (${session.pbId})`);
+  try {
+    // Store as last_session_score — the existing REST claim/double flow reads it
+    await pbPatch(`/api/collections/users/records/${session.pbId}`, {
+      last_session_score: finalPT,
+    });
+    pbPost("/api/collections/game_logs/records", {
+      user: session.pbId, raw_score: finalPT, is_double: false, final_tokens: finalPT,
+    }).catch(() => {});
+  } catch (e: any) {
+    console.error(`[ws/game] commit error (${session.pbId}):`, e.message);
+  }
+  wsSessions.delete(sid);
+}
+
+export function setupGameWebSocket(wss: WebSocketServer): void {
+  wss.on("connection", (ws) => {
+    let sid: string | null = null;
+    const send = (obj: object) => { try { ws.send(JSON.stringify(obj)); } catch {} };
+
+    ws.on("message", async (raw) => {
+      let msg: any;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+      switch (msg.type) {
+
+        case "GAME_START": {
+          const { pbId } = msg;
+          if (!pbId) { send({ type: "ERROR", reason: "pbId_required" }); return; }
+          const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
+          if (user.code) { send({ type: "ERROR", reason: "user_not_found" }); return; }
+          // Clean up any prior session on this connection
+          if (sid) {
+            const old = wsSessions.get(sid);
+            if (old && !old.committed) { old.committed = true; if (old.timer) clearTimeout(old.timer); wsSessions.delete(sid); }
+          }
+          sid = crypto.randomUUID();
+          const session: WsGameSession = {
+            pbId, hits: 0, serverPT: 0, startMs: Date.now(),
+            lastHitMs: 0, hitLog: [], committed: false, timer: null,
+          };
+          // Auto-commit when the 3-minute server timer fires
+          session.timer = setTimeout(async () => {
+            const s = wsSessions.get(sid!);
+            if (s) await wsCommitSession(sid!, s);
+            send({ type: "GAME_OVER", reason: "time", serverPT: session.serverPT });
+          }, WS_SESSION_MS);
+          wsSessions.set(sid, session);
+          send({ type: "SESSION_READY", sessionId: sid });
+          console.log(`[ws/game] session ${sid.slice(0, 8)} started for ${pbId}`);
+          break;
+        }
+
+        case "KNIFE_HIT": {
+          if (!sid) { send({ type: "HIT_REJECTED", reason: "no_session" }); return; }
+          const session = wsSessions.get(sid);
+          if (!session || session.committed) { send({ type: "HIT_REJECTED", reason: "session_invalid" }); return; }
+          const now = Date.now();
+          // Guard: minimum time between throws (physics-enforced minimum ~300 ms)
+          if (session.lastHitMs > 0 && (now - session.lastHitMs) < WS_MIN_HIT_MS) {
+            console.warn(`[ws/game] ${sid.slice(0, 8)} too_fast (${now - session.lastHitMs}ms)`);
+            send({ type: "HIT_REJECTED", reason: "too_fast" }); return;
+          }
+          // Guard: burst detection — max 15 valid hits in any 5-second window
+          session.hitLog = session.hitLog.filter(t => now - t < WS_BURST_WINDOW);
+          if (session.hitLog.length >= WS_BURST_MAX) {
+            console.warn(`[ws/game] ${sid.slice(0, 8)} burst (${session.hitLog.length} hits/${WS_BURST_WINDOW}ms)`);
+            send({ type: "HIT_REJECTED", reason: "burst_detected" }); return;
+          }
+          // Guard: hard session cap — force end if 400 hits reached
+          if (session.hits >= WS_MAX_HITS) {
+            await wsCommitSession(sid, session);
+            send({ type: "GAME_OVER", reason: "score_limit", serverPT: session.serverPT }); return;
+          }
+          // Valid hit ─ increment authoritative counters
+          session.hits++;
+          session.serverPT = session.hits * WS_PT_PER_HIT;
+          session.lastHitMs = now;
+          session.hitLog.push(now);
+          send({ type: "HIT_ACK", serverPT: session.serverPT, serverHits: session.hits });
+          break;
+        }
+
+        case "GAME_OVER": {
+          if (!sid) return;
+          const session = wsSessions.get(sid);
+          if (!session || session.committed) { send({ type: "COMMITTED", serverPT: session?.serverPT ?? 0 }); return; }
+
+          // Weapon Master mode: no KNIFE_HITs were sent — validate score from message
+          if (session.hits === 0 && msg.score !== undefined) {
+            const rawScore  = Math.max(0, Number(msg.score) || 0);
+            const elapsedMs = Math.max(1000, Number(msg.elapsed_ms) || (Date.now() - session.startMs));
+            // Time-based cap mirrors bridge.js client check: max 15 pts/sec
+            const maxForTime = Math.ceil((elapsedMs / 1000) * 15);
+            session.serverPT = Math.min(rawScore, WS_MAX_PT, maxForTime);
+            console.log(`[ws/game] WeaponMaster score: raw=${rawScore} elapsed=${Math.round(elapsedMs/1000)}s cap=${maxForTime} validated=${session.serverPT} (${session.pbId})`);
+          }
+
+          await wsCommitSession(sid, session);
+          send({ type: "COMMITTED", serverPT: session.serverPT });
+          break;
+        }
+      }
+    });
+
+    ws.on("close", () => {
+      if (!sid) return;
+      const session = wsSessions.get(sid);
+      if (!session || session.committed) return;
+      // Commit any earned PT on disconnect so players don't lose progress
+      // serverPT > 0 covers both Weapon Master (score set on GAME_OVER) and Knife Hit (per-hit accumulation)
+      if (session.hits > 0 || session.serverPT > 0) {
+        wsCommitSession(sid, session).catch(() => {});
+      } else {
+        if (session.timer) clearTimeout(session.timer);
+        wsSessions.delete(sid);
+      }
+    });
+  });
+}
+
+// ─── PB convenience helpers ────────────────────────────────────────────────
+async function pbGet(path: string) {
+  const token = await getAdminToken();
+  return pbHttp("GET", path, null, token);
+}
+async function pbPost(path: string, body: object) {
+  const token = await getAdminToken();
+  return pbHttp("POST", path, body, token);
+}
+async function pbPatch(path: string, body: object) {
+  const token = await getAdminToken();
+  return pbHttp("PATCH", path, body, token);
+}
+async function pbDelete(path: string) {
+  const token = await getAdminToken();
+  return pbHttp("DELETE", path, null, token);
+}
+
+// ─── Brevo SMTP mailer (nodemailer) ────────────────────────────────────────
+// Tries port 465 (SMTPS / TLS-immediate) first — Railway allows this even when
+// port 587 (STARTTLS) times out.  Falls back to port 587 automatically via
+// nodemailer's built-in fallback only if needed.
+//
+// SMTP_USER — Brevo SMTP login  (a52a0a001@smtp-brevo.com).
+//             If accidentally set to the API key it is detected and swapped.
+// SMTP_KEY  — Brevo SMTP API key (xsmtpsib-…). Required.
+
+async function sendOtpEmail(to: string, otp: string) {
+  const envUser = process.env.SMTP_USER || 'a52a0a001@smtp-brevo.com';
+  const envKey  = process.env.SMTP_KEY  || '';
+
+  if (!envKey) {
+    throw new Error('SMTP_KEY environment variable is not set — cannot send email.');
+  }
+
+  // Defensive: if SMTP_USER contains the API key, swap them
+  const smtpUser = envUser.startsWith('xsmtpsib-') ? 'a52a0a001@smtp-brevo.com' : envUser;
+  const smtpPass = envUser.startsWith('xsmtpsib-') ? envUser : envKey;
+
+  const htmlBody = `
+<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;background:#111;color:#fff;border-radius:16px;">
+  <h2 style="color:#FF6B00;margin:0 0 6px;font-size:22px;">Shiba Hit</h2>
+  <p style="color:#999;font-size:13px;margin:0 0 28px;">Account Deletion Request</p>
+  <p style="color:#ccc;margin:0 0 20px;">Enter the code below inside the app to confirm your account deletion. <strong>Do not click any links</strong> — just type the digits.</p>
+  <div style="background:#1e1e1e;border:1px solid #333;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px;">
+    <p style="color:#888;font-size:11px;letter-spacing:3px;text-transform:uppercase;margin:0 0 10px;">Your 6-Digit Code</p>
+    <p style="color:#FFD700;font-size:44px;font-weight:bold;letter-spacing:16px;margin:0;font-family:monospace;">${otp}</p>
+  </div>
+  <p style="color:#888;font-size:13px;margin:0 0 6px;">⏱ Expires in <strong style="color:#fff;">5 minutes</strong>.</p>
+  <p style="color:#888;font-size:13px;margin:0 0 24px;">If you didn't request this, you can safely ignore this email — your account is safe.</p>
+  <hr style="border:none;border-top:1px solid #222;margin:0 0 16px;"/>
+  <p style="color:#555;font-size:12px;margin:0;">Shiba Hit &nbsp;&bull;&nbsp; support@shibahit.com</p>
+</div>`;
+
+  // Port 465 = SMTPS (TLS from the start) — different path than STARTTLS on 587
+  // and confirmed reachable from Railway's network.
+  const ports: Array<{ port: number; secure: boolean }> = [
+    { port: 465, secure: true  },
+    { port: 587, secure: false },
+    { port: 2525, secure: false },
+  ];
+
+  let lastErr: Error | null = null;
+  for (const { port, secure } of ports) {
+    console.log(`[SMTP] Trying smtp-relay.brevo.com:${port} secure=${secure} user=${smtpUser} key-ends=${smtpPass.slice(-8)} to=${to}`);
+    try {
+      const transporter = nodemailer.createTransport({
+        host:   'smtp-relay.brevo.com',
+        port,
+        secure,
+        auth:   { user: smtpUser, pass: smtpPass },
+        tls:    { rejectUnauthorized: false },
+        connectionTimeout: 10_000,
+        greetingTimeout:   10_000,
+        socketTimeout:     15_000,
+      });
+      await transporter.sendMail({
+        from:    '"Shiba Hit" <support@shibahit.com>',
+        to,
+        subject: 'Your Shiba Hit Account Deletion OTP',
+        html:    htmlBody,
+        text:    `Your 6-digit security code is: ${otp}\n\nExpires in 5 minutes. Do not share it.\n\n— Shiba Hit Team`,
+      });
+      console.log(`[SMTP] Email delivered to ${to} via port ${port} ✓`);
+      return; // success — stop trying further ports
+    } catch (err: any) {
+      console.warn(`[SMTP] Port ${port} failed: ${err?.message}`);
+      lastErr = err;
+      // ETIMEDOUT or ECONNREFUSED → try next port
+      // Auth failure (responseCode 535) → no point trying other ports with same creds
+      if (err?.responseCode === 535) break;
+    }
+  }
+
+  throw lastErr ?? new Error('All SMTP ports failed');
+}
+
+// ─── Add masked_name field to withdrawals + backfill existing records ──────
+async function backfillWithdrawalMaskedNames() {
+  try {
+    // 1. Add the masked_name text field to the withdrawals collection (idempotent)
+    const col = await pbGet("/api/collections/withdrawals");
+    if (!col.code) {
+      const hasField = (col.fields || []).some((f: any) => f.name === "masked_name");
+      if (!hasField) {
+        const token = await getAdminToken();
+        const updatedFields = [
+          ...(col.fields || []),
+          { name: "masked_name", type: "text", required: false },
+        ];
+        await pbHttp("PATCH", `/api/collections/${col.id}`, { fields: updatedFields }, token);
+        console.log("[withdrawals] masked_name field added ✓");
+      }
+    }
+
+    // 2. Fetch all approved/completed withdrawals that still lack masked_name
+    const statuses = ["completed", "approved"];
+    for (const status of statuses) {
+      let page = 1;
+      while (true) {
+        const batch = await pbGet(
+          `/api/collections/withdrawals/records?filter=${encodeURIComponent(`status="${status}" && masked_name=""`)}` +
+          `&expand=user&sort=-created&perPage=50&page=${page}`
+        );
+        const items: any[] = batch.items || [];
+        if (!items.length) break;
+
+        for (const w of items) {
+          let name: string = w.expand?.user?.display_name || w.expand?.user?.username || "";
+          if (name.includes("@")) name = name.split("@")[0];
+          if (!name) continue;
+          await pbPatch(`/api/collections/withdrawals/records/${w.id}`, { masked_name: name })
+            .catch(() => {});
+        }
+
+        if (batch.totalPages <= page) break;
+        page++;
+      }
+    }
+    console.log("[withdrawals] masked_name backfill complete ✓");
+  } catch (e: any) {
+    console.warn("[withdrawals] masked_name backfill failed:", e.message);
+  }
+}
+
+// ─── Ensure daily_usage collection exists in PocketBase ───────────────────
+async function ensureDailyUsageCollection() {
+  try {
+    const check = await pbGet("/api/collections/daily_usage");
+    if (!check.code) return; // already exists
+    const token = await getAdminToken();
+    await pbHttp("POST", "/api/collections", {
+      name: "daily_usage",
+      type: "base",
+      fields: [
+        { name: "date_day", type: "text",   required: true },
+        { name: "count",    type: "number", required: true },
+      ],
+    }, token);
+    console.log("[daily_usage] Collection created in PocketBase");
+  } catch (e: any) {
+    console.warn("[daily_usage] Could not auto-create collection:", e.message);
+  }
+}
+
+// ─── Check and increment daily email limit (max 300/day) ──────────────────
+async function checkAndIncrementDailyEmailLimit(): Promise<{ allowed: boolean; message?: string }> {
+  const today = new Date().toISOString().substring(0, 10); // YYYY-MM-DD
+  try {
+    const result = await pbGet(
+      `/api/collections/daily_usage/records?filter=${encodeURIComponent(`date_day="${today}"`)}&perPage=1`
+    );
+    if (result.items && result.items.length > 0) {
+      const rec = result.items[0];
+      if (rec.count >= 300) {
+        console.warn(`[daily_usage] Daily OTP limit reached: ${rec.count} emails sent today`);
+        return { allowed: false, message: "Daily limit reached. Please try again after 24 hours." };
+      }
+      await pbPatch(`/api/collections/daily_usage/records/${rec.id}`, { count: rec.count + 1 });
+      console.log(`[daily_usage] Email count for ${today}: ${rec.count + 1}`);
+    } else {
+      await pbPost("/api/collections/daily_usage/records", { date_day: today, count: 1 });
+      console.log(`[daily_usage] New daily usage record created for ${today}`);
+    }
+    return { allowed: true };
+  } catch (e: any) {
+    console.warn("[daily_usage] Could not check limit (allowing anyway):", e.message);
+    return { allowed: true }; // fail open — don't block emails if tracking fails
+  }
+}
+
+// ─── Ensure otp_codes collection exists in PocketBase ─────────────────────
+async function ensureOtpCollection() {
+  try {
+    const check = await pbGet("/api/collections/otp_codes");
+    const token = await getAdminToken();
+    if (check.code) {
+      // Collection does not exist — create it
+      await pbHttp("POST", "/api/collections", {
+        name: "otp_codes",
+        type: "base",
+        fields: [
+          { name: "user",       type: "relation", required: true, options: { collectionId: "_pb_users_auth_", cascadeDelete: false, maxSelect: 1 } },
+          { name: "code",       type: "text",     required: true },
+          { name: "expires_at", type: "date",     required: true },
+        ],
+        listRule:   "user = @request.auth.id",
+        viewRule:   "user = @request.auth.id",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: "user = @request.auth.id",
+      }, token);
+      console.log("[otp_codes] Collection created with correct API rules");
+    } else {
+      // Collection exists — always patch rules so authenticated users can CRUD their own OTPs
+      await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule:   "user = @request.auth.id",
+        viewRule:   "user = @request.auth.id",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: "user = @request.auth.id",
+      }, token);
+      console.log("[otp_codes] API rules patched — authenticated users can manage their own OTPs");
+    }
+  } catch (e: any) {
+    console.warn("[otp_codes] Could not setup collection:", e.message);
+  }
+}
+
+// ─── Patch users + leaderboard-related collection rules ──────────────────────
+async function ensureCollectionRules() {
+  try {
+    const token = await getAdminToken();
+    // Allow authenticated users to LIST the users collection (needed for leaderboard)
+    // View/update/delete stay scoped to own record for privacy
+    const usersCol = await pbGet("/api/collections/users");
+    if (!usersCol.code) {
+      await pbHttp("PATCH", `/api/collections/${usersCol.id}`, {
+        // Anyone authenticated can list (needed for leaderboard)
+        listRule: "@request.auth.id != \"\"",
+        // A user can view their own record — needed so pbGetSelf() works in APK
+        viewRule: "@request.auth.id = id",
+        // Allow public creation so APK can create PB user directly when Express unreachable
+        createRule: "",
+        // CRITICAL: allow a user to update their own record.
+        // Without this, pbStartMining / pbClaimMining / pbActivateBooster balance writes all fail
+        // silently in the APK because the PB SDK authenticates as a regular user, not admin.
+        //
+        // NOTE: referral commission cross-user updates are handled via the referral_earnings_log
+        // collection (see ensureReferralEarningsLogCollection). The claimer writes a pending entry,
+        // and the referrer processes it on their next app open (self-update, always allowed).
+        updateRule: "@request.auth.id = id",
+        // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
+        deleteRule: "@request.auth.id = id",
+      }, token);
+      console.log("[users] listRule + viewRule + createRule + updateRule + deleteRule patched — APK self-CRUD enabled");
+    }
+    // deleted_emails: public read (APK checks before sign-up without auth), authenticated create
+    const deCol = await pbGet("/api/collections/deleted_emails");
+    if (!deCol.code) {
+      await pbHttp("PATCH", `/api/collections/${deCol.id}`, {
+        listRule:   "",   // public read — APK can check at sign-up without a PB session
+        viewRule:   "",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[deleted_emails] rules patched — public read, authenticated create");
+    }
+    // fraud_emails: public read (APK checks at login/signup without auth), authenticated create
+    const feCol = await pbGet("/api/collections/fraud_emails");
+    if (!feCol.code) {
+      await pbHttp("PATCH", `/api/collections/${feCol.id}`, {
+        listRule:   "",
+        viewRule:   "",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[fraud_emails] rules patched — public read, authenticated create");
+    }
+  } catch (e: any) {
+    console.warn("[ensureCollectionRules] Patch failed:", e.message);
+  }
+}
+
+// ─── Patch mining_sessions collection rules for APK SDK access ───────────────
+// Express uses an admin token and can always read/write mining_sessions.
+// The APK fallback uses the PB SDK authenticated as a regular user, so the
+// collection rules MUST allow the record owner to create and update sessions.
+// Without this patch, pbStartMining (create) and pbClaimMining (update) both
+// fail with 403 Forbidden — the claim silently returns 0 with no UI feedback.
+async function ensureMiningSessionsRules() {
+  try {
+    const token = await getAdminToken();
+    const col = await pbGet("/api/collections/mining_sessions");
+    if (col.code) {
+      console.warn("[mining_sessions] Collection not found — skipping rules patch");
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${col.id}`, {
+      // User can list/view only their own sessions
+      listRule:   "user = @request.auth.id",
+      viewRule:   "user = @request.auth.id",
+      // Any authenticated user can open a new session (APK pbStartMining)
+      createRule: "@request.auth.id != \"\"",
+      // CRITICAL: user can update their own session.
+      // This is the rule that was missing — pbClaimMining's update call was returning
+      // 403, causing the claim to silently fail in every APK build.
+      updateRule: "user = @request.auth.id",
+      // No user deletion — sessions are permanent audit records
+      deleteRule: null,
+    }, token);
+    console.log("[mining_sessions] Rules patched — APK can create + claim sessions via PB SDK");
+  } catch (e: any) {
+    console.warn("[mining_sessions] Rules patch failed:", e.message);
+  }
+}
+
+// ─── Ensure referral_earnings_log collection exists in PocketBase ──────────
+// This collection is the secure mechanism for referral commission payouts.
+//
+// Architecture:
+//   1. When user A claims a mining reward, they CREATE a record here pointing to referrer B.
+//   2. When user B (the referrer) opens the app, processPendingReferralEarnings() runs
+//      client-side: reads their pending log entries, totals them, and credits their OWN
+//      balance (self-update — always allowed by @request.auth.id = id rule).
+//   3. The entries are marked processed.
+//
+// This avoids the need for a cross-user updateRule (which this PB version's parser rejects).
+async function ensureReferralEarningsLogCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/referral_earnings_log");
+    if (!check.code) {
+      // Collection already exists — just ensure rules are correct
+      const patchRes = await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule:   "referrer_id = @request.auth.id",
+        viewRule:   "referrer_id = @request.auth.id",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: "referrer_id = @request.auth.id",
+        deleteRule: null,
+      }, token);
+      if (!patchRes.code) {
+        console.log("[referral_earnings_log] Rules patched");
+      }
+      return;
+    }
+    // Create the collection first WITHOUT rules.
+    // NOTE: This PB version uses the `schema` key (older API), not `fields`.
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "referral_earnings_log",
+      type: "base",
+      schema: [
+        { name: "referrer_id",  type: "text",   required: true  },
+        { name: "claimer_id",   type: "text",   required: true  },
+        { name: "amount",       type: "number", required: true  },
+        { name: "processed",    type: "bool",   required: false },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[referral_earnings_log] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    console.log("[referral_earnings_log] Collection created — patching rules...");
+    // Patch rules in a separate step (required for older PB versions)
+    const patchRes = await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule:   "referrer_id = @request.auth.id",
+      viewRule:   "referrer_id = @request.auth.id",
+      createRule: "@request.auth.id != \"\"",
+      updateRule: "referrer_id = @request.auth.id",
+      deleteRule: null,
+    }, token);
+    if (patchRes.code) {
+      console.warn("[referral_earnings_log] Rules patch failed:", JSON.stringify(patchRes).slice(0, 200));
+      // Fall back to open createRule so at least writes work
+      await pbHttp("PATCH", `/api/collections/${created.id}`, {
+        listRule:   "@request.auth.id != \"\"",
+        viewRule:   "@request.auth.id != \"\"",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: "@request.auth.id != \"\"",
+        deleteRule: null,
+      }, token);
+    } else {
+      console.log("[referral_earnings_log] Secure referral payout pipeline active");
+    }
+  } catch (e: any) {
+    console.warn("[referral_earnings_log] Setup failed:", e.message);
+  }
+}
+
+// ─── Ensure session_logs collection exists in PocketBase ──────────────────
+// One record per mining session claim (or fraud attempt).
+// Fields: user (pbId), session_type ("1x"|"2x"|"4x"|"6x"|"10x"|"fraud"),
+//         income (SHIB reward), booster_multiplier, duration_seconds.
+async function ensureSessionLogsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/session_logs");
+    if (!check.code) {
+      console.log("[session_logs] Collection already exists ✓");
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "session_logs",
+      type: "base",
+      schema: [
+        { name: "user",              type: "text",   required: true  },
+        { name: "session_type",      type: "text",   required: true  },
+        { name: "income",            type: "number", required: false },
+        { name: "booster_multiplier",type: "number", required: false },
+        { name: "duration_seconds",  type: "number", required: false },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[session_logs] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    // Admin-only access (server writes via admin token)
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null,
+    }, token);
+    console.log("[session_logs] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[session_logs] Setup failed:", e.message);
+  }
+}
+
+// ─── Ensure game_logs collection exists in PocketBase ─────────────────────
+// One record per game completed (knife-hit game).
+// Fields: user (pbId), raw_score, is_double (bool), final_tokens (PT credited).
+async function ensureGameLogsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/game_logs");
+    if (!check.code) {
+      console.log("[game_logs] Collection already exists ✓");
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "game_logs",
+      type: "base",
+      schema: [
+        { name: "user",         type: "text",   required: true  },
+        { name: "raw_score",    type: "number", required: false },
+        { name: "is_double",    type: "bool",   required: false },
+        { name: "final_tokens", type: "number", required: false },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[game_logs] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null,
+    }, token);
+    console.log("[game_logs] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[game_logs] Setup failed:", e.message);
+  }
+}
+
+// ─── Ensure referral_history collection exists in PocketBase ──────────────
+// One record per referral commission payment (admin analytics only — separate
+// from referral_earnings_log which drives the secure payout pipeline).
+// Fields: referrer_id, claimer_id, referrer_email, claimer_email, amount, source.
+async function ensureReferralHistoryCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/referral_history");
+    if (!check.code) {
+      console.log("[referral_history] Collection already exists ✓");
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "referral_history",
+      type: "base",
+      schema: [
+        { name: "referrer_id",    type: "text",   required: true  },
+        { name: "claimer_id",     type: "text",   required: true  },
+        { name: "referrer_email", type: "text",   required: false },
+        { name: "claimer_email",  type: "text",   required: false },
+        { name: "amount",         type: "number", required: true  },
+        { name: "source",         type: "text",   required: false }, // "mining_claim" | "game_reward"
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[referral_history] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null,
+    }, token);
+    console.log("[referral_history] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[referral_history] Setup failed:", e.message);
+  }
+}
+
+// ─── Ensure tasks collection exists in PocketBase ─────────────────────────
+async function ensureTasksCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/tasks");
+    if (!check.code) { console.log("[tasks] Collection already exists ✓"); return; }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "tasks",
+      type: "base",
+      schema: [
+        { name: "title",         type: "text",   required: true  },
+        { name: "description",   type: "text",   required: false },
+        { name: "link",          type: "url",    required: false },
+        { name: "reward_amount", type: "number", required: true  },
+        { name: "reward_type",   type: "text",   required: true  },
+        { name: "is_active",     type: "bool",   required: false },
+      ],
+    }, token);
+    if (created.code) { console.warn("[tasks] Could not create:", JSON.stringify(created).slice(0, 200)); return; }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, { listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null }, token);
+    console.log("[tasks] Collection created ✓");
+  } catch (e: any) { console.warn("[tasks] Setup failed:", e.message); }
+}
+
+// ─── Ensure task_submissions collection exists in PocketBase ───────────────
+async function ensureTaskSubmissionsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/task_submissions");
+    if (!check.code) { console.log("[task_submissions] Collection already exists ✓"); return; }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "task_submissions",
+      type: "base",
+      schema: [
+        { name: "user_id",          type: "text",   required: true  },
+        { name: "task_id",          type: "text",   required: true  },
+        { name: "task_title",       type: "text",   required: false },
+        { name: "user_email",       type: "text",   required: false },
+        { name: "proof_screenshot", type: "text",   required: false },
+        { name: "status",           type: "text",   required: true  },
+        { name: "admin_notes",      type: "text",   required: false },
+        { name: "reward_amount",    type: "number", required: false },
+        { name: "reward_type",      type: "text",   required: false },
+      ],
+    }, token);
+    if (created.code) { console.warn("[task_submissions] Could not create:", JSON.stringify(created).slice(0, 200)); return; }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, { listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null }, token);
+    console.log("[task_submissions] Collection created ✓");
+  } catch (e: any) { console.warn("[task_submissions] Setup failed:", e.message); }
+}
+
+// ─── Migrate proof_screenshot field: text → file ───────────────────────────
+async function migrateProofScreenshotToFile() {
+  try {
+    const token = await getAdminToken();
+    const col = await pbGet("/api/collections/task_submissions");
+    if (col.code) { console.log("[task_submissions] Collection not found — skip migration"); return; }
+
+    // Detect current field type (schema key = older PB API; fields key = newer)
+    const schema: any[] = col.schema || col.fields || [];
+    const field = schema.find((f: any) => f.name === "proof_screenshot");
+    if (!field) { console.log("[task_submissions] proof_screenshot field not found — skip"); return; }
+    if (field.type === "file") { console.log("[task_submissions] proof_screenshot already file type ✓"); return; }
+
+    // Build updated schema with proof_screenshot as file type
+    const updatedSchema = schema.map((f: any) =>
+      f.name === "proof_screenshot"
+        ? {
+            name: "proof_screenshot",
+            type: "file",
+            required: false,
+            options: { maxSelect: 1, maxSize: 5242880, mimeTypes: ["image/jpeg", "image/png", "image/webp"] },
+          }
+        : f,
+    );
+
+    // Try schema key first (older PB), then fields key (newer PB)
+    let r = await pbHttp("PATCH", `/api/collections/${col.id}`, { schema: updatedSchema }, token);
+    if (r.code) {
+      r = await pbHttp("PATCH", `/api/collections/${col.id}`, { fields: updatedSchema }, token);
+    }
+    if (!r.code) {
+      console.log("[task_submissions] proof_screenshot migrated text→file ✓");
+    } else {
+      console.warn("[task_submissions] Field migration failed:", JSON.stringify(r).slice(0, 300));
+    }
+  } catch (e: any) {
+    console.warn("[task_submissions] Migration error:", e.message);
+  }
+}
+
+// ─── Ensure notifications collection exists in PocketBase ─────────────────
+async function ensureNotificationsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/notifications");
+    if (!check.code) {
+      // Collection exists — ensure rules allow public read (server reads via admin token)
+      await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule:   "",
+        viewRule:   "",
+        createRule: null,
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[notifications] Collection rules verified ✓");
+      return;
+    }
+    // Create the collection
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "notifications",
+      type: "base",
+      schema: [
+        { name: "title",       type: "text",     required: true,  options: {} },
+        { name: "message",     type: "text",     required: true,  options: {} },
+        { name: "type",        type: "select",   required: true,  options: { values: ["global", "personal"], maxSelect: 1 } },
+        { name: "target_user", type: "relation", required: false, options: { collectionId: "_pb_users_auth_", cascadeDelete: false, maxSelect: 1 } },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[notifications] Could not create collection:", JSON.stringify(created).slice(0, 300));
+      return;
+    }
+    // Patch rules in a separate step (required for older PB versions)
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule:   "",
+      viewRule:   "",
+      createRule: null,
+      updateRule: null,
+      deleteRule: null,
+    }, token);
+    console.log("[notifications] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[notifications] Collection setup failed:", e.message);
+  }
+}
+
+// ─── Ensure deleted_emails collection exists in PocketBase ─────────────────
+async function ensureDeletedEmailsCollection() {
+  try {
+    const check = await pbGet("/api/collections/deleted_emails");
+    if (!check.code) return; // already exists — code field absent on success
+    const token = await getAdminToken();
+    const res = await pbHttp("POST", "/api/collections", {
+      name: "deleted_emails",
+      type: "base",
+      // IMPORTANT: this PocketBase version uses "schema" (not "fields") for collection creation
+      schema: [
+        { name: "email",  type: "text", required: true,  options: {} },
+        { name: "reason", type: "text", required: false, options: {} },
+      ],
+      listRule:   "",
+      viewRule:   "",
+      createRule: "@request.auth.id != \"\"",
+      updateRule: null,
+      deleteRule: null,
+    }, token);
+    if (res.code) throw new Error(`PB rejected creation: ${JSON.stringify(res)}`);
+    console.log("[deleted_emails] Collection created in PocketBase");
+  } catch (e: any) {
+    console.warn("[deleted_emails] Could not auto-create collection:", e.message);
+  }
+}
+
+// ─── Ensure fraud_emails collection exists in PocketBase ──────────────────────
+async function ensureFraudEmailsCollection() {
+  try {
+    const check = await pbGet("/api/collections/fraud_emails");
+    if (!check.code) {
+      // Collection exists — make sure rules are correct
+      const token = await getAdminToken();
+      await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule:   "",
+        viewRule:   "",
+        createRule: "@request.auth.id != \"\"",
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[fraud_emails] Collection already exists — rules confirmed");
+      return;
+    }
+    // Collection does not exist — create it
+    const token = await getAdminToken();
+    const res = await pbHttp("POST", "/api/collections", {
+      name: "fraud_emails",
+      type: "base",
+      // IMPORTANT: this PocketBase version uses "schema" (not "fields") for collection creation
+      schema: [
+        { name: "email",  type: "text", required: true,  options: {} },
+        { name: "reason", type: "text", required: false, options: {} },
+      ],
+      listRule:   "",
+      viewRule:   "",
+      createRule: "@request.auth.id != \"\"",
+      updateRule: null,
+      deleteRule: null,
+    }, token);
+    if (res.code) throw new Error(`PB rejected creation: ${JSON.stringify(res)}`);
+    console.log("[fraud_emails] Collection created in PocketBase ✓");
+  } catch (e: any) {
+    console.warn("[fraud_emails] Could not auto-create collection:", e.message);
+  }
+}
+
+/** Save an email address to the permanent blacklist before account deletion */
+async function blacklistEmail(email: string): Promise<void> {
+  if (!email) return;
+  try {
+    const normalised = email.toLowerCase().trim();
+    // Idempotent: check if already blacklisted
+    const existing = await pbGet(
+      `/api/collections/deleted_emails/records?filter=${encodeURIComponent(`email="${normalised}"`)}&perPage=1`
+    );
+    if (existing.items?.[0]) {
+      console.log(`[deleted_emails] Email already blacklisted: ${normalised}`);
+      return;
+    }
+    await pbPost("/api/collections/deleted_emails/records", { email: normalised });
+    console.log(`[deleted_emails] Email blacklisted: ${normalised}`);
+  } catch (e: any) {
+    console.warn(`[deleted_emails] Failed to blacklist email ${email}:`, e.message);
+  }
+}
+
+// ─── Ensure public_referrals collection exists (for APK referral validation) ─
+// This collection is publicly readable so the APK can validate referral codes
+// without a PocketBase auth session (which doesn't exist yet at sign-up time).
+async function ensurePublicReferralsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/public_referrals");
+    if (check.code) {
+      // Collection does not exist — create it.
+      // Use 'schema' (not 'fields') — this PocketBase version uses the pre-v0.22 API.
+      await pbHttp("POST", "/api/collections", {
+        name: "public_referrals",
+        type: "base",
+        schema: [
+          { name: "code",    type: "text", required: true,  options: {} },
+          { name: "user_id", type: "text", required: true,  options: {} },
+        ],
+        listRule:   "",
+        viewRule:   "",
+        createRule: "",
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[public_referrals] Collection created with public rules");
+    }
+    // Always ensure it has a public listRule and open createRule
+    const col = await pbGet("/api/collections/public_referrals");
+    if (!col.code) {
+      await pbHttp("PATCH", `/api/collections/${col.id}`, {
+        listRule:   "",   // public — anyone can query referral codes
+        viewRule:   "",
+        createRule: "",   // public — APK fallback can insert without auth
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[public_referrals] Rules patched — public list/create enabled");
+    }
+    // Backfill any existing users whose code is not yet in public_referrals
+    const existing = await pbGet(
+      `/api/collections/users/records?perPage=200&fields=id,referral_code`,
+    );
+    const items: any[] = existing.items || [];
+    let backfilled = 0;
+    for (const u of items) {
+      if (!u.referral_code) continue;
+      const dup = await pbGet(
+        `/api/collections/public_referrals/records?filter=${encodeURIComponent(`code="${u.referral_code}"`)}&perPage=1`,
+        token,
+      );
+      if (!(dup.items?.[0])) {
+        await pbHttp("POST", "/api/collections/public_referrals/records", {
+          code: u.referral_code,
+          user_id: u.id,
+        }, token).catch(() => {});
+        backfilled++;
+      }
+    }
+    if (backfilled > 0) console.log(`[public_referrals] Backfilled ${backfilled} existing users`);
+  } catch (e: any) {
+    console.warn("[public_referrals] Setup failed:", e.message);
+  }
+}
+
+/** Returns true if the email is permanently blacklisted (previously deleted account) */
+async function isEmailBlacklisted(email: string): Promise<boolean> {
+  try {
+    const normalised = email.toLowerCase().trim();
+    const res = await pbGet(
+      `/api/collections/deleted_emails/records?filter=${encodeURIComponent(`email="${normalised}"`)}&perPage=1`
+    );
+    return !!(res.items?.[0]);
+  } catch {
+    return false; // on error, do not block signup
+  }
+}
+
+/** Returns true if the email belongs to a permanently fraud-blocked account */
+async function isFraudEmail(email: string): Promise<boolean> {
+  try {
+    const normalised = email.toLowerCase().trim();
+    const res = await pbGet(
+      `/api/collections/fraud_emails/records?filter=${encodeURIComponent(`email="${normalised}"`)}&perPage=1`
+    );
+    return !!(res.items?.[0]);
+  } catch {
+    return false; // on error, do not block
+  }
+}
+
+/** Saves an email to the fraud_emails collection (idempotent) */
+async function saveFraudEmail(email: string): Promise<void> {
+  const normalised = email.toLowerCase().trim();
+  if (!normalised) return;
+  try {
+    // Verify admin token is available before attempting write
+    const token = await getAdminToken();
+    if (!token) {
+      console.error(`[fraud_emails] CRITICAL: No admin token — PB_ADMIN_EMAIL/PB_ADMIN_PASSWORD missing in Railway Variables. Cannot save fraud email: ${normalised}`);
+      return;
+    }
+    const existing = await pbGet(
+      `/api/collections/fraud_emails/records?filter=${encodeURIComponent(`email="${normalised}"`)}&perPage=1`
+    );
+    if (existing.items?.[0]) {
+      console.log(`[fraud_emails] Already in blacklist: ${normalised}`);
+      return;
+    }
+    const res = await pbPost("/api/collections/fraud_emails/records", { email: normalised });
+    if (!res.id) {
+      console.error(`[fraud_emails] PocketBase rejected write — full response: ${JSON.stringify(res)}`);
+      return;
+    }
+    console.log(`[fraud_emails] ✓ Fraud email saved to PocketBase: ${normalised} (id=${res.id})`);
+  } catch (e: any) {
+    console.error(`[fraud_emails] FAILED to save ${normalised}:`, e.message, e.stack?.split('\n')[1] || '');
+  }
+}
+
+// Settings cache
+let settingsCache: any = null;
+let settingsCacheAt = 0;
+const SETTINGS_TTL = 5 * 60 * 1000;
+
+async function fetchSettings() {
+  if (settingsCache && Date.now() - settingsCacheAt < SETTINGS_TTL)
+    return settingsCache;
+  const res = await pbGet("/api/collections/settings/records?perPage=1");
+  const s = res.items?.[0];
+  if (s) {
+    settingsCache = s;
+    settingsCacheAt = Date.now();
+  }
+  return settingsCache;
+}
+
+function generateReferralCode() {
+  return Math.random().toString(36).substr(2, 6).toUpperCase();
+}
+
+// ─── Ensure PB users collection has all required fields, all optional ────────
+async function ensureUserSchema() {
+  // All number/text fields the app writes to the users collection.
+  // ALL must be required:false so that 0 / "" are accepted without errors.
+  const REQUIRED_FIELDS: Array<{ name: string; type: string }> = [
+    { name: "firebase_uid",       type: "text"   },
+    { name: "display_name",       type: "text"   },
+    { name: "referral_code",      type: "text"   },
+    { name: "referred_by",        type: "text"   },
+    { name: "is_verified",        type: "bool"   },
+    { name: "shib_balance",       type: "number" },
+    { name: "power_tokens",       type: "number" },
+    { name: "referral_balance",   type: "number" },
+    { name: "referral_earnings",  type: "number" },
+    { name: "total_claims",       type: "number" },
+    { name: "total_wins",         type: "number" },
+    { name: "fraud_attempts",          type: "number" },
+    { name: "status",                  type: "text"   },
+    { name: "current_mining_session",  type: "text"   },
+  ];
+
+  try {
+    const token = await getAdminToken();
+    const colls = await pbHttp("GET", "/api/collections?perPage=200", null, token);
+    const usersCol = (colls.items || []).find((c: any) => c.name === "users");
+    if (!usersCol) return;
+
+    const schema: any[] = usersCol.schema || [];
+    let changed = false;
+
+    for (const desired of REQUIRED_FIELDS) {
+      const existing = schema.find((f: any) => f.name === desired.name);
+      if (!existing) {
+        // Field missing — add it as optional
+        schema.push({ name: desired.name, type: desired.type, required: false });
+        changed = true;
+      } else if (existing.required === true) {
+        // Field exists but is required — make it optional so 0/"" are accepted
+        existing.required = false;
+        changed = true;
+      }
+    }
+
+    if (!changed) return;
+
+    await pbHttp("PATCH", `/api/collections/${usersCol.id}`, { schema }, token);
+    console.log("[PB] users schema updated — all app fields are now optional");
+  } catch (e: any) {
+    console.warn("[PB] Schema update skipped:", e.message);
+  }
+}
+
+// Verifies brevo_api_key exists in the PocketBase 'settings' collection.
+// Collection is named 'settings' (not 'app_settings'). The APK reads the key
+// directly from PocketBase and calls Brevo REST API — no Railway proxy needed.
+async function ensureBrevoKeyInSettings(): Promise<void> {
+  try {
+    const token = await getAdminToken();
+    const colls = await pbHttp("GET", "/api/collections?perPage=200", null, token);
+    // PocketBase uses 'settings' as the collection name (confirmed via admin API)
+    const settingsCol = (colls.items || []).find(
+      (c: any) => c.name === "settings" || c.name === "app_settings"
+    );
+    if (!settingsCol) {
+      console.warn("[settings] Settings collection not found — skipping brevo_api_key patch");
+      return;
+    }
+    const schema: any[] = settingsCol.schema || [];
+    const exists = schema.find((f: any) => f.name === "brevo_api_key");
+    if (exists) {
+      console.log(`[${settingsCol.name}] brevo_api_key field already present ✓`);
+      return;
+    }
+    schema.push({ name: "brevo_api_key", type: "text", required: false });
+    await pbHttp("PATCH", `/api/collections/${settingsCol.id}`, { schema }, token);
+    console.log(`[${settingsCol.name}] brevo_api_key field added — set value in PocketBase admin panel`);
+  } catch (e: any) {
+    console.warn("[settings] brevo_api_key patch skipped:", e.message);
+  }
+}
+
+// ─── Per-user in-memory security guards ───────────────────────────────────
+// Hourly game/ad reward limit: max 30 PT claims per hour per user
+const gameRewardHourly = new Map<string, { count: number; windowStart: number }>();
+// Daily PT cap: max 5 000 PT earned per calendar day per user
+const dailyPtEarned   = new Map<string, { earned: number; day: string }>();
+// One-time ad tokens: token → { pbId, reward, expiresAt }
+const adTokenStore    = new Map<string, { pbId: string; reward: number; expiresAt: number }>();
+
+function checkHourlyRewardLimit(pbId: string): boolean {
+  const MAX = 30;
+  const now = Date.now();
+  const e = gameRewardHourly.get(pbId);
+  if (!e || now - e.windowStart > 3_600_000) {
+    gameRewardHourly.set(pbId, { count: 1, windowStart: now });
+    return true;
+  }
+  if (e.count >= MAX) return false;
+  e.count++;
+  return true;
+}
+
+function checkDailyPtCap(pbId: string, amount: number): boolean {
+  const MAX = 5_000;
+  const today = new Date().toISOString().slice(0, 10);
+  const e = dailyPtEarned.get(pbId);
+  if (!e || e.day !== today) {
+    dailyPtEarned.set(pbId, { earned: amount, day: today });
+    return true;
+  }
+  if (e.earned + amount > MAX) return false;
+  e.earned += amount;
+  return true;
+}
+
+// ─── Startup env-var validation ────────────────────────────────────────────
+function validateEnv() {
+  const REQUIRED = ['PB_ADMIN_EMAIL', 'PB_ADMIN_PASSWORD'];
+  const RECOMMENDED = ['SMTP_USER', 'SMTP_KEY'];
+  const missing = REQUIRED.filter((k) => !process.env[k]);
+  const missingRec = RECOMMENDED.filter((k) => !process.env[k]);
+  if (missing.length) {
+    console.error(`[ENV] ❌ CRITICAL — Missing required variables: ${missing.join(', ')}`);
+    console.error('[ENV]    PocketBase admin operations WILL FAIL (fraud email save, OTP store, etc.)');
+    console.error('[ENV]    Add these in Railway → Variables tab immediately.');
+  } else {
+    console.log('[ENV] ✓ PB_ADMIN_EMAIL and PB_ADMIN_PASSWORD are set');
+  }
+  if (missingRec.length) {
+    console.warn(`[ENV] ⚠  Missing recommended variables: ${missingRec.join(', ')}`);
+    console.warn('[ENV]    OTP email will fall back to hardcoded Brevo credentials (may fail on Railway).');
+    console.warn('[ENV]    Add SMTP_USER + SMTP_KEY in Railway → Variables tab to fix email delivery.');
+  } else {
+    console.log('[ENV] ✓ SMTP_USER and SMTP_KEY are set — OTP email will use env credentials');
+  }
+}
+
+// ─── Routes ────────────────────────────────────────────────────────────────
+export async function registerRoutes(app: Express): Promise<Server> {
+  // Validate environment variables on startup — catches Railway misconfiguration immediately
+  validateEnv();
+
+  // Warm up admin token, ensure PB schema on startup
+  getAdminToken()
+    .then(() => ensureUserSchema())
+    .then(() => ensureOtpCollection())
+    .then(() => ensureDailyUsageCollection())
+    .then(() => ensureDeletedEmailsCollection())
+    .then(() => ensureFraudEmailsCollection())
+    .then(() => ensureCollectionRules())
+    .then(() => ensurePublicReferralsCollection())
+    .then(() => ensureMiningSessionsRules())
+    .then(() => ensureReferralEarningsLogCollection())
+    .then(() => ensureBrevoKeyInSettings())
+    .then(() => backfillWithdrawalMaskedNames())
+    .then(() => ensureNotificationsCollection())
+    .then(() => ensureSessionLogsCollection())
+    .then(() => ensureGameLogsCollection())
+    .then(() => ensureReferralHistoryCollection())
+    .then(() => ensureTasksCollection())
+    .then(() => ensureTaskSubmissionsCollection())
+    .then(() => migrateProofScreenshotToFile())
+    .catch((e) => console.warn("[PB] Startup init failed:", e));
+
+  // ── OTP: Request account-deletion OTP ─────────────────────────────────────
+  app.post("/api/auth/request-delete-otp", async (req: Request, res: Response) => {
+    try {
+      const { pbId, email } = req.body;
+      if (!pbId || !email) return res.status(400).json({ error: "pbId and email required" });
+
+      // Verify user exists
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // Delete any existing OTPs for this user
+      const existing = await pbGet(
+        `/api/collections/otp_codes/records?filter=${encodeURIComponent(`user="${pbId}"`)}&perPage=50`,
+      );
+      for (const rec of existing.items ?? []) {
+        await pbDelete(`/api/collections/otp_codes/records/${rec.id}`).catch(() => {});
+      }
+
+      // Generate cryptographically secure 6-digit OTP
+      const otp = crypto.randomInt(100000, 1000000).toString();
+      // PocketBase date field format: "YYYY-MM-DD HH:MM:SS" (no T, no Z, no ms)
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
+        .toISOString()
+        .replace("T", " ")
+        .replace(/\.\d{3}Z$/, "");
+
+      // Store OTP in PocketBase — field names match the manually-created collection:
+      //   user (relation → users), code (text), expires_at (date)
+      console.log(`[OTP] Storing OTP record for user=${pbId}, expires_at=${expiresAt}`);
+      const stored = await pbPost("/api/collections/otp_codes/records", {
+        user: pbId,
+        code: otp,
+        expires_at: expiresAt,
+      });
+      // PB success: response has "id" and "collectionId". A real error has "status" (HTTP int) or no "id".
+      if (!stored.id) {
+        console.error("[OTP] PocketBase store failed — full response:", JSON.stringify(stored));
+        return res.status(500).json({ error: `Failed to store OTP (PB ${stored.status || "unknown"}: ${stored.message || "unknown"})` });
+      }
+
+      // Check daily email limit (300/day) before sending
+      const limitCheck = await checkAndIncrementDailyEmailLimit();
+      if (!limitCheck.allowed) {
+        return res.status(429).json({ error: limitCheck.message });
+      }
+
+      // Send email via Brevo SMTP
+      try {
+        await sendOtpEmail(email, otp);
+      } catch (smtpErr: any) {
+        console.error("[SMTP] Failed to deliver OTP email:", smtpErr.message, smtpErr.stack);
+        // Include smtp_error in response so Railway logs are visible via curl (temporary debug)
+        return res.status(500).json({
+          error: "Failed to send email. Please try again later.",
+          smtp_error: smtpErr?.message || String(smtpErr),
+          smtp_code: smtpErr?.responseCode || smtpErr?.code || null,
+        });
+      }
+
+      console.log(`[OTP] Sent deletion OTP to ${email} for user ${pbId}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/auth/request-delete-otp] Unexpected error:", e.message, e.stack);
+      res.status(500).json({ error: e.message || "Failed to send OTP." });
+    }
+  });
+
+  // ── OTP: Confirm deletion with OTP ────────────────────────────────────────
+  app.post("/api/auth/confirm-delete", async (req: Request, res: Response) => {
+    try {
+      const { pbId, code } = req.body;
+      if (!pbId || !code) return res.status(400).json({ error: "pbId and code required" });
+
+      // Find OTP record for this user (field is "user" relation, not "user_id")
+      const records = await pbGet(
+        `/api/collections/otp_codes/records?filter=${encodeURIComponent(`user="${pbId}"`)}&perPage=10`,
+      );
+      const otpRecord = (records.items ?? []).find((r: any) => r.code === String(code).trim());
+
+      if (!otpRecord) return res.status(400).json({ error: "Invalid OTP. Please try again." });
+
+      // Check expiry
+      if (new Date(otpRecord.expires_at) < new Date()) {
+        await pbDelete(`/api/collections/otp_codes/records/${otpRecord.id}`).catch(() => {});
+        return res.status(400).json({ error: "OTP has expired. Please request a new one." });
+      }
+
+      // Delete OTP record immediately (single-use)
+      await pbDelete(`/api/collections/otp_codes/records/${otpRecord.id}`).catch(() => {});
+
+      // ── Fraud prevention: fetch user email and blacklist it BEFORE deletion ──
+      try {
+        const userRecord = await pbGet(`/api/collections/users/records/${pbId}?fields=id,email`);
+        if (userRecord?.email) {
+          await blacklistEmail(userRecord.email);
+        }
+      } catch (e: any) {
+        console.warn("[confirm-delete] Could not fetch user email for blacklisting:", e.message);
+      }
+
+      // Delete user's mining sessions
+      try {
+        const sessions = await pbGet(
+          `/api/collections/mining_sessions/records?filter=${encodeURIComponent(`user="${pbId}"`)}&perPage=200`,
+        );
+        for (const s of sessions.items ?? []) {
+          await pbDelete(`/api/collections/mining_sessions/records/${s.id}`).catch(() => {});
+        }
+      } catch { /* non-critical */ }
+
+      // Delete the user record from PocketBase
+      const deleteUrl = `${PB_URL}/api/collections/users/records/${pbId}`;
+      const adminToken = await getAdminToken();
+      const delRes = await fetch(deleteUrl, {
+        method: "DELETE",
+        headers: { Authorization: adminToken },
+      });
+      if (!delRes.ok && delRes.status !== 204) {
+        console.error("[confirm-delete] PB user delete failed:", delRes.status);
+        return res.status(500).json({ error: "Failed to delete account" });
+      }
+
+      console.log(`[confirm-delete] Account deleted for pbId=${pbId}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/auth/confirm-delete]", e.message);
+      res.status(500).json({ error: "Account deletion failed. Please try again." });
+    }
+  });
+
+  // ── Settings ──────────────────────────────────────────────────────────────
+  app.get("/api/app/settings", async (_req: Request, res: Response) => {
+    try {
+      const s = await fetchSettings();
+      if (!s) return res.status(503).json({ error: "Settings unavailable" });
+      res.json({
+        id: s.id,
+        miningRatePerSec: s.mining_rate_per_sec,
+        powerTokenPerClick: s.power_token_per_click,
+        miningDurationMinutes: s.mining_duration_minutes,
+        tokensPerRound: s.tokens_per_round,
+        boostCosts: {
+          "2x": s.boost_2x_cost,
+          "4x": s.boost_4x_cost,
+          "6x": s.boost_6x_cost,
+          "10x": s.boost_10x_cost,
+        },
+        minWithdrawal1: s.min_withdrawal_1,
+        minWithdrawal2: s.min_withdrawal_2,
+        minWithdrawal3: s.min_withdrawal_3,
+        showAds: s.show_ads,
+        activeAdNetwork: s.active_ad_network,
+        admobUnitId: s.admob_unit_id,
+        admobBannerUnitId: s.admob_banner_unit_id,
+        admobRewardedId: s.admob_rewarded_id,
+        applovinSdkKey: s.applovin_sdk_key,
+        applovinRewardedId: s.applovin_rewarded_id,
+        unityGameId: s.unity_game_id,
+        unityRewardedId: s.unity_rewarded_id,
+        unityInterstitialId: s.unity_interstitial_id,
+        applovinBannerId: s.applovin_banner_id,
+        applovinInterstitialId: s.applovin_interstitial_id,
+        appStoreLink: s.app_store_link || '',
+        playStoreUrl: s.play_store_url || s.app_store_link || '',
+        ratePopupFrequency: s.rate_popup_frequency || 5,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/settings]", e.message);
+      res.status(500).json({ error: "Failed to fetch settings" });
+    }
+  });
+
+  // ── Referral: Validate code ────────────────────────────────────────────────
+  app.get("/api/app/auth/validate-referral", async (req: Request, res: Response) => {
+    try {
+      const code = (req.query.code as string || "").trim().toUpperCase();
+      if (!code) return res.status(400).json({ valid: false, error: "Code required" });
+      const r = await pbGet(
+        `/api/collections/users/records?filter=referral_code="${encodeURIComponent(code)}"&perPage=1&fields=id,display_name`,
+      );
+      const referrer = r.items?.[0];
+      if (!referrer) return res.json({ valid: false });
+      res.json({ valid: true, referrerName: referrer.display_name || "" });
+    } catch (e: any) {
+      console.error("[/api/app/auth/validate-referral]", e.message);
+      res.status(500).json({ valid: false, error: "Validation failed" });
+    }
+  });
+
+  // ── Referral: Stats ────────────────────────────────────────────────────────
+  app.get("/api/app/user/:pbId/referral-stats", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      const [user, referred] = await Promise.all([
+        pbGet(`/api/collections/users/records/${pbId}?fields=id,referral_earnings,referral_balance`),
+        pbGet(`/api/collections/users/records?filter=${encodeURIComponent(`referred_by="${pbId}"`)}&perPage=50&fields=id,email,created,total_claims`),
+      ]);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      res.json({
+        referredCount: referred.totalItems || 0,
+        totalEarnings: user.referral_earnings || 0,
+        referralBalance: user.referral_balance || 0,
+        referredUsers: (referred.items || []).map((u: any) => ({
+          id: u.id,
+          email: u.email ? u.email.replace(/(.{2}).+(@.+)/, "$1***$2") : "***",
+          joined: u.created,
+          claims: u.total_claims || 0,
+        })),
+      });
+    } catch (e: any) {
+      console.error("[/api/app/user/referral-stats]", e.message);
+      res.status(500).json({ error: "Failed to fetch referral stats" });
+    }
+  });
+
+  // ── Referral balance claim ─────────────────────────────────────────────────
+  app.post("/api/app/user/:pbId/claim-referral", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,referral_balance,shib_balance`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      const balance = user.referral_balance || 0;
+      if (balance <= 0) return res.status(400).json({ error: "No referral rewards to claim" });
+      const newShib = (user.shib_balance || 0) + balance;
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        shib_balance: newShib,
+        referral_balance: 0,
+      });
+      res.json({ success: true, claimed: balance, newShibBalance: newShib });
+    } catch (e: any) {
+      console.error("[/api/app/user/claim-referral]", e.message);
+      res.status(500).json({ error: "Failed to claim referral rewards" });
+    }
+  });
+
+  // ── Delete Account (GDPR / compliance) ────────────────────────────────────
+  app.delete("/api/app/user/:pbId/delete-account", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "Missing pbId" });
+
+      // Verify user exists and fetch email for blacklisting
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,email`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // ── Fraud prevention: blacklist email BEFORE deletion ──
+      if (user.email) {
+        await blacklistEmail(user.email).catch(() => {});
+      }
+
+      // Hard-delete from PocketBase
+      const deleteUrl = `${process.env.PB_URL || "https://api.webcod.in"}/api/collections/users/records/${pbId}`;
+      const token = await getAdminToken();
+      const delRes = await fetch(deleteUrl, {
+        method: "DELETE",
+        headers: { Authorization: token },
+      });
+
+      if (!delRes.ok && delRes.status !== 204) {
+        console.error("[delete-account] PB delete failed:", delRes.status);
+        return res.status(500).json({ error: "Failed to delete user record" });
+      }
+
+      console.log(`[delete-account] Deleted PB user ${pbId}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/app/user/:pbId/delete-account]", e.message);
+      res.status(500).json({ error: "Account deletion failed" });
+    }
+  });
+
+  // ── Auth sync ─────────────────────────────────────────────────────────────
+  app.post("/api/app/auth/sync", async (req: Request, res: Response) => {
+    try {
+      const { firebaseUid, email, displayName, referralCode, referredBy } =
+        req.body;
+      if (!firebaseUid || !email)
+        return res.status(400).json({ error: "firebaseUid and email required" });
+
+      // ── Fraud prevention: block deleted emails ──────────────────────────────
+      const blocked = await isEmailBlacklisted(email);
+      if (blocked) {
+        console.warn(`[auth/sync] Blocked attempt from deleted-email blacklist: ${email}`);
+        return res.status(403).json({
+          error: "An account was previously associated with this email. This email is permanently restricted from new registrations.",
+          code: "EMAIL_PERMANENTLY_BANNED",
+        });
+      }
+
+      // ── Fraud prevention: block fraud_emails ─────────────────────────────────
+      const fraudBlocked = await isFraudEmail(email);
+      if (fraudBlocked) {
+        console.warn(`[auth/sync] Blocked attempt from fraud_emails list: ${email}`);
+        return res.status(403).json({
+          error: "ACCOUNT_BLOCKED",
+          blocked: true,
+          message: "This email has been permanently banned due to fraudulent activity.",
+        });
+      }
+
+      // Try to find existing user
+      const existing = await pbGet(
+        `/api/collections/users/records?filter=firebase_uid="${encodeURIComponent(firebaseUid)}"&perPage=1`,
+      );
+      if (existing.items?.[0]) {
+        let u = existing.items[0];
+
+        // Login blockade: dual-check — auto-heals accounts with >= 3 strikes but status not yet 'blocked'
+        {
+          const isBlocked = u.status === "blocked" || (u.fraud_attempts || 0) >= 3;
+          if (isBlocked) {
+            if (u.status !== "blocked") {
+              await pbPatch(`/api/collections/users/records/${u.id}`, { status: "blocked" }).catch(() => {});
+              console.warn(`[auth/sync] Auto-blocked user ${u.id} (fraud_attempts=${u.fraud_attempts})`);
+            } else {
+              console.warn(`[auth/sync] Blocked login attempt from banned user: ${u.id} (${email})`);
+            }
+            return res.status(403).json({
+              error: "ACCOUNT_BLOCKED",
+              blocked: true,
+              message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+            });
+          }
+        }
+
+        // Auto-generate referral code if the user was created before this was added
+        if (!u.referral_code) {
+          const code = generateReferralCode();
+          const updated = await pbPatch(`/api/collections/users/records/${u.id}`, {
+            referral_code: code,
+          });
+          if (!updated.code) u = { ...u, referral_code: code };
+        }
+        return res.json(formatUser(u));
+      }
+
+      // Check if referred_by referral code exists
+      let referrerPbId: string | undefined;
+      if (referredBy) {
+        const referrerRes = await pbGet(
+          `/api/collections/users/records?filter=referral_code="${encodeURIComponent(referredBy)}"&perPage=1`,
+        );
+        referrerPbId = referrerRes.items?.[0]?.id;
+      }
+
+      // Try to find user by email — filter must be fully URL-encoded so @ in email doesn't break PB parser
+      const byEmail = await pbGet(
+        `/api/collections/users/records?filter=${encodeURIComponent(`email="${email}"`)}&perPage=1`,
+      );
+      if (byEmail.items?.[0]) {
+        let u = byEmail.items[0];
+        // If the existing PB record is NOT verified, delete it so we can create a fresh one.
+        // This handles the case where a user signs up, never verifies, then tries to sign up again.
+        if (!u.is_verified) {
+          await pbDelete(`/api/collections/users/records/${u.id}`).catch(() => {});
+          // Fall through to create a new record below
+        } else {
+          const patches: any = {};
+          if (!u.firebase_uid) patches.firebase_uid = firebaseUid;
+          if (!u.referral_code) patches.referral_code = referralCode || generateReferralCode();
+          if (!u.display_name && displayName) patches.display_name = displayName;
+          if (!u.referred_by && referrerPbId) patches.referred_by = referrerPbId;
+          if (Object.keys(patches).length > 0) {
+            const updated = await pbPatch(`/api/collections/users/records/${u.id}`, patches);
+            if (!updated.code) u = { ...u, ...patches };
+          }
+          return res.json(formatUser(u));
+        }
+      }
+
+      // Create PB user — is_verified starts false; set to true via /confirm-verified
+      const code = referralCode || generateReferralCode();
+      const pbPassword = `SHIB_${firebaseUid}_SECURE`;
+      const created = await pbPost("/api/collections/users/records", {
+        email,
+        password: pbPassword,
+        passwordConfirm: pbPassword,
+        emailVisibility: false,
+        firebase_uid: firebaseUid,
+        display_name: displayName || email.split("@")[0],
+        referral_code: code,
+        referred_by: referrerPbId || "",
+        shib_balance: 100,      // welcome bonus: 100 SHIB
+        power_tokens: 500,      // welcome bonus: 500 Power Tokens
+        referral_balance: 0,
+        referral_earnings: 0,
+        total_claims: 0,
+        total_wins: 0,
+        fraud_attempts: 0,
+        status: "active",
+        current_mining_session: "",
+        is_verified: false,
+      });
+
+      if (created.code) {
+        const detail = JSON.stringify({ code: created.code, message: created.message, data: created.data });
+        console.error(`[auth/sync] PB user creation FAILED. email=${email} | PB error: ${detail}`);
+        return res.status(400).json({ error: created.message, detail: created.data });
+      }
+
+      // Register referral code in public_referrals (publicly queryable for APK validation)
+      pbHttp("POST", "/api/collections/public_referrals/records", {
+        code: code,
+        user_id: created.id,
+      }).catch(() => {});
+
+      // Give referrer 30 Power Tokens immediately on successful signup
+      if (referrerPbId) {
+        pbGet(`/api/collections/users/records/${referrerPbId}`).then(async (referrer) => {
+          if (referrer?.id) {
+            await pbPatch(`/api/collections/users/records/${referrerPbId}`, {
+              power_tokens: (referrer.power_tokens || 10) + 30,
+            });
+          }
+        }).catch(() => {});
+      }
+
+      return res.json(formatUser(created));
+    } catch (e: any) {
+      console.error("[/api/app/auth/sync]", e.message);
+      res.status(500).json({ error: "Sync failed" });
+    }
+  });
+
+  // ── Check if email exists in PocketBase (for Forgot Password validation) ─
+  app.post("/api/app/auth/check-email", async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+      if (!email) return res.status(400).json({ error: "email required" });
+      const r = await pbGet(
+        `/api/collections/users/records?filter=${encodeURIComponent(`email="${email}"`)}&perPage=1&fields=id,is_verified`,
+      );
+      const found = !!(r.items?.[0]);
+      const verified = found && r.items[0].is_verified;
+      return res.json({ found, verified });
+    } catch (e: any) {
+      console.error("[/api/app/auth/check-email]", e.message);
+      return res.status(500).json({ error: "Failed to check email" });
+    }
+  });
+
+  // ── Firebase Email Verification: Confirm Verified ────────────────────────
+  // Called after Firebase emailVerified = true.
+  // Finds or creates the PB user and marks is_verified: true.
+  app.post("/api/app/auth/confirm-verified", async (req: Request, res: Response) => {
+    try {
+      const { firebaseUid, email, displayName, referralCode, referredBy } = req.body;
+      if (!firebaseUid || !email)
+        return res.status(400).json({ error: "firebaseUid and email required" });
+
+      // ── Fraud prevention: block re-registration from a previously deleted email ──
+      const confirmedBlocked = await isEmailBlacklisted(email);
+      if (confirmedBlocked) {
+        console.warn(`[confirm-verified] Blocked from blacklisted email: ${email}`);
+        return res.status(403).json({
+          error: "This email address is associated with a deleted account and cannot be used to create a new account.",
+          code: "EMAIL_PERMANENTLY_BANNED",
+        });
+      }
+
+      // Try to find by firebase_uid
+      const byUid = await pbGet(
+        `/api/collections/users/records?filter=firebase_uid="${encodeURIComponent(firebaseUid)}"&perPage=1`,
+      );
+      if (byUid.items?.[0]) {
+        const u = byUid.items[0];
+        const updated = await pbPatch(`/api/collections/users/records/${u.id}`, {
+          is_verified: true,
+        });
+        return res.json(formatUser(updated.code ? { ...u, is_verified: true } : updated));
+      }
+
+      // Try to find by email — filter must be fully URL-encoded so @ in email doesn't break PB parser
+      const byEmail = await pbGet(
+        `/api/collections/users/records?filter=${encodeURIComponent(`email="${email}"`)}&perPage=1`,
+      );
+      if (byEmail.items?.[0]) {
+        const u = byEmail.items[0];
+        const patches: any = { is_verified: true };
+        if (!u.firebase_uid) patches.firebase_uid = firebaseUid;
+        if (!u.referral_code && referralCode) patches.referral_code = referralCode;
+        if (!u.display_name && displayName) patches.display_name = displayName;
+        const updated = await pbPatch(`/api/collections/users/records/${u.id}`, patches);
+        return res.json(formatUser(updated.code ? { ...u, ...patches } : updated));
+      }
+
+      // Create fresh PB user — already verified via Firebase
+      const code = referralCode || generateReferralCode();
+      const pbPassword = `SHIB_${firebaseUid}_SECURE`;
+
+      let referrerPbId: string | undefined;
+      if (referredBy) {
+        const referrerRes = await pbGet(
+          `/api/collections/users/records?filter=referral_code="${encodeURIComponent(referredBy)}"&perPage=1`,
+        );
+        referrerPbId = referrerRes.items?.[0]?.id;
+      }
+
+      const created = await pbPost("/api/collections/users/records", {
+        email,
+        password: pbPassword,
+        passwordConfirm: pbPassword,
+        emailVisibility: false,
+        firebase_uid: firebaseUid,
+        display_name: displayName || email.split("@")[0],
+        referral_code: code,
+        referred_by: referrerPbId || "",
+        shib_balance: 100,        // welcome bonus: 100 SHIB
+        power_tokens: 500,        // welcome bonus: 500 Power Tokens
+        referral_balance: 0,
+        referral_earnings: 0,
+        total_claims: 0,
+        total_wins: 0,
+        fraud_attempts: 0,
+        status: "active",
+        current_mining_session: "",
+        is_verified: true,
+      });
+
+      if (created.code) {
+        const detail = JSON.stringify({ code: created.code, message: created.message, data: created.data });
+        console.error(`[confirm-verified] PB user creation FAILED. payload email=${email} displayName=${displayName} | PB error: ${detail}`);
+        return res.status(400).json({ error: created.message, detail: created.data });
+      }
+
+      // Give referrer 30 Power Tokens immediately on successful signup
+      if (referrerPbId) {
+        pbGet(`/api/collections/users/records/${referrerPbId}`)
+          .then(async (r) => {
+            if (r?.id) await pbPatch(`/api/collections/users/records/${referrerPbId}`, {
+              power_tokens: (r.power_tokens || 10) + 30,
+            });
+          }).catch(() => {});
+      }
+
+      return res.json(formatUser(created));
+    } catch (e: any) {
+      console.error("[/api/app/auth/confirm-verified]", e.message);
+      res.status(500).json({ error: "Failed to confirm verification" });
+    }
+  });
+
+  // ── Dev-only status check ─────────────────────────────────────────────────
+  if (process.env.NODE_ENV !== "production") {
+    app.get("/api/dev/status", (_req: Request, res: Response) => {
+      res.json({ env: "development", authMode: "firebase-email-link" });
+    });
+
+    // Debug: look up a user in PB by email or firebase_uid (dev only, no auth required)
+    app.get("/api/dev/lookup-user", async (req: Request, res: Response) => {
+      try {
+        const { email, uid } = req.query;
+        const results: any = {};
+
+        if (email) {
+          const r = await pbGet(`/api/collections/users/records?filter=${encodeURIComponent(`email="${email}"`)}&perPage=1`);
+          results.byEmail = r.items?.[0] ? {
+            id: r.items[0].id,
+            email: r.items[0].email,
+            display_name: r.items[0].display_name,
+            firebase_uid: r.items[0].firebase_uid,
+            is_verified: r.items[0].is_verified,
+            shib_balance: r.items[0].shib_balance,
+            power_tokens: r.items[0].power_tokens,
+            referral_balance: r.items[0].referral_balance,
+            referral_earnings: r.items[0].referral_earnings,
+            referral_code: r.items[0].referral_code,
+          } : null;
+        }
+
+        if (uid) {
+          const r = await pbGet(`/api/collections/users/records?filter=${encodeURIComponent(`firebase_uid="${uid}"`)}&perPage=1`);
+          results.byUid = r.items?.[0] ? {
+            id: r.items[0].id,
+            email: r.items[0].email,
+            display_name: r.items[0].display_name,
+            firebase_uid: r.items[0].firebase_uid,
+            is_verified: r.items[0].is_verified,
+            shib_balance: r.items[0].shib_balance,
+            power_tokens: r.items[0].power_tokens,
+            referral_balance: r.items[0].referral_balance,
+            referral_earnings: r.items[0].referral_earnings,
+            referral_code: r.items[0].referral_code,
+          } : null;
+        }
+
+        res.json(results);
+      } catch (e: any) {
+        res.status(500).json({ error: e.message });
+      }
+    });
+  }
+
+  // ── Get user by Firebase UID ──────────────────────────────────────────────
+  app.get("/api/app/user/:firebaseUid", async (req: Request, res: Response) => {
+    try {
+      const firebaseUid = String(req.params.firebaseUid);
+      const r = await pbGet(
+        `/api/collections/users/records?filter=firebase_uid="${encodeURIComponent(firebaseUid)}"&perPage=1`,
+      );
+      let u = r.items?.[0];
+      if (!u) return res.status(404).json({ error: "User not found" });
+
+      // Login blockade: dual-check — auto-heals accounts with >= 3 strikes but status not yet 'blocked'
+      {
+        const isBlocked = u.status === "blocked" || (u.fraud_attempts || 0) >= 3;
+        if (isBlocked) {
+          if (u.status !== "blocked") {
+            await pbPatch(`/api/collections/users/records/${u.id}`, { status: "blocked" }).catch(() => {});
+            console.log(`[getUser] Auto-blocked user ${u.id} (fraud_attempts=${u.fraud_attempts})`);
+          }
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+          });
+        }
+      }
+
+      // Auto-generate referral code if missing
+      if (!u.referral_code) {
+        const code = generateReferralCode();
+        const updated = await pbPatch(`/api/collections/users/records/${u.id}`, {
+          referral_code: code,
+        });
+        if (!updated.code) u = { ...u, referral_code: code };
+      }
+
+      res.json(formatUser(u));
+    } catch (e: any) {
+      console.error("[/api/app/user/:id]", e.message);
+      res.status(500).json({ error: "Failed to fetch user" });
+    }
+  });
+
+  // ── Update user balance ───────────────────────────────────────────────────
+  app.put(
+    "/api/app/user/:pbId/balance",
+    async (req: Request, res: Response) => {
+      try {
+        const { pbId } = req.params;
+        const { shibBalance } = req.body;
+        const update: any = {};
+        if (shibBalance !== undefined) update.shib_balance = shibBalance;
+        // power_tokens is intentionally excluded — PT must only be modified via
+        // /api/app/game/reward or /api/app/ad/claim (server-enforced with rate limiting).
+        const updated = await pbPatch(
+          `/api/collections/users/records/${pbId}`,
+          update,
+        );
+        if (updated.code) return res.status(400).json({ error: updated.message });
+        res.json(formatUser(updated));
+      } catch (e: any) {
+        console.error("[/api/app/user/:pbId/balance]", e.message);
+        res.status(500).json({ error: "Failed to update balance" });
+      }
+    },
+  );
+
+  // ── Boosters: Activate ────────────────────────────────────────────────────
+  app.post("/api/app/boosters/activate", async (req: Request, res: Response) => {
+    try {
+      const { pbId, multiplier } = req.body;
+      if (!pbId || !multiplier)
+        return res.status(400).json({ error: "pbId and multiplier required" });
+
+      const [user, settings] = await Promise.all([
+        pbGet(`/api/collections/users/records/${pbId}`),
+        fetchSettings(),
+      ]);
+
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      if (!settings) return res.status(503).json({ error: "Settings unavailable" });
+
+      // Determine cost
+      const costKey = `boost_${multiplier}x_cost`;
+      const cost = settings[costKey];
+      if (cost === undefined)
+        return res.status(400).json({ error: "Invalid multiplier" });
+
+      if ((user.power_tokens || 0) < cost) {
+        return res.status(400).json({ error: "Not enough Power Tokens" });
+      }
+
+      const expiresAt = (Date.now() + 3600000).toString();
+      const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens: user.power_tokens - cost,
+        active_booster_multiplier: multiplier,
+        booster_expires: expiresAt,
+      });
+
+      if (updated.code) return res.status(400).json({ error: updated.message });
+
+      res.json({
+        success: true,
+        multiplier,
+        expiresAt,
+        newPowerTokens: user.power_tokens - cost,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/boosters/activate]", e.message);
+      res.status(500).json({ error: "Failed to activate booster" });
+    }
+  });
+
+  // ── Boosters: Activate + Start Mining (atomic) ───────────────────────────
+  // Combines booster activation and mining start into one round-trip.
+  // Deducts boosterCost + miningEntryCost, sets booster fields, creates session.
+  app.post("/api/app/boosters/activate-and-mine", async (req: Request, res: Response) => {
+    try {
+      const { pbId, multiplier } = req.body;
+      if (!pbId || !multiplier)
+        return res.status(400).json({ error: "pbId and multiplier required" });
+
+      const [user, settings] = await Promise.all([
+        pbGet(`/api/collections/users/records/${pbId}`),
+        fetchSettings(),
+      ]);
+
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      if (!settings) return res.status(503).json({ error: "Settings unavailable" });
+
+      // Guard 0: dual-check — status field OR accumulated strikes >= 3 (auto-heals legacy records)
+      {
+        const isBlocked = user.status === "blocked" || (user.fraud_attempts || 0) >= 3;
+        if (isBlocked) {
+          if (user.status !== "blocked") {
+            await pbPatch(`/api/collections/users/records/${pbId}`, { status: "blocked" }).catch(() => {});
+            console.log(`[Guard0/start] Auto-blocked user ${pbId} (fraud_attempts=${user.fraud_attempts})`);
+          }
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+          });
+        }
+      }
+
+      // Booster cost
+      const costKey = `boost_${multiplier}x_cost`;
+      const boosterCost = settings[costKey];
+      if (boosterCost === undefined)
+        return res.status(400).json({ error: "Invalid multiplier" });
+
+      // Mining entry cost
+      const miningCost = settings.power_token_per_click || 24;
+      const totalCost = boosterCost + miningCost;
+
+      const currentPT = user.power_tokens || 0;
+      if (currentPT < boosterCost)
+        return res.status(400).json({ error: `Not enough Power Tokens for booster (need ${boosterCost} PT)`, code: "INSUFFICIENT_PT" });
+      if (currentPT < totalCost)
+        return res.status(400).json({ error: `Not enough Power Tokens (need ${totalCost} PT: ${boosterCost} PT booster + ${miningCost} PT mining)`, code: "INSUFFICIENT_PT" });
+
+      const boosterExpiresAt = (Date.now() + 3600000).toString();
+
+      // 1. Deduct total cost AND set booster in one PATCH
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens: currentPT - totalCost,
+        active_booster_multiplier: multiplier,
+        booster_expires: boosterExpiresAt,
+      });
+
+      // 2. Expire any existing unclaimed sessions
+      const existing = await pbGet(
+        `/api/collections/mining_sessions/records?filter=${encodeURIComponent(`user="${pbId}" && claimed_amount=0`)}&perPage=50`,
+      );
+      for (const s of existing.items || []) {
+        await pbPatch(`/api/collections/mining_sessions/records/${s.id}`, { claimed_amount: -1 });
+      }
+
+      // 3. Create new mining session
+      const rate = settings.mining_rate_per_sec || 0.01736;
+      const dur = settings.mining_duration_minutes || 60;
+      const expectedReward = rate * dur * 60 * multiplier;
+
+      const session = await pbPost("/api/collections/mining_sessions/records", {
+        user: pbId,
+        start_time: new Date().toISOString().replace("T", " ").replace("Z", ""),
+        claimed_amount: 0,
+        is_verified: false,
+        ip_address: String(req.ip || req.socket?.remoteAddress || ""),
+        booster_multiplier: multiplier,
+      });
+
+      if (session.code)
+        return res.status(400).json({ error: session.message });
+
+      // Link session to user as the server-side canonical reference for claim validation
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        current_mining_session: session.id,
+      });
+
+      const durationMs = dur * 60 * 1000;
+      const rawStart = (session.created || session.start_time || "").replace(" ", "T");
+      const parsedStart = rawStart.endsWith("Z") ? rawStart : rawStart + "Z";
+      const startTimeMs = new Date(parsedStart).getTime();
+      const endTimeMs = startTimeMs + durationMs;
+      const serverNow = Date.now();
+
+      res.json({
+        id: session.id,
+        pbId,
+        startTimeMs,
+        endTimeMs,
+        durationMs,
+        serverTime: serverNow,
+        multiplier,
+        expectedReward,
+        miningRatePerSec: rate,
+        boosterExpiresAt,
+        ptDeducted: totalCost,
+        newPowerTokens: currentPT - totalCost,
+        status: "mining",
+      });
+    } catch (e: any) {
+      console.error("[/api/app/boosters/activate-and-mine]", e.message);
+      res.status(500).json({ error: "Failed to activate booster and start mining" });
+    }
+  });
+
+  // ── Boosters: Get active ──────────────────────────────────────────────────
+  app.get(
+    "/api/app/boosters/active/:pbId",
+    async (req: Request, res: Response) => {
+      try {
+        const { pbId } = req.params;
+        const user = await pbGet(`/api/collections/users/records/${pbId}`);
+        if (user.code) return res.status(404).json({ error: "User not found" });
+
+        const expires = user.booster_expires ? parseInt(user.booster_expires) : 0;
+        if (expires > Date.now()) {
+          return res.json({
+            multiplier: user.active_booster_multiplier || 1,
+            expiresAt: user.booster_expires,
+          });
+        }
+
+        // Auto-clear expired booster fields if they were set
+        if (user.active_booster_multiplier !== 1 || user.booster_expires) {
+          await pbPatch(`/api/collections/users/records/${pbId}`, {
+            active_booster_multiplier: 1,
+            booster_expires: "",
+          });
+        }
+
+        res.json({ multiplier: 1, expiresAt: null });
+      } catch (e: any) {
+        console.error("[/api/app/boosters/active]", e.message);
+        res.status(500).json({ error: "Failed to fetch booster" });
+      }
+    },
+  );
+
+  // ── Server time — anti-clock-manipulation ─────────────────────────────────
+  // Returns server Unix timestamp in ms. Clients use this to compute clock
+  // drift so that the countdown timer always tracks server time, not phone time.
+  app.get("/api/app/server-time", (_req: Request, res: Response) => {
+    res.json({ serverTime: Date.now() });
+  });
+
+  // ── Temporary SMTP debug — shows Railway env var state (key masked) ────────
+  app.get("/api/debug/smtp-config", (_req: Request, res: Response) => {
+    const rawUser = process.env.SMTP_USER || '(not set)';
+    const rawPass = process.env.SMTP_KEY  || '(not set)';
+    res.json({
+      smtp_user:      rawUser,
+      smtp_key_set:   rawPass !== '(not set)',
+      smtp_key_tail:  rawPass !== '(not set)' ? rawPass.slice(-8) : '(not set)',
+      smtp_user_looks_like_key: rawUser.startsWith('xsmtpsib-'),
+      node_env:       process.env.NODE_ENV || '(not set)',
+    });
+  });
+
+  app.post("/api/app/mine/start", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.body;
+      if (!pbId)
+        return res.status(400).json({ error: "pbId required" });
+
+      // Fetch user and settings in parallel
+      const [userRecord, settings] = await Promise.all([
+        pbGet(`/api/collections/users/records/${pbId}`),
+        fetchSettings(),
+      ]);
+
+      if (userRecord.code)
+        return res.status(404).json({ error: "User not found" });
+
+      // Guard 0: dual-check — status field OR accumulated strikes >= 3 (auto-heals legacy records)
+      {
+        const isBlocked = userRecord.status === "blocked" || (userRecord.fraud_attempts || 0) >= 3;
+        if (isBlocked) {
+          if (userRecord.status !== "blocked") {
+            await pbPatch(`/api/collections/users/records/${pbId}`, { status: "blocked" }).catch(() => {});
+            console.log(`[Guard0/activate] Auto-blocked user ${pbId} (fraud_attempts=${userRecord.fraud_attempts})`);
+          }
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+          });
+        }
+      }
+
+      // Calculate effective booster multiplier
+      let activeMultiplier = 1;
+      if (userRecord.booster_expires) {
+        const expires = parseInt(userRecord.booster_expires);
+        if (expires > Date.now()) {
+          activeMultiplier = userRecord.active_booster_multiplier || 1;
+        }
+      }
+
+      // Deduct power_token_per_click as mining entry fee
+      const ptCost = settings?.power_token_per_click || 24;
+      const currentPT = userRecord.power_tokens || 0;
+      if (currentPT < ptCost) {
+        return res.status(400).json({
+          error: `Not enough Power Tokens. You need ${ptCost} PT to start mining but only have ${currentPT} PT.`,
+          code: "INSUFFICIENT_PT",
+          required: ptCost,
+          current: currentPT,
+        });
+      }
+
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens: currentPT - ptCost,
+      });
+
+      // Expire any existing active sessions
+      const existing = await pbGet(
+        `/api/collections/mining_sessions/records?filter=user="${pbId}"&perPage=50`,
+      );
+      for (const s of existing.items || []) {
+        if (!s.claimed_amount || s.claimed_amount === 0) {
+          await pbPatch(
+            `/api/collections/mining_sessions/records/${s.id}`,
+            { claimed_amount: -1 },
+          );
+        }
+      }
+
+      const rate = settings?.mining_rate_per_sec || 0.01736;
+      const dur = settings?.mining_duration_minutes || 60;
+      const expectedReward = rate * dur * 60 * activeMultiplier;
+
+      const session = await pbPost("/api/collections/mining_sessions/records", {
+        user: pbId,
+        start_time: new Date().toISOString().replace("T", " ").replace("Z", ""),
+        claimed_amount: 0,
+        is_verified: false,
+        ip_address: String(req.ip || req.socket?.remoteAddress || ""),
+        booster_multiplier: activeMultiplier,
+      });
+
+      if (session.code)
+        return res.status(400).json({ error: session.message });
+
+      // Link this session to the user record — server-side source of truth for claim validation
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        current_mining_session: session.id,
+      });
+
+      const durationMs = dur * 60 * 1000;
+      // Use PocketBase's server-assigned `created` timestamp as the canonical
+      // start time. This is set by PB's own clock — completely tamper-proof.
+      const rawCreated = (session.created || session.start_time || "").replace(" ", "T");
+      const parsedCreated = rawCreated.endsWith("Z") ? rawCreated : rawCreated + "Z";
+      const startTimeMs = new Date(parsedCreated).getTime();
+      const endTimeMs = startTimeMs + durationMs;
+      const serverNow = Date.now();
+
+      res.json({
+        id: session.id,
+        pbId,
+        startTime: session.created || session.start_time,
+        startTimeMs,   // derived from PB's created — tamper-proof server time
+        endTimeMs,     // explicit deadline
+        durationMs,
+        serverTime: serverNow,   // client syncs clock drift using this
+        multiplier: activeMultiplier,
+        expectedReward,
+        miningRatePerSec: rate,
+        ptDeducted: ptCost,
+        newPowerTokens: currentPT - ptCost,
+        status: "mining",
+      });
+    } catch (e: any) {
+      console.error("[/api/app/mine/start]", e.message);
+      res.status(500).json({ error: "Failed to start mining" });
+    }
+  });
+
+  // ── Mining: Get active session ────────────────────────────────────────────
+  app.get(
+    "/api/app/mine/active/:pbId",
+    async (req: Request, res: Response) => {
+      try {
+        const { pbId } = req.params;
+
+        // Check account status before returning session data — also fetch fraud_attempts for dual-check
+        const userCheck = await pbGet(`/api/collections/users/records/${pbId}?fields=id,status,fraud_attempts`);
+        if (!userCheck.code) {
+          const isBlocked = userCheck.status === "blocked" || (userCheck.fraud_attempts || 0) >= 3;
+          if (isBlocked) {
+            if (userCheck.status !== "blocked") {
+              await pbPatch(`/api/collections/users/records/${pbId}`, { status: "blocked" }).catch(() => {});
+              console.log(`[Guard0/active] Auto-blocked user ${pbId} (fraud_attempts=${userCheck.fraud_attempts})`);
+            }
+            return res.status(403).json({
+              error: "ACCOUNT_BLOCKED",
+              blocked: true,
+              message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+            });
+          }
+        }
+
+        const r = await pbGet(
+          `/api/collections/mining_sessions/records?filter=${encodeURIComponent(`user="${pbId}" && claimed_amount=0`)}&sort=-start_time&perPage=1`,
+        );
+        const s = r.items?.[0];
+        if (!s) return res.json({ session: null });
+
+        const settings = await fetchSettings();
+        const dur = (settings?.mining_duration_minutes || 60) * 60 * 1000;
+
+        // Use PB's server-assigned `created` as canonical start (tamper-proof)
+        const rawStart = (s.created || s.start_time || "").replace(" ", "T");
+        const parsedStart = rawStart.endsWith("Z") ? rawStart : rawStart + "Z";
+        const startTimeMs = new Date(parsedStart).getTime();
+        const endTimeMs = startTimeMs + dur;
+        const serverNow = Date.now();
+        const elapsed = serverNow - startTimeMs;
+        const status = elapsed >= dur ? "ready_to_claim" : "mining";
+
+        res.json({
+          session: {
+            id: s.id,
+            startTime: s.created || s.start_time,
+            startTimeMs,               // derived from PB's created — tamper-proof
+            endTimeMs,                 // Unix-ms deadline
+            durationMs: dur,
+            serverTime: serverNow,     // client uses this to sync clock drift
+            status,
+            multiplier: s.booster_multiplier || 1,
+          },
+        });
+      } catch (e: any) {
+        console.error("[/api/app/mine/active]", e.message);
+        res.status(500).json({ error: "Failed to fetch session" });
+      }
+    },
+  );
+
+  // ── Mining: Claim ─────────────────────────────────────────────────────────
+  // 100% server-authoritative. Client sends only sessionId + pbId.
+  // Server validates via user.current_mining_session (tamper-proof), not client's sessionId.
+  // Reward is calculated exclusively server-side — no client input trusted.
+  app.post("/api/app/mine/claim", async (req: Request, res: Response) => {
+    try {
+      const { sessionId, pbId } = req.body;
+      if (!pbId)
+        return res.status(400).json({ error: "pbId required" });
+
+      // Fetch user and settings first — user.current_mining_session is the canonical reference
+      const [user, settings] = await Promise.all([
+        pbGet(`/api/collections/users/records/${pbId}`),
+        fetchSettings(),
+      ]);
+
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      if (!settings) return res.status(503).json({ error: "Settings unavailable" });
+
+      // Guard 0: dual-check — status field OR accumulated strikes >= 3 (auto-heals legacy records)
+      {
+        const isBlocked = user.status === "blocked" || (user.fraud_attempts || 0) >= 3;
+        if (isBlocked) {
+          if (user.status !== "blocked") {
+            await pbPatch(`/api/collections/users/records/${pbId}`, { status: "blocked" }).catch(() => {});
+            console.log(`[Guard0/claim] Auto-blocked user ${pbId} (fraud_attempts=${user.fraud_attempts})`);
+          }
+          return res.status(403).json({
+            error: "ACCOUNT_BLOCKED",
+            blocked: true,
+            message: "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts.",
+          });
+        }
+      }
+
+      // Use server's current_mining_session as canonical session ID.
+      // Client's sessionId is accepted only as fallback for legacy sessions.
+      const canonicalSessionId = user.current_mining_session || sessionId;
+      if (!canonicalSessionId)
+        return res.status(400).json({ error: "No active mining session found" });
+
+      const session = await pbGet(`/api/collections/mining_sessions/records/${canonicalSessionId}`);
+      if (session.code) return res.status(404).json({ error: "Session not found" });
+
+      // Guard 1: session must belong to this user
+      if (session.user !== pbId) {
+        return res.status(403).json({ error: "Session does not belong to this user" });
+      }
+
+      // Guard 2: reject sessions that are already claimed (> 0) OR voided/expired (< 0 i.e. = -1).
+      // CRITICAL: must use !== 0 not > 0 — voided sessions have claimed_amount = -1
+      // which passes a > 0 check and lets the same dead session trigger fraud repeatedly.
+      const claimedAmt = session.claimed_amount ?? 0;
+      if (claimedAmt !== 0) {
+        // Clear the stale reference so the UI can start fresh
+        await pbPatch(`/api/collections/users/records/${pbId}`, {
+          current_mining_session: "",
+        }).catch(() => {});
+        return res.status(400).json({
+          error: "SESSION_EXPIRED",
+          message: "This mining session has already been used. Please start a new one.",
+        });
+      }
+
+      // Guard 3: mining time must have actually elapsed (server-authoritative time)
+      // Use PB's `created` field — auto-assigned by PocketBase, tamper-proof.
+      // Fall back to start_time for legacy sessions created before this change.
+      const canonicalStart = session.created || session.start_time;
+      const rawStartMs = (canonicalStart || "").replace(" ", "T");
+      const parsedStartMs = rawStartMs.endsWith("Z") ? rawStartMs : rawStartMs + "Z";
+      const startMs = new Date(parsedStartMs).getTime();
+      const durationSec = (settings.mining_duration_minutes || 60) * 60;
+      const elapsed = Date.now() - startMs;
+      // 5-minute grace so a claim arriving fractionally early due to network delay is accepted.
+      // There is no upper bound — late claimers (70 min, 2 hrs, etc.) always get their reward.
+      const graceSec = 5 * 60;
+      if (elapsed < (durationSec - graceSec) * 1000) {
+        // ── 3-strike fraud detection ──────────────────────────────────────────
+        // Re-read fraud_attempts fresh to avoid race conditions
+        const currentStrikes = user.fraud_attempts || 0;
+        const strikes = currentStrikes + 1;
+        const isBlocked = strikes >= 3;
+
+        console.log(`[FRAUD] user=${pbId} prev_strikes=${currentStrikes} new_strikes=${strikes} blocked=${isBlocked} elapsed=${Math.round(elapsed/1000)}s required=${durationSec}s`);
+
+        // 1. Expire the fraud session by DELETING it from the collection.
+        //    This guarantees no future claim can ever use this session.
+        try {
+          await pbDelete(`/api/collections/mining_sessions/records/${session.id}`);
+          console.log(`[FRAUD] Deleted session ${session.id}`);
+        } catch {
+          // Fallback: mark as voided if delete fails
+          await pbPatch(`/api/collections/mining_sessions/records/${session.id}`, { claimed_amount: -1 });
+          console.log(`[FRAUD] Marked session ${session.id} as voided (delete failed)`);
+        }
+
+        // 2. Update user: increment strike, wipe current session, block if >= 3 strikes
+        await pbPatch(`/api/collections/users/records/${pbId}`, {
+          fraud_attempts: strikes,
+          current_mining_session: "",
+          ...(isBlocked ? { status: "blocked" } : {}),
+        });
+
+        console.log(`[FRAUD] Updated user ${pbId}: fraud_attempts=${strikes} blocked=${isBlocked}`);
+
+        // Log fraud attempt for admin analytics
+        pbPost("/api/collections/session_logs/records", {
+          user:              pbId,
+          session_type:      "fraud",
+          income:            0,
+          booster_multiplier: 0,
+          duration_seconds:  durationSec,
+        }).catch(() => {});
+
+        // 3. On 3rd strike: save email to fraud_emails so login is blocked with specific message
+        if (isBlocked && user.email) {
+          await saveFraudEmail(user.email);
+        }
+
+        const strikesLeft = 3 - strikes;
+        return res.status(isBlocked ? 403 : 400).json({
+          error: isBlocked ? "ACCOUNT_BLOCKED" : "FRAUD_DETECTED",
+          fraudAttempts: strikes,
+          blocked: isBlocked,
+          message: isBlocked
+            ? "ACCOUNT BANNED! Your account has been permanently disabled due to multiple fraud attempts."
+            : `Strike ${strikes}/3! Cheat detected. Your progress has been reset. ${strikesLeft} more attempt${strikesLeft === 1 ? "" : "s"} and you will be permanently banned.`,
+        });
+      }
+
+      // Server-side reward — 100% authoritative, no client value accepted
+      const boosterMultiplier = session.booster_multiplier || 1;
+      const miningRate = settings.mining_rate_per_sec || 0.01736;
+      const serverReward = miningRate * durationSec * boosterMultiplier;
+
+      // Mark session claimed FIRST — any duplicate request now hits Guard 2
+      // IMPORTANT: use session.id (from the fetched record), NOT the client-provided sessionId
+      console.log(`[mine/claim] Claiming session ${session.id} for user ${pbId} — reward: ${serverReward}`);
+      const claimPatch = await pbPatch(`/api/collections/mining_sessions/records/${session.id}`, {
+        claimed_amount: serverReward,
+        is_verified: true,
+      });
+      if (claimPatch.code) {
+        return res.status(500).json({ error: "Failed to mark session as claimed" });
+      }
+
+      const newShib = (user.shib_balance || 0) + serverReward;
+      const newClaims = (user.total_claims || 0) + 1;
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        shib_balance: newShib,
+        total_claims: newClaims,
+        current_mining_session: "",   // nullify — user can now start a fresh session
+        fraud_attempts: 0,            // reset strike counter after a legitimate claim
+      });
+
+      // Log completed session for admin analytics
+      pbPost("/api/collections/session_logs/records", {
+        user:               pbId,
+        session_type:       `${boosterMultiplier}x`,
+        income:             serverReward,
+        booster_multiplier: boosterMultiplier,
+        duration_seconds:   durationSec,
+      }).catch(() => {});
+
+      // 10% referral commission → goes into referral_balance (must be claimed)
+      if (user.referred_by) {
+        (async () => {
+          try {
+            let referrer: any = null;
+            const direct = await pbGet(`/api/collections/users/records/${user.referred_by}`);
+            if (!direct.code && direct.id) {
+              referrer = direct;
+            } else {
+              const byCode = await pbGet(
+                `/api/collections/users/records?filter=referral_code="${encodeURIComponent(user.referred_by)}"&perPage=1`,
+              );
+              referrer = byCode.items?.[0] || null;
+            }
+            if (referrer) {
+              const commission = Math.round(serverReward * 0.1);
+              if (commission > 0) {
+                await pbPatch(`/api/collections/users/records/${referrer.id}`, {
+                  referral_balance:   (referrer.referral_balance || 0) + commission,
+                  referral_earnings:  (referrer.referral_earnings || 0) + commission,
+                });
+                // Log referral commission for admin analytics
+                pbPost("/api/collections/referral_history/records", {
+                  referrer_id:    referrer.id,
+                  claimer_id:     pbId,
+                  referrer_email: referrer.email || "",
+                  claimer_email:  user.email || "",
+                  amount:         commission,
+                  source:         "mining_claim",
+                }).catch(() => {});
+              }
+            }
+          } catch (_) {}
+        })();
+      }
+
+      res.json({ success: true, newShibBalance: newShib, reward: serverReward });
+    } catch (e: any) {
+      console.error("[/api/app/mine/claim]", e.message);
+      res.status(500).json({ error: "Failed to claim reward" });
+    }
+  });
+
+  // ── Withdrawal tier ───────────────────────────────────────────────────────
+  app.get(
+    "/api/app/withdrawals/tier/:pbId",
+    async (req: Request, res: Response) => {
+      try {
+        const { pbId } = req.params;
+        const settings = await fetchSettings();
+        const r = await pbGet(
+          `/api/collections/withdrawals/records?filter=${encodeURIComponent(`user="${pbId}" && status="completed"`)}&perPage=200`,
+        );
+        const count = r.totalItems || 0;
+        let minAmount: number;
+        if (count === 0) minAmount = settings?.min_withdrawal_1 || 100;
+        else if (count === 1) minAmount = settings?.min_withdrawal_2 || 1000;
+        else minAmount = settings?.min_withdrawal_3 || 8000;
+
+        res.json({ tier: Math.min(count + 1, 3), minAmount, completedCount: count });
+      } catch (e: any) {
+        console.error("[/api/app/withdrawals/tier]", e.message);
+        res.status(500).json({ error: "Failed to fetch tier" });
+      }
+    },
+  );
+
+  // ── Withdrawal: Create ────────────────────────────────────────────────────
+  app.post("/api/app/withdrawals", async (req: Request, res: Response) => {
+    try {
+      const { pbId, method, addressOrEmail, amount, netAmount } = req.body;
+      if (!pbId || !method || !addressOrEmail || !amount)
+        return res.status(400).json({ error: "pbId, method, addressOrEmail, amount required" });
+      const grossAmount = Number(amount);
+      const resolvedNet = typeof netAmount === 'number' && netAmount > 0 ? netAmount : grossAmount;
+
+      // Verify user has sufficient balance
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      if ((user.shib_balance || 0) < amount)
+        return res.status(400).json({ error: "Insufficient balance" });
+
+      // Get withdrawal tier minimum
+      const tierRes = await pbGet(
+        `/api/collections/withdrawals/records?filter=${encodeURIComponent(`user="${pbId}" && status="completed"`)}&perPage=200`,
+      );
+      const settings = await fetchSettings();
+      const count = tierRes.totalItems || 0;
+      let minAmount: number;
+      if (count === 0) minAmount = settings?.min_withdrawal_1 || 100;
+      else if (count === 1) minAmount = settings?.min_withdrawal_2 || 1000;
+      else minAmount = settings?.min_withdrawal_3 || 8000;
+
+      if (amount < minAmount)
+        return res.status(400).json({ error: `Minimum withdrawal is ${minAmount} SHIB` });
+
+      // Deduct from balance
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        shib_balance: user.shib_balance - amount,
+      });
+
+      // Resolve masked_name from user's display_name for the ticker
+      let masked_name: string = user.display_name || user.username || "";
+      if (masked_name.includes("@")) masked_name = masked_name.split("@")[0];
+
+      // Create withdrawal record — store the net amount (after fees) as the amount
+      const withdrawal = await pbPost(
+        "/api/collections/withdrawals/records",
+        {
+          user: pbId,
+          method,
+          address_or_email: addressOrEmail,
+          amount: resolvedNet,
+          status: "pending",
+          masked_name,
+        },
+      );
+
+      if (withdrawal.code) {
+        // Rollback balance
+        await pbPatch(`/api/collections/users/records/${pbId}`, {
+          shib_balance: user.shib_balance,
+        });
+        return res.status(400).json({ error: withdrawal.message });
+      }
+
+      res.json({
+        id: withdrawal.id,
+        status: "pending",
+        amount,
+        newBalance: user.shib_balance - amount,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/withdrawals]", e.message);
+      res.status(500).json({ error: "Failed to create withdrawal" });
+    }
+  });
+
+  // ── Withdrawal: Get history ───────────────────────────────────────────────
+  app.get(
+    "/api/app/withdrawals/:pbId",
+    async (req: Request, res: Response) => {
+      try {
+        const { pbId } = req.params;
+        const r = await pbGet(
+          `/api/collections/withdrawals/records?filter=user="${pbId}"&sort=-created&perPage=50`,
+        );
+        res.json(
+          (r.items || []).map((w: any) => ({
+            id: w.id,
+            method: w.method,
+            addressOrEmail: w.address_or_email,
+            amount: w.amount,
+            status: w.status,
+            created: w.created,
+          })),
+        );
+      } catch (e: any) {
+        console.error("[/api/app/withdrawals/:pbId]", e.message);
+        res.status(500).json({ error: "Failed to fetch withdrawals" });
+      }
+    },
+  );
+
+  // ── Leaderboard: Top 100 by shib_balance ─────────────────────────────────
+  app.get("/api/app/leaderboard", async (_req: Request, res: Response) => {
+    try {
+      const r = await pbGet(
+        `/api/collections/users/records?sort=-shib_balance&perPage=100&fields=id,display_name,shib_balance`,
+      );
+      res.json(
+        (r.items || []).map((u: any, i: number) => {
+          let name: string = u.display_name || "Anonymous";
+          // Strip email domain if display_name was stored as email (e.g. "user@gmail.com" → "user")
+          if (name.includes("@")) name = name.split("@")[0];
+          return {
+            rank: i + 1,
+            id: u.id,
+            displayName: name,
+            shibBalance: u.shib_balance || 0,
+          };
+        }),
+      );
+    } catch (e: any) {
+      console.error("[/api/app/leaderboard]", e.message);
+      res.status(500).json({ error: "Failed to fetch leaderboard" });
+    }
+  });
+
+  // ── Leaderboard: User rank ────────────────────────────────────────────────
+  app.get("/api/app/leaderboard/rank/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,display_name,shib_balance`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      const balance = user.shib_balance || 0;
+      // Count users with strictly higher balance
+      const ahead = await pbGet(
+        `/api/collections/users/records?filter=${encodeURIComponent(`shib_balance>${balance}`)}&perPage=1&fields=id`,
+      );
+      const rank = (ahead.totalItems || 0) + 1;
+      let rankName: string = user.display_name || "You";
+      if (rankName.includes("@")) rankName = rankName.split("@")[0];
+      res.json({
+        rank,
+        id: user.id,
+        displayName: rankName,
+        shibBalance: balance,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/leaderboard/rank]", e.message);
+      res.status(500).json({ error: "Failed to fetch rank" });
+    }
+  });
+
+  // ── Withdrawal ticker: 10 most recent completed withdrawals ───────────────
+  app.get("/api/app/withdrawals/approved/recent", async (_req: Request, res: Response) => {
+    try {
+      const r = await pbGet(
+        `/api/collections/withdrawals/records?filter=${encodeURIComponent(`status="completed" || status="approved"`)}&sort=-created&perPage=10&expand=user`,
+      );
+      const items = (r.items || []).map((w: any) => {
+        // Prefer the denormalized masked_name field (backfilled at startup)
+        // Fall back to live user expansion (admin-authed, always works on this route)
+        let username: string =
+          w.masked_name ||
+          w.expand?.user?.display_name ||
+          w.expand?.user?.username ||
+          "";
+        if (!username || username.includes("@")) {
+          username = username.includes("@") ? username.split("@")[0] : username;
+        }
+        if (!username) username = "User";
+        return {
+          id: w.id,
+          maskedName: username,
+          method: w.method || "BEP-20",
+          amount: w.amount || 0,
+        };
+      });
+      res.json(items);
+    } catch (e: any) {
+      console.error("[/api/app/withdrawals/approved/recent]", e.message);
+      res.status(500).json({ error: "Failed to fetch recent withdrawals" });
+    }
+  });
+
+  // ── Notifications: fetch global + personal for a user ────────────────────
+  app.get("/api/app/notifications/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+      const filter = encodeURIComponent(`type = "global" || (type = "personal" && target_user = "${pbId}")`);
+      const r = await pbGet(
+        `/api/collections/notifications/records?filter=${filter}&sort=-created&perPage=50`
+      );
+      res.json({
+        items: (r.items || []).map((n: any) => ({
+          id:      n.id,
+          title:   n.title,
+          message: n.message,
+          type:    n.type,
+          created: n.created,
+        })),
+      });
+    } catch (e: any) {
+      console.error("[/api/app/notifications]", e.message);
+      res.status(500).json({ error: "Failed to fetch notifications" });
+    }
+  });
+
+  // ── Admin: List all users ─────────────────────────────────────────────────
+  app.get("/api/app/admin/users", async (req: Request, res: Response) => {
+    try {
+      const page = parseInt(String(req.query.page || "1"));
+      const r = await pbGet(
+        `/api/collections/users/records?sort=-created&perPage=50&page=${page}`,
+      );
+      res.json({
+        items: (r.items || []).map(formatUser),
+        totalItems: r.totalItems,
+        totalPages: r.totalPages,
+        page,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/admin/users]", e.message);
+      res.status(500).json({ error: "Failed to fetch users" });
+    }
+  });
+
+  // ── Admin: List all withdrawals ───────────────────────────────────────────
+  app.get(
+    "/api/app/admin/withdrawals",
+    async (req: Request, res: Response) => {
+      try {
+        const status = req.query.status ? `filter=status="${req.query.status}"&` : "";
+        const r = await pbGet(
+          `/api/collections/withdrawals/records?${status}sort=-created&perPage=100&expand=user`,
+        );
+        res.json({
+          items: (r.items || []).map((w: any) => ({
+            id: w.id,
+            userId: w.user,
+            userEmail: w.expand?.user?.email || "",
+            userName: w.expand?.user?.display_name || "",
+            method: w.method,
+            addressOrEmail: w.address_or_email,
+            amount: w.amount,
+            status: w.status,
+            created: w.created,
+          })),
+          totalItems: r.totalItems,
+        });
+      } catch (e: any) {
+        console.error("[/api/app/admin/withdrawals]", e.message);
+        res.status(500).json({ error: "Failed to fetch withdrawals" });
+      }
+    },
+  );
+
+  // ── Admin: Update withdrawal status ──────────────────────────────────────
+  app.put(
+    "/api/app/admin/withdrawals/:id",
+    async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+        const { status } = req.body;
+        if (!["pending", "completed", "rejected"].includes(status))
+          return res.status(400).json({ error: "Invalid status" });
+
+        const updated = await pbPatch(
+          `/api/collections/withdrawals/records/${id}`,
+          { status },
+        );
+
+        // Auto-create personal notification when status → completed
+        if (status === "completed" && updated && !updated.code && updated.user) {
+          pbPost("/api/collections/notifications/records", {
+            title: "Withdrawal Completed ✓",
+            message: "Congratulations! Your withdrawal request has been processed and completed successfully. Please check your wallet/account. Thank you for mining with us!",
+            type: "personal",
+            target_user: updated.user,
+          }).catch((e: any) =>
+            console.warn("[withdrawals/complete] Notification failed:", e.message)
+          );
+        }
+
+        // If rejected, refund the amount
+        if (status === "rejected") {
+          const withdrawal = updated;
+          const user = await pbGet(
+            `/api/collections/users/records/${withdrawal.user}`,
+          );
+          if (user && !user.code) {
+            await pbPatch(`/api/collections/users/records/${withdrawal.user}`, {
+              shib_balance: (user.shib_balance || 0) + withdrawal.amount,
+            });
+          }
+        }
+
+        res.json({ success: true, status });
+      } catch (e: any) {
+        console.error("[/api/app/admin/withdrawals/:id]", e.message);
+        res.status(500).json({ error: "Failed to update withdrawal" });
+      }
+    },
+  );
+
+  // ── Admin: Update settings ────────────────────────────────────────────────
+  app.put(
+    "/api/app/admin/settings/:id",
+    async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+        const body = req.body;
+        const pbUpdate: any = {};
+        if (body.miningRatePerSec !== undefined)
+          pbUpdate.mining_rate_per_sec = body.miningRatePerSec;
+        if (body.powerTokenPerClick !== undefined)
+          pbUpdate.power_token_per_click = body.powerTokenPerClick;
+        if (body.miningDurationMinutes !== undefined)
+          pbUpdate.mining_duration_minutes = body.miningDurationMinutes;
+        if (body.tokensPerRound !== undefined)
+          pbUpdate.tokens_per_round = body.tokensPerRound;
+        if (body.boostCosts) {
+          if (body.boostCosts["2x"] !== undefined)
+            pbUpdate.boost_2x_cost = body.boostCosts["2x"];
+          if (body.boostCosts["4x"] !== undefined)
+            pbUpdate.boost_4x_cost = body.boostCosts["4x"];
+          if (body.boostCosts["6x"] !== undefined)
+            pbUpdate.boost_6x_cost = body.boostCosts["6x"];
+          if (body.boostCosts["10x"] !== undefined)
+            pbUpdate.boost_10x_cost = body.boostCosts["10x"];
+        }
+        if (body.minWithdrawal1 !== undefined)
+          pbUpdate.min_withdrawal_1 = body.minWithdrawal1;
+        if (body.minWithdrawal2 !== undefined)
+          pbUpdate.min_withdrawal_2 = body.minWithdrawal2;
+        if (body.minWithdrawal3 !== undefined)
+          pbUpdate.min_withdrawal_3 = body.minWithdrawal3;
+        if (body.showAds !== undefined) pbUpdate.show_ads = body.showAds;
+        if (body.activeAdNetwork !== undefined)
+          pbUpdate.active_ad_network = body.activeAdNetwork;
+        if (body.admobUnitId !== undefined)
+          pbUpdate.admob_unit_id = body.admobUnitId;
+        if (body.admobBannerUnitId !== undefined)
+          pbUpdate.admob_banner_unit_id = body.admobBannerUnitId;
+        if (body.applovinSdkKey !== undefined)
+          pbUpdate.applovin_sdk_key = body.applovinSdkKey;
+        if (body.applovinRewardedId !== undefined)
+          pbUpdate.applovin_rewarded_id = body.applovinRewardedId;
+        if (body.unityGameId !== undefined)
+          pbUpdate.unity_game_id = body.unityGameId;
+        if (body.unityRewardedId !== undefined)
+          pbUpdate.unity_rewarded_id = body.unityRewardedId;
+        if (body.unityInterstitialId !== undefined)
+          pbUpdate.unity_interstitial_id = body.unityInterstitialId;
+        if (body.applovinBannerId !== undefined)
+          pbUpdate.applovin_banner_id = body.applovinBannerId;
+        if (body.applovinInterstitialId !== undefined)
+          pbUpdate.applovin_interstitial_id = body.applovinInterstitialId;
+        if (body.appStoreLink !== undefined)
+          pbUpdate.app_store_link = body.appStoreLink;
+        if (body.playStoreUrl !== undefined)
+          pbUpdate.play_store_url = body.playStoreUrl;
+        if (body.ratePopupFrequency !== undefined)
+          pbUpdate.rate_popup_frequency = body.ratePopupFrequency;
+
+        const updated = await pbPatch(
+          `/api/collections/settings/records/${id}`,
+          pbUpdate,
+        );
+        if (updated.code)
+          return res.status(400).json({ error: updated.message });
+
+        // Bust settings cache
+        settingsCache = updated;
+        settingsCacheAt = Date.now();
+
+        res.json({ success: true });
+      } catch (e: any) {
+        console.error("[/api/app/admin/settings/:id]", e.message);
+        res.status(500).json({ error: "Failed to update settings" });
+      }
+    },
+  );
+
+  // ── Admin: Stats ──────────────────────────────────────────────────────────
+  app.get("/api/app/admin/stats", async (_req: Request, res: Response) => {
+    try {
+      const [usersRes, sessionsRes, withdrawalsRes] = await Promise.all([
+        pbGet("/api/collections/users/records?perPage=1"),
+        pbGet("/api/collections/mining_sessions/records?perPage=1"),
+        pbGet("/api/collections/withdrawals/records?perPage=1"),
+      ]);
+      const pendingRes = await pbGet(
+        '/api/collections/withdrawals/records?filter=status="pending"&perPage=1',
+      );
+      res.json({
+        totalUsers: usersRes.totalItems || 0,
+        totalSessions: sessionsRes.totalItems || 0,
+        totalWithdrawals: withdrawalsRes.totalItems || 0,
+        pendingWithdrawals: pendingRes.totalItems || 0,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/admin/stats]", e.message);
+      res.status(500).json({ error: "Failed to fetch stats" });
+    }
+  });
+
+  // ── Shop: ensure purchased_items field, get items, buy knife ─────────────
+  (async () => {
+    try {
+      const token = await getAdminToken();
+      const col = await pbHttp("GET", "/api/collections/users", null, token);
+      const hasField = (col.schema || []).some((f: any) => f.name === "purchased_items");
+      if (!hasField) {
+        await pbHttp("PATCH", "/api/collections/users", {
+          schema: [...(col.schema || []), { name: "purchased_items", type: "json", required: false, options: {} }],
+        }, token);
+        console.log("[Schema] Added purchased_items field to users collection");
+      }
+    } catch (e: any) {
+      console.warn("[Schema] purchased_items migration skipped:", e.message);
+    }
+  })();
+
+  app.get("/api/app/shop/items/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      return res.json({ purchasedItems: user.purchased_items || [] });
+    } catch (e: any) {
+      console.error("[shop/items]", e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/app/shop/buy", async (req: Request, res: Response) => {
+    try {
+      const { pbId, itemId } = req.body;
+      if (!pbId || !itemId) return res.status(400).json({ error: "pbId and itemId required" });
+      const KNIFE_PRICE = 200;
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      const purchased: string[] = user.purchased_items || [];
+      if (purchased.includes(itemId)) return res.status(400).json({ error: "Already owned" });
+      const match = itemId.match(/^knife_(\d+)$/);
+      if (match) {
+        const n = parseInt(match[1], 10);
+        if (n > 1) {
+          const prevId = `knife_${n - 1}`;
+          // knife_1 is always free/owned — don't require it in purchased_items
+          const prevOwned = prevId === 'knife_1' || purchased.includes(prevId);
+          if (!prevOwned) {
+            return res.status(400).json({ error: "Unlock previous knife first" });
+          }
+        }
+      }
+      if ((user.power_tokens || 0) < KNIFE_PRICE) {
+        return res.status(400).json({ error: "Insufficient tokens" });
+      }
+      const newPT = user.power_tokens - KNIFE_PRICE;
+      const newPurchased = [...purchased, itemId];
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens: newPT,
+        purchased_items: newPurchased,
+      });
+      return res.json({ success: true, newPowerTokens: newPT, purchasedItems: newPurchased });
+    } catch (e: any) {
+      console.error("[shop/buy]", e.message);
+      return res.status(500).json({ error: "Purchase failed" });
+    }
+  });
+
+  // ── Game: Fetch user game state (for initial injection into C3) ───────────
+  app.get("/api/app/game/data/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // collected_tomatoes is now a NUMBER field (fixed by admin)
+      const data = {
+        power_tokens:            Number(user.power_tokens)            || 0,
+        collected_tomatoes:      Number(user.collected_tomatoes)      || 0,
+        last_session_score:      Number(user.last_session_score)      || 0,
+        total_accumulated_score: Number(user.total_accumulated_score) || 0,
+      };
+      console.log(`[/api/app/game/data/${pbId}]`, JSON.stringify(data));
+      res.json(data);
+    } catch (e: any) {
+      console.error("[/api/app/game/data]", e.message);
+      res.status(500).json({ error: "Failed to fetch game data" });
+    }
+  });
+
+  // ── Game: Sync score on game-over (save last_session_score + collected_tomatoes) ──
+  //
+  // Server-side score validation constants:
+  //   MAX_SCORE_PER_SECOND – the absolute theoretical maximum a human can earn.
+  //                          15 = 3 knives/sec × 5 pts each (very generous).
+  //   ABSOLUTE_MAX_SCORE   – hard cap for a single session; any higher value is
+  //                          rejected outright regardless of session length.
+  //   MIN_SESSION_MS       – minimum realistic session duration for a non-zero score.
+  const MAX_SCORE_PER_SECOND = 15;
+  const ABSOLUTE_MAX_SCORE   = 2000; // 2000-point session cap (4000 for double-reward)
+  const MIN_SESSION_MS       = 2000; // 2 s — anything faster is impossible
+
+  app.post("/api/app/game/sync-score", async (req: Request, res: Response) => {
+    try {
+      const { pbId, score, collected_tomatoes: clientTomatoes, elapsed_ms } = req.body;
+      if (!pbId || score === undefined)
+        return res.status(400).json({ error: "pbId and score required" });
+
+      // Validate pbId matches X-PB-ID header (double isolation check)
+      const headerPbId = req.headers['x-pb-id'] as string | undefined;
+      if (headerPbId && headerPbId !== pbId) {
+        console.warn(`[/api/app/game/sync-score] MISMATCH: body pbId=${pbId} header X-PB-ID=${headerPbId}`);
+        return res.status(403).json({ error: "pbId mismatch between body and header" });
+      }
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      let pts = Math.max(0, Math.round(Number(score) || 0));
+
+      // ── Hard cap: no single session can ever exceed ABSOLUTE_MAX_SCORE ──────
+      if (pts > ABSOLUTE_MAX_SCORE) {
+        console.warn(`[/api/app/game/sync-score] Score ${pts} exceeds absolute max ${ABSOLUTE_MAX_SCORE}, capping`);
+        pts = ABSOLUTE_MAX_SCORE;
+      }
+
+      // ── Time-based validation (optional — bridge sends elapsed_ms) ───────────
+      if (elapsed_ms !== undefined && elapsed_ms !== null) {
+        const elapsedSec = Math.max(0, Number(elapsed_ms) / 1000);
+        if (elapsedSec < MIN_SESSION_MS / 1000 && pts > 0) {
+          console.warn(`[/api/app/game/sync-score] Session too short (${elapsedSec.toFixed(1)}s) for score ${pts} — rejecting`);
+          return res.status(400).json({ error: "Session duration too short for reported score" });
+        }
+        const maxAllowed = Math.ceil(elapsedSec * MAX_SCORE_PER_SECOND);
+        if (pts > maxAllowed) {
+          console.warn(`[/api/app/game/sync-score] Score ${pts} impossible in ${elapsedSec.toFixed(1)}s (max=${maxAllowed}), capping`);
+          pts = maxAllowed;
+        }
+      }
+
+      const pts_final = pts;
+
+      // collected_tomatoes:
+      //  • If client sent it (bridge computed it) → use client value (already a NUMBER)
+      //  • Otherwise → server computes: current DB value + this session's score
+      let newTomatoes: number;
+      if (clientTomatoes !== undefined && clientTomatoes !== null) {
+        // Also cap client-reported tomatoes: can't exceed current DB value + validated pts
+        const currentTomatoes = Number(user.collected_tomatoes) || 0;
+        const maxTomatoes = currentTomatoes + pts_final;
+        newTomatoes = Math.min(Math.max(0, Math.round(Number(clientTomatoes))), maxTomatoes);
+        console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts_final} tomatoes=client:${newTomatoes}`);
+      } else {
+        const currentTomatoes = Number(user.collected_tomatoes) || 0;
+        newTomatoes = currentTomatoes + pts_final;
+        console.log(`[/api/app/game/sync-score] pbId=${pbId} score=${pts_final} tomatoes:${currentTomatoes}→${newTomatoes}`);
+      }
+
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        last_session_score:  pts_final,
+        collected_tomatoes:  newTomatoes,
+      });
+      res.json({ success: true, last_session_score: pts_final, collected_tomatoes: newTomatoes });
+    } catch (e: any) {
+      console.error("[/api/app/game/sync-score]", e.message);
+      res.status(500).json({ error: "Failed to sync score" });
+    }
+  });
+
+  // ── Ad: Request one-time reward token (call BEFORE showing rewarded ad) ──
+  app.post("/api/app/ad/token", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.body;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      // Lock in reward = last_session_score × 2, capped at ABSOLUTE_MAX_SCORE × 2
+      const sessionScore = Math.max(0, Math.round(Number(user.last_session_score) || 0));
+      const reward = Math.min(sessionScore * 2, ABSOLUTE_MAX_SCORE * 2);
+      const token = crypto.randomUUID();
+      // Token expires in 10 minutes — enough time to watch the ad
+      adTokenStore.set(token, { pbId, reward, expiresAt: Date.now() + 10 * 60_000 });
+      console.log(`[ad/token] Issued token for ${pbId}, reward=${reward}PT`);
+      res.json({ token, reward });
+    } catch (e: any) {
+      console.error("[/api/app/ad/token]", e.message);
+      res.status(500).json({ error: "Failed to issue ad token" });
+    }
+  });
+
+  // ── Ad: Claim PT reward after watching ad (validates one-time token) ──────
+  app.post("/api/app/ad/claim", async (req: Request, res: Response) => {
+    try {
+      const { token, pbId } = req.body;
+      if (!token || !pbId) return res.status(400).json({ error: "token and pbId required" });
+      const entry = adTokenStore.get(token);
+      if (!entry) return res.status(400).json({ error: "Invalid or already-used token" });
+      if (entry.pbId !== pbId) return res.status(403).json({ error: "Token/user mismatch" });
+      if (Date.now() > entry.expiresAt) {
+        adTokenStore.delete(token);
+        return res.status(400).json({ error: "Token expired — please try again" });
+      }
+      adTokenStore.delete(token); // single-use: consume immediately
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      const newPT    = (Number(user.power_tokens) || 0) + entry.reward;
+      const newTotal = (Number(user.total_accumulated_score) || 0) + entry.reward;
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens:            newPT,
+        total_accumulated_score: newTotal,
+        last_session_score:      0,
+      });
+      console.log(`[ad/claim] pbId=${pbId} claimed ${entry.reward}PT → newPT=${newPT}`);
+      // Log 2× game reward for admin analytics
+      pbPost("/api/collections/game_logs/records", {
+        user:         pbId,
+        raw_score:    Math.floor(entry.reward / 2),  // base score before 2× multiplier
+        is_double:    true,
+        final_tokens: entry.reward,
+      }).catch(() => {});
+      res.json({ success: true, newPowerTokens: newPT, reward: entry.reward });
+    } catch (e: any) {
+      console.error("[/api/app/ad/claim]", e.message);
+      res.status(500).json({ error: "Failed to claim ad reward" });
+    }
+  });
+
+  // ── Game: Add power tokens ────────────────────────────────────────────────
+  app.post("/api/app/game/reward", async (req: Request, res: Response) => {
+    try {
+      const { pbId, amount, type } = req.body;
+      if (!pbId || !amount)
+        return res.status(400).json({ error: "pbId and amount required" });
+
+      // Cap incoming amount to prevent inflated rewards from client tampering.
+      // ABSOLUTE_MAX_SCORE * 2 covers the double-reward (2×) ad scenario.
+      let safeAmount = Math.min(
+        Math.max(0, Math.round(Number(amount) || 0)),
+        ABSOLUTE_MAX_SCORE * 2
+      );
+      if (safeAmount !== Number(amount)) {
+        console.warn(`[/api/app/game/reward] Amount capped: ${amount} → ${safeAmount}`);
+      }
+
+      // Hourly rate limit: max 30 reward claims per user per hour
+      if (!checkHourlyRewardLimit(pbId)) {
+        console.warn(`[/api/app/game/reward] Rate-limited: ${pbId}`);
+        return res.status(429).json({ error: "Too many reward requests. Please wait before trying again." });
+      }
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // Anti-cheat: if the server set a validated last_session_score via WebSocket,
+      // the claim amount must not exceed 2× that value (2× covers the ad double-reward).
+      // If last_session_score is 0 or unset we skip this check to avoid blocking
+      // legacy clients that still use the REST-only score path.
+      const serverValidatedScore = Number(user.last_session_score) || 0;
+      if (serverValidatedScore > 0 && safeAmount > serverValidatedScore * 2) {
+        console.warn(
+          `[/api/app/game/reward] ${pbId} amount ${safeAmount} > 2× last_session_score ${serverValidatedScore} — capping`
+        );
+        safeAmount = serverValidatedScore * 2;
+      }
+
+      const newPT   = (Number(user.power_tokens) || 0) + safeAmount;
+      const newTotal = (Number(user.total_accumulated_score) || 0) + safeAmount;
+      const newWins  = type === "game_win"
+          ? (user.total_wins || 0) + 1
+          : user.total_wins || 0;
+
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens:            newPT,
+        total_wins:              newWins,
+        total_accumulated_score: newTotal,
+        last_session_score:      0,        // reset after claim
+      });
+      console.log(`[/api/app/game/reward] pbId=${pbId} +${safeAmount}PT → newPT=${newPT} totalScore=${newTotal}`);
+      // Log simple (1×) game reward for admin analytics
+      pbPost("/api/collections/game_logs/records", {
+        user:         pbId,
+        raw_score:    safeAmount,
+        is_double:    false,
+        final_tokens: safeAmount,
+      }).catch(() => {});
+
+      // 10% referral commission on game earnings → referral_balance (claimable)
+      if (user.referred_by) {
+        (async () => {
+          try {
+            let referrer: any = null;
+            const direct = await pbGet(`/api/collections/users/records/${user.referred_by}`);
+            if (!direct.code && direct.id) {
+              referrer = direct;
+            } else {
+              const byCode = await pbGet(
+                `/api/collections/users/records?filter=referral_code="${encodeURIComponent(user.referred_by)}"&perPage=1`,
+              );
+              referrer = byCode.items?.[0] || null;
+            }
+            if (referrer) {
+              const commission = Math.round(safeAmount * 0.1);
+              if (commission > 0) {
+                await pbPatch(`/api/collections/users/records/${referrer.id}`, {
+                  power_tokens:      (referrer.power_tokens || 0) + commission,
+                  referral_balance:  (referrer.referral_balance || 0) + commission,
+                  referral_earnings: (referrer.referral_earnings || 0) + commission,
+                });
+                // Log referral commission for admin analytics
+                pbPost("/api/collections/referral_history/records", {
+                  referrer_id:    referrer.id,
+                  claimer_id:     pbId,
+                  referrer_email: referrer.email || "",
+                  claimer_email:  user.email || "",
+                  amount:         commission,
+                  source:         "game_reward",
+                }).catch(() => {});
+              }
+            }
+          } catch (_) {}
+        })();
+      }
+
+      res.json({ success: true, newPowerTokens: newPT });
+    } catch (e: any) {
+      console.error("[/api/app/game/reward]", e.message);
+      res.status(500).json({ error: "Failed to grant reward" });
+    }
+  });
+
+  // ── Game: Spend power tokens ──────────────────────────────────────────────
+  app.post("/api/app/game/spend", async (req: Request, res: Response) => {
+    try {
+      const { pbId, amount } = req.body;
+      if (!pbId || !amount)
+        return res.status(400).json({ error: "pbId and amount required" });
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      if ((user.power_tokens || 0) < amount)
+        return res.json({ success: false, reason: "Insufficient power tokens" });
+
+      const newPT = user.power_tokens - amount;
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        power_tokens: newPT,
+      });
+
+      res.json({ success: true, newPowerTokens: newPT });
+    } catch (e: any) {
+      console.error("[/api/app/game/spend]", e.message);
+      res.status(500).json({ error: "Failed to spend tokens" });
+    }
+  });
+
+  // ── Tasks: list active tasks with user submission status ─────────────────
+  app.get("/api/app/tasks", async (req: Request, res: Response) => {
+    try {
+      const { userId } = req.query as { userId?: string };
+      const tasksRes = await pbGet(
+        `/api/collections/tasks/records?filter=${encodeURIComponent("is_active=true")}&sort=created&perPage=50`,
+      );
+      const tasks = tasksRes.items || [];
+
+      let submissionsMap: Record<string, any> = {};
+      if (userId) {
+        const subsRes = await pbGet(
+          `/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${userId}"`)}&perPage=200`,
+        );
+        for (const sub of (subsRes.items || [])) {
+          if (!submissionsMap[sub.task_id] || sub.status === "approved") {
+            submissionsMap[sub.task_id] = { id: sub.id, status: sub.status, admin_notes: sub.admin_notes || "" };
+          }
+        }
+      }
+
+      res.json(tasks.map((t: any) => ({
+        id: t.id,
+        title: t.title,
+        description: t.description || "",
+        link: t.link || "",
+        reward_amount: t.reward_amount || 0,
+        reward_type: t.reward_type || "PT",
+        submission: submissionsMap[t.id] || null,
+      })));
+    } catch (e: any) {
+      console.error("[/api/app/tasks]", e.message);
+      res.status(500).json({ error: "Failed to fetch tasks" });
+    }
+  });
+
+  // ── Tasks: submit proof (multipart — stores real file in PocketBase) ───────
+  app.post("/api/app/tasks/submit", upload.single("proof_screenshot"), async (req: Request, res: Response) => {
+    try {
+      const { pbId, taskId } = req.body;
+      if (!pbId || !taskId) return res.status(400).json({ error: "pbId and taskId required" });
+
+      if (!req.file) {
+        return res.status(400).json({ error: "Proof screenshot is required — no file received by server. Please try again." });
+      }
+
+      const task = await pbGet(`/api/collections/tasks/records/${taskId}`);
+      if (task.code) return res.status(404).json({ error: "Task not found" });
+      if (!task.is_active) return res.status(400).json({ error: "Task is no longer active" });
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,email`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      const existing = await pbGet(
+        `/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${pbId}" && task_id="${taskId}" && (status="pending" || status="approved")`)}&perPage=1`,
+      );
+      if ((existing.items || []).length > 0) {
+        return res.status(409).json({ error: "Already submitted or approved for this task" });
+      }
+
+      // Forward to PocketBase as multipart so the image is stored as a real file
+      const form = new FormData();
+      form.append("user_id",      pbId);
+      form.append("task_id",      taskId);
+      form.append("task_title",   task.title || "");
+      form.append("user_email",   user.email || "");
+      form.append("status",       "pending");
+      form.append("admin_notes",  "");
+      form.append("reward_amount", String(task.reward_amount || 0));
+      form.append("reward_type",  task.reward_type || "PT");
+
+      if (req.file) {
+        const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "image/jpeg" });
+        form.append("proof_screenshot", blob, req.file.originalname || "proof.jpg");
+      }
+
+      const sub = await pbFetchMultipart("POST", "/api/collections/task_submissions/records", form);
+      if (!sub.id) {
+        console.error("[/api/app/tasks/submit] PB error:", JSON.stringify(sub).slice(0, 300));
+        return res.status(500).json({ error: "Failed to create submission" });
+      }
+
+      res.json({ success: true, submissionId: sub.id });
+    } catch (e: any) {
+      console.error("[/api/app/tasks/submit]", e.message);
+      res.status(500).json({ error: "Failed to submit task" });
+    }
+  });
+
+  // ── Admin: list all tasks ─────────────────────────────────────────────────
+  app.get("/api/admin/tasks", async (_req: Request, res: Response) => {
+    try {
+      const r = await pbGet(`/api/collections/tasks/records?sort=-created&perPage=100`);
+      res.json(r.items || []);
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to fetch tasks" });
+    }
+  });
+
+  // ── Admin: create task ────────────────────────────────────────────────────
+  app.post("/api/admin/tasks", async (req: Request, res: Response) => {
+    try {
+      const { title, description, link, reward_amount, reward_type, is_active } = req.body;
+      if (!title || !reward_amount || !reward_type) {
+        return res.status(400).json({ error: "title, reward_amount, reward_type required" });
+      }
+      const task = await pbPost("/api/collections/tasks/records", {
+        title,
+        description: description || "",
+        link: link || "",
+        reward_amount: Number(reward_amount),
+        reward_type,
+        is_active: is_active !== false,
+      });
+      if (!task.id) return res.status(500).json({ error: "Failed to create task" });
+      res.json(task);
+    } catch (e: any) {
+      console.error("[admin/tasks POST]", e.message);
+      res.status(500).json({ error: "Failed to create task" });
+    }
+  });
+
+  // ── Admin: update task (toggle active etc.) ───────────────────────────────
+  app.patch("/api/admin/tasks/:id", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const result = await pbPatch(`/api/collections/tasks/records/${id}`, req.body);
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to update task" });
+    }
+  });
+
+  // ── Admin: list task submissions ──────────────────────────────────────────
+  app.get("/api/admin/tasks/submissions", async (req: Request, res: Response) => {
+    try {
+      const { status } = req.query as { status?: string };
+      const filter = status ? `status="${status}"` : `status="pending"`;
+      const r = await pbGet(
+        `/api/collections/task_submissions/records?filter=${encodeURIComponent(filter)}&sort=-created&perPage=100`,
+      );
+      res.json(r.items || []);
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to fetch submissions" });
+    }
+  });
+
+  // ── Admin: approve submission + auto-reward ───────────────────────────────
+  app.post("/api/admin/tasks/submissions/:id/approve", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { notes } = req.body;
+
+      const sub = await pbGet(`/api/collections/task_submissions/records/${id}`);
+      if (sub.code) return res.status(404).json({ error: "Submission not found" });
+      if (sub.status !== "pending") return res.status(400).json({ error: "Already processed" });
+
+      const user = await pbGet(`/api/collections/users/records/${sub.user_id}?fields=id,shib_balance,power_tokens`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // Apply reward
+      const patch: Record<string, number> = {};
+      if (sub.reward_type === "SHIB") {
+        patch.shib_balance = (user.shib_balance || 0) + (sub.reward_amount || 0);
+      } else {
+        patch.power_tokens = (user.power_tokens || 0) + (sub.reward_amount || 0);
+      }
+      await pbPatch(`/api/collections/users/records/${sub.user_id}`, patch);
+
+      // Mark approved via multipart so we can delete the stored screenshot file
+      const approveForm = new FormData();
+      approveForm.append("status",      "approved");
+      approveForm.append("admin_notes", notes || "");
+      // PocketBase file-delete syntax: fieldname- = filename to remove
+      if (sub.proof_screenshot) {
+        approveForm.append("proof_screenshot-", sub.proof_screenshot);
+      }
+      await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, approveForm);
+
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[tasks/approve]", e.message);
+      res.status(500).json({ error: "Failed to approve submission" });
+    }
+  });
+
+  // ── Admin: reject submission ──────────────────────────────────────────────
+  app.post("/api/admin/tasks/submissions/:id/reject", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { notes } = req.body;
+
+      const sub = await pbGet(`/api/collections/task_submissions/records/${id}`);
+      if (sub.code) return res.status(404).json({ error: "Submission not found" });
+      if (sub.status !== "pending") return res.status(400).json({ error: "Already processed" });
+
+      // Mark rejected via multipart so we can delete the stored screenshot file
+      const rejectForm = new FormData();
+      rejectForm.append("status",      "rejected");
+      rejectForm.append("admin_notes", notes || "");
+      // PocketBase file-delete syntax: fieldname- = filename to remove
+      if (sub.proof_screenshot) {
+        rejectForm.append("proof_screenshot-", sub.proof_screenshot);
+      }
+      await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, rejectForm);
+
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to reject submission" });
+    }
+  });
+
+  const httpServer = createServer(app);
+  return httpServer;
+}
+
+// ── Format user helper ─────────────────────────────────────────────────────
+function formatUser(u: any) {
+  return {
+    pbId: u.id,
+    firebaseUid: u.firebase_uid,
+    email: u.email,
+    displayName: u.display_name || u.name || "",
+    referralCode: u.referral_code || "",
+    referredBy: u.referred_by || "",
+    referralEarnings: u.referral_earnings || 0,
+    shibBalance: u.shib_balance || 0,
+    powerTokens: u.power_tokens || 10,
+    totalClaims: u.total_claims || 0,
+    totalWins: u.total_wins || 0,
+    is_verified: !!u.is_verified,
+    isVerified: !!u.is_verified,
+    activeBoosterMultiplier: u.active_booster_multiplier || 1,
+    boosterExpires: u.booster_expires || "",
+    fraudAttempts: u.fraud_attempts || 0,
+    status: u.status || "",
+    created: u.created,
+  };
+}

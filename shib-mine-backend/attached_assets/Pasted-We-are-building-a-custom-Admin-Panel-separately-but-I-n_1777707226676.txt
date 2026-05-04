@@ -1,0 +1,51 @@
+We are building a custom Admin Panel separately, but I need you to prepare the PocketBase database and the Application logic so that all user activities are logged and ready to be displayed.
+
+Please implement the following changes immediately:
+
+1. Power Token Security Adjustments:
+
+Hourly Limit: Keep the restriction where a user cannot send more than 30 rewarded video requests per hour.
+
+Remove Daily Cap: Remove the 5,000 PT daily limit. Users should be able to earn unlimited Power Tokens through real gameplay.
+
+Anti-Cheat: Ensure that even without a daily cap, the PT balance cannot be manipulated manually by the user.
+
+2. Data Logging for 'Sessions History':
+Ensure every mining session is logged with high detail. We need to track:
+
+Fraud sessions, 1x, 2x, 4x, 6x, 10x sessions.
+
+Each session type must record: How many times it was performed and the Total Income generated from that specific type.
+
+Maintain a Total Sessions count and Grand Total Income from all mining.
+
+3. Data Logging for 'Referral History':
+Structure the data so the Admin Panel can display a table with:
+
+Referrer Email vs. Claimer Email.
+
+Amount claimed per referral and the exact Timestamp.
+
+Ensure a field exists to fetch the Total Referral Income for any specific user easily.
+
+4. Data Logging for 'Gaming History':
+Every single game played must create a detailed log entry including:
+
+Winning Tokens: Amount won in the game.
+
+Claim Type: A boolean/flag to show if it was a 'Simple Claim' (True/False) or a '2x Claim' (True/False).
+
+Final Power Tokens: The final amount added to the balance for that specific game.
+
+Maintain a running total of Total Gaming Income (Power Tokens) for the user.
+
+5. Developer Note for Admin Panel Integration:
+Since we are hiring another developer for the Admin UI, please provide a Detailed Technical Guide (Prompt) explaining:
+
+Which new collections/fields you have created.
+
+How the Admin Panel should query this history (e.g., using specific filters or expanded relations).
+
+Any specific API endpoints or logic the Admin developer needs to know to display these 3 history tables (Sessions, Referral, Gaming) correctly.
+
+Constraint: Do not build the Admin UI yourself. Just prepare the database, update the app's logging logic, and provide the technical documentation for the other developer.

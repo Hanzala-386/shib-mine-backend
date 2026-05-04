@@ -1,0 +1,105 @@
+MASTER INSTRUCTION FOR UI RE-BRANDING (SHIBA COIN)
+OVERVIEW:
+We are replacing all existing Pickaxe (khudali) icons and Bitcoin logos with the provided high-detail Shiba Coin.
+
+CRITICAL RULE: All image assets and animation logic must be stored LOCALLY within the APK’s assets/ folder. Do NOT fetch coin images or animation files from the server or database.
+
+PART 1: THE CORE ANIMATION COMPONENT
+Create a reusable React Native component for the "Spinning Coin".
+
+Asset: Use the uploaded transparent Shiba Coin image.
+
+Animation Type: Smooth, infinite Vertical Spin (Y-axis rotation). It should look like a 3D coin spinning on a table.
+
+Technical Requirement: Use Animated.loop with useNativeDriver: true for 60FPS performance so it doesn't lag the phone.
+
+PART 2: DETAILED SCREEN-BY-SCREEN PLACEMENT
+1. HOME SCREEN: MINING CENTER (IDLE STATE)
+Current Element: Pickaxe icon in the center of the large yellow circle.
+
+Action: Remove Pickaxe. Place the Shiba Coin in the exact center.
+
+Animation: ENABLED. The coin must spin continuously while the user is idle.
+
+Size: Medium-Large (should fit comfortably inside the inner yellow circle with clear padding).
+
+2. HOME SCREEN: DURING ACTIVE MINING
+Current Element: Pickaxe icon above the timer.
+
+Action: Replace Pickaxe with Shiba Coin.
+
+Animation: ENABLED. The coin must keep spinning throughout the 60-minute countdown.
+
+Size: Medium (Same as the original Pickaxe size).
+
+3. HOME SCREEN: CLAIM EARNINGS STATE
+Current Element: Large Pickaxe icon inside the "CLAIM!" circle.
+
+Action: Replace Pickaxe with Shiba Coin.
+
+Animation: ENABLED. A fast, attractive spin to encourage the user to click.
+
+Size: Large (To match the visual importance of the Claim action).
+
+4. SPLASH SCREEN (APP STARTUP)
+Current Element: Static app logo on the opening screen.
+
+Action: Replace logo with a very high-quality Shiba Coin.
+
+Background: Change to pure Solid White.
+
+Animation: ENABLED. A smooth, hypnotic spin as the app loads.
+
+Size: Extra Large (Center of the screen).
+
+5. LOGIN / SIGN-UP SCREEN
+Current Element: Small Pickaxe logo inside the top yellow circle.
+
+Action: Replace Pickaxe with Shiba Coin.
+
+Animation: ENABLED.
+
+Size: Medium-Small (Perfectly fitted inside the existing top circle).
+
+6. WALLET PAGE: BALANCE SECTION
+Current Element: Small Bitcoin logo next to "9K SHIB Balance".
+
+Action: Replace Bitcoin logo with Shiba Coin.
+
+Animation: ENABLED. A subtle, slow spin to make the wallet feel "premium".
+
+Size: Small (Must match the height of the balance text).
+
+7. TOP PLAYERS PAGE: USER RANK
+Current Element: Bitcoin symbol in the "Your Position" card and rank list.
+
+Action: Replace Bitcoin logo with Shiba Coin.
+
+Animation: DISABLED (STATIC ONLY).
+
+Size: Small (Consistent with the list UI).
+
+8. PROFILE PAGE: STATS SECTION
+Current Element: Bitcoin logo above the "SHIB" stat box.
+
+Action: Replace Bitcoin logo with Shiba Coin.
+
+Animation: DISABLED (STATIC ONLY).
+
+Size: Small (Icon size).
+
+9. HOME SCREEN: QUICK BALANCE VIEW
+Current Element: Small Bitcoin logo in the SHIB Balance box.
+
+Action: Replace Bitcoin logo with Shiba Coin.
+
+Animation: DISABLED (STATIC ONLY).
+
+Size: Small.
+
+PART 3: ASSET QUALITY & PERFORMANCE
+Format: Use the provided transparent PNG.
+
+Storage: Save the image as shiba_coin_local.png in the project’s local directory.
+
+Memory Management: Ensure the animation stops when the user leaves the screen to save battery life.
