@@ -32,6 +32,7 @@ const config = getDefaultConfig(__dirname);
  */
 config.resolver.blockList = [
   /[/\\]\.local[/\\]/,
+  /[/\\]\.cache[/\\]/,
 ];
 
 const originalResolveRequest = config.resolver.resolveRequest;

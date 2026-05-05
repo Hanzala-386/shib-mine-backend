@@ -22,6 +22,7 @@ export function useSecurity() { return useContext(SecurityContext); }
 let Device: any = null;
 let Network: any = null;
 let NetworkStateType: any = null;
+let JailMonkey: any = null;
 
 if (Platform.OS !== 'web') {
   try { Device = require('expo-device'); } catch {}
@@ -30,16 +31,48 @@ if (Platform.OS !== 'web') {
     Network = net;
     NetworkStateType = net.NetworkStateType;
   } catch {}
+  try {
+    /* jail-monkey is a native module — available in EAS/production builds.
+     * In Expo Go it throws on require; we silently catch and fall back to
+     * expo-device's isRootedExperimentalAsync() instead. */
+    JailMonkey = require('jail-monkey').default;
+  } catch {}
 }
 
-// ── Root detection (expo-device) ──────────────────────────────────────────────
-// Returns true if the device is rooted/jailbroken.
-// NOTE: Always false in Expo Go and development; works fully in production builds.
+// ── Root / Jailbreak detection ────────────────────────────────────────────────
+// Two-layer check:
+//   Layer 1 (deep): jail-monkey — multi-vector scan: su binary, known root
+//     apps, SafetyNet, Magisk, frida server, RW system partition, JB
+//     tweaks, Cydia, etc. Only available in EAS/production native builds.
+//   Layer 2 (fallback): expo-device.isRootedExperimentalAsync — OS-level
+//     flag. Less thorough but works in all native contexts including Expo Go.
+// Always returns false on web or in __DEV__ (guard is in the provider).
 async function checkRoot(): Promise<boolean> {
-  if (!Device || Platform.OS === 'web') return false;
-  try {
-    return !!(await Device.isRootedExperimentalAsync());
-  } catch { return false; }
+  if (Platform.OS === 'web') return false;
+
+  // Layer 1 — jail-monkey (preferred, thorough)
+  if (JailMonkey) {
+    try {
+      // isJailBroken() covers both Android root and iOS jailbreak
+      if (JailMonkey.isJailBroken())          return true;
+      // canMockLocation() — detects mock-location / GPS spoofer apps (often
+      // used alongside cheat tools on Android)
+      if (JailMonkey.canMockLocation())        return true;
+      // isOnExternalStorage() — APK was moved to SD card / unsigned re-sign
+      if (JailMonkey.isOnExternalStorage())    return true;
+      // isDebugged() — active debugger session (frida, ida pro, etc.)
+      if (JailMonkey.isDebugged())             return true;
+    } catch { /* native call failed — continue to fallback */ }
+  }
+
+  // Layer 2 — expo-device fallback (Expo Go + older builds)
+  if (Device) {
+    try {
+      return !!(await Device.isRootedExperimentalAsync());
+    } catch {}
+  }
+
+  return false;
 }
 
 // ── VPN detection (expo-network, Android only) ────────────────────────────────
