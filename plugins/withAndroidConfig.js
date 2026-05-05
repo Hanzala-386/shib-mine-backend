@@ -227,6 +227,45 @@ function withAdiRegistration(config) {
   ]);
 }
 
+/* ─── 7. Root build.gradle — force compileSdkVersion 35 for all subprojects ──── */
+//
+// react-native-install-referrer (and sometimes other third-party modules)
+// declare a lower compileSdkVersion in their own build.gradle. When AGP 8.x
+// enforces a strict namespace/compileSdk contract, this causes:
+//   "Namespace not specified … compileSdkVersion must be set"
+// The subprojects block runs afterEvaluate on every included module and
+// upgrades any module whose compileSdkVersion is below 35 to match the app.
+// This is idempotent — already-patched root gradle files are not re-patched.
+//
+function withSubprojectsCompileSdk(config) {
+  return withProjectBuildGradle(config, (cfg) => {
+    let content = cfg.modResults.contents;
+
+    const PATCH_MARKER = '// [shib-patch] subprojects compileSdk';
+    if (content.includes(PATCH_MARKER)) return cfg;
+
+    const subprojectsPatch = `
+${PATCH_MARKER}
+subprojects {
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            project.android {
+                if (compileSdkVersion < 35) {
+                    compileSdkVersion 35
+                }
+            }
+        }
+    }
+}
+`;
+
+    // Append before the last closing brace of the file
+    content = content.trimEnd() + '\n' + subprojectsPatch;
+    cfg.modResults.contents = content;
+    return cfg;
+  });
+}
+
 /* ─── Compose all patches and export ─────────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   config = withAgpVersion(config);
@@ -235,5 +274,6 @@ module.exports = function withAndroidConfig(config) {
   config = withNdkVersion(config);
   config = withCppConfig(config);
   config = withAdiRegistration(config);
+  config = withSubprojectsCompileSdk(config);
   return config;
 };
