@@ -65,8 +65,9 @@ export default function GamesScreen() {
   const pbIdRef         = useRef<string>('');
   const gameDataRef     = useRef<GameData | null>(null);
   const sessionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const gameOverFiredRef = useRef(false);      // guard against double GAME_OVER
-  const warningPulse    = useRef(new Animated.Value(1)).current;
+  const gameOverFiredRef  = useRef(false);     // guard against double GAME_OVER
+  const sessionActiveRef  = useRef(false);     // ref mirror of sessionActive — safe in callbacks
+  const warningPulse      = useRef(new Animated.Value(1)).current;
 
   const [phase,         setPhase]         = useState<Phase>('game');
   const [score,         setScore]         = useState(0);
@@ -121,6 +122,7 @@ export default function GamesScreen() {
    * ─────────────────────────────────────────────────────────────────────── */
   const stopSessionTimer = useCallback(() => {
     if (sessionTimerRef.current) { clearInterval(sessionTimerRef.current); sessionTimerRef.current = null; }
+    sessionActiveRef.current = false;
   }, []);
 
   /* ── Warning pulse animation ── */
@@ -150,8 +152,9 @@ export default function GamesScreen() {
   const reloadGame = useCallback(() => {
     stopSessionTimer();
     gameOverFiredRef.current = false;
-    liveScoreRef.current = 0;
     scoreRef.current = 0;
+    liveScoreRef.current = 0;
+    sessionActiveRef.current = false;
     setScore(0);
     setLiveScore(0);
     setEarned(0);
@@ -176,6 +179,7 @@ export default function GamesScreen() {
     gameOverFiredRef.current = true;
 
     stopSessionTimer();
+    sessionActiveRef.current = false;
     setSessionActive(false);
 
     const s = Math.min(Math.max(0, Math.round(Number(rawScore) || 0)), SCORE_LIMIT);
@@ -214,9 +218,15 @@ export default function GamesScreen() {
 
   /* ── Start 2-minute session countdown ─────────────────────────────────── */
   const startSessionTimer = useCallback(() => {
+    // Guard: do not restart if a session is already running (prevents mid-game reset)
+    if (sessionActiveRef.current) {
+      console.log('[Games] startSessionTimer called while already active — ignored');
+      return;
+    }
     stopSessionTimer();
     gameOverFiredRef.current = false;
     liveScoreRef.current = 0;
+    sessionActiveRef.current = true;
     setLiveScore(0);
     setSessionTime(SESSION_SECONDS);
     setSessionActive(true);
@@ -241,6 +251,9 @@ export default function GamesScreen() {
   /* ── Live score update from bridge ── */
   const handleScoreUpdate = useCallback((rawScore: number) => {
     const s = Math.min(Math.max(0, Math.round(Number(rawScore) || 0)), SCORE_LIMIT);
+    // Never allow the live score to drop during an active session
+    // (bridge sends score=0 at the start of each new round; ignore if session running)
+    if (sessionActiveRef.current && s < liveScoreRef.current) return;
     liveScoreRef.current = s;
     setLiveScore(s);
 

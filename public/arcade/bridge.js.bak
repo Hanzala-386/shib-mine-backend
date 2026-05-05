@@ -6,14 +6,14 @@
    *
    *  Messages OUT → React Native:
    *    BRIDGE_READY
-   *    SCORE_UPDATE   { score }                              ← NEW: live score tick
+   *    SCORE_UPDATE   { score }
    *    GAME_OVER      { score, collected_tomatoes, pb_id, elapsed_ms, reason }
    *    DOUBLE_REWARD  { score, collected_tomatoes, pb_id, elapsed_ms }
    *    INJECT_DONE    { state }
    *
    *  Messages IN ← React Native:
    *    INJECT_VARS    { pbId, powerTokens, collectedTomatoes, lastSessionScore, totalScore }
-   *    TIME_UP                                               ← NEW: 2-min timer expired
+   *    TIME_UP
    *    RESUME_NAVIGATION
    *    RELOAD_GAME
    * ============================================================= */
@@ -81,20 +81,19 @@
   }
 
   /* ── Score integrity guards ──────────────────────────────────────────────
-   *  MAX_DELTA_PER_TICK  – max points we allow per 300 ms polling tick.
+   *  MAX_DELTA_PER_TICK  – max points allowed per 100ms polling tick.
    *  ABSOLUTE_MAX_SCORE  – hard cap for a single session (2000 pts rule).
-   *                        Any score above this triggers GAME_OVER automatically.
    * ──────────────────────────────────────────────────────────────────────── */
-  var MAX_DELTA_PER_TICK = 15;  /* fallback only: max 3 hits × 5 pts per 100ms tick */
-  var ABSOLUTE_MAX_SCORE = 2000;   /* ← 2000-point session cap */
-  var lastTrackedScore   = 0;      /* last verified score value */
-  var lastPostedScore    = -1;     /* last score sent via SCORE_UPDATE */
-  var sessionStartMs     = 0;      /* set when bridge becomes ready */
-  var gameOverSent       = false;  /* prevents double GAME_OVER per session */
-  var lastServerScore    = 0;      /* last score the server was told about (for hit detection) */
-  var pendingHits        = 0;      /* hits detected but not yet sent — drained one per tick */
-  var localPT            = 0;      /* local mirror of serverPT — STRICTLY ADDITIVE, never resets on score drop */
-  var scoreVarHooked     = false;  /* true once SetValue hook is installed on C3 score var */
+  var MAX_DELTA_PER_TICK = 15;     /* fallback only: max 3 hits × 5 pts per 100ms tick */
+  var ABSOLUTE_MAX_SCORE = 2000;   /* 2000-point session cap */
+  var lastTrackedScore   = 0;
+  var lastPostedScore    = -1;
+  var sessionStartMs     = 0;
+  var gameOverSent       = false;
+  var lastServerScore    = 0;
+  var pendingHits        = 0;
+  var localPT            = 0;      /* STRICTLY ADDITIVE — never resets on score drop */
+  var scoreVarHooked     = false;
 
   /* ── Runtime accessor ────────────────────────────────────────────────── */
   function rt() {
@@ -205,11 +204,10 @@
   }
 
   /* ── Event-driven score hook ─────────────────────────────────────────
-   *  Override C3's internal SetValue() on the 'score' global var object.
-   *  Fires at the exact animation frame of each hit (~16 ms) — no poll lag.
-   *  Each positive SetValue call = 1 hit regardless of delta size.
-   *  Capped at 4 hits per call to absorb legitimate multi-point bonuses.
-   *  Falls back gracefully to polling if the hook cannot be installed.
+   *  Overrides C3's internal SetValue() on the 'score' global var.
+   *  Fires at the exact animation frame of each hit — no poll lag.
+   *  Each positive delta = 1 hit. Capped at 4 hits per call.
+   *  Falls back to polling if the hook cannot be installed.
    * ──────────────────────────────────────────────────────────────────── */
   function hookScoreVar(runtime) {
     try {
@@ -221,19 +219,15 @@
       for (var i = 0; i < globals.length; i++) {
         var v = globals[i];
         if (!v || v._name !== 'score') continue;
-        if (v.__shibHooked) return true;               /* already installed */
+        if (v.__shibHooked) return true;
         if (typeof v.SetValue !== 'function') return false;
 
-        /* Wrap SetValue — fires every time C3 modifies score */
         var origSetValue = v.SetValue.bind(v);
         v.SetValue = function (newVal) {
-          /* Read current value BEFORE writing so we get the true delta */
           var prev = typeof v.GetValue === 'function' ? v.GetValue() : v._value;
-          origSetValue(newVal);                          /* always write first */
+          origSetValue(newVal);
           var delta = newVal - prev;
           if (delta > 0 && !gameOverSent) {
-            /* Weapon Master awards 5 pts per hit; allow up to 4 hits per call
-             * to handle genuine bonus-round scoring, but cap beyond that. */
             var newHits = Math.max(1, Math.min(Math.round(delta / 5), 4));
             for (var h = 0; h < newHits; h++) {
               localPT += 5;
@@ -242,12 +236,10 @@
             console.log('[Bridge] HOOK +' + delta + 'pts →' + newHits +
               ' hit(s) queued | localPT=' + localPT + ' pending=' + pendingHits);
           }
-          /* ── Score-reset-to-zero guard (Layer 2 exploit detection) ─────
-           *  If the score is forcibly reset to 0 while the session is active,
-           *  that is the signature of RestartLayout / any back-button call we
-           *  may have missed in hookNavigation.  Fire GAME_OVER immediately.
-           *  We defer by 0 ms so C3 finishes its current event before we fire.
-           * ──────────────────────────────────────────────────────────────── */
+          /* ── Score-reset-to-zero guard ─────────────────────────────────
+           *  If score is forcibly reset to 0 mid-session it signals a
+           *  RestartLayout / back-button exploit. Fire GAME_OVER immediately.
+           * ────────────────────────────────────────────────────────────── */
           if (newVal === 0 && prev > 0 && localPT > 0 && !gameOverSent) {
             console.warn('[Bridge] HOOK: score reset 0 mid-session (prev=' + prev +
               ' localPT=' + localPT + ') → GAME_OVER (exploit blocked)');
@@ -258,7 +250,7 @@
         console.log('[Bridge] Score SetValue hooked ✓ (event-driven mode active)');
         return true;
       }
-      return false;     /* var not found yet — caller will retry next tick */
+      return false;
     } catch (e) {
       console.warn('[Bridge] hookScoreVar failed:', e);
       return false;
@@ -292,8 +284,6 @@
     if (gameOverSent) return;
     gameOverSent = true;
 
-    /* localPT is the authoritative score — it only ever went up by +5 per hit,
-     * so it is immune to C3's internal score resets and jumps.            */
     var score = Math.min(localPT, ABSOLUTE_MAX_SCORE);
     var elapsedMs = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
 
@@ -314,10 +304,8 @@
       elapsed_ms:         elapsedMs,
       reason:             reason || 'death',
     });
-    /* Notify server to commit session */
     wsSend('GAME_OVER', { score: score, elapsed_ms: elapsedMs });
 
-    /* Reset ALL hit tracking for the next round */
     sessionStartMs   = Date.now();
     lastTrackedScore = 0;
     lastPostedScore  = -1;
@@ -327,20 +315,17 @@
   }
 
   /* ── Hook C3 navigation ──────────────────────────────────────────────
-   *  GoToLayoutByName → DOUBLE_REWARD modal (circle/refresh icon)
-   *  GoToLayout       → GAME_OVER (back arrow — if intercepted)
-   *  RestartLayout    → GAME_OVER (most likely method the back button uses)
-   *  startLayout / _startLayout → GAME_OVER (C3 internal variants)
+   *  GoToLayoutByName → DOUBLE_REWARD modal
+   *  GoToLayout / RestartLayout / startLayout / _startLayout → GAME_OVER
    *
-   *  Rule: during an active session (localPT > 0, !gameOverSent), ANY call
-   *  to a layout-change method = exploit attempt → fire GAME_OVER immediately.
-   *  When navBlocked=true (post-death waiting for claim), navigation is queued.
+   *  During an active session (localPT > 0, !gameOverSent), ANY layout
+   *  change = exploit attempt → GAME_OVER immediately.
+   *  When navBlocked=true (post-death), navigation is queued.
    * ─────────────────────────────────────────────────────────────────── */
   function hookNavigation(runtime) {
     var lm = runtime._layoutManager;
     if (!lm) { console.warn('[Bridge] No _layoutManager — nav blocking unavailable'); return; }
 
-    /* ── GoToLayoutByName: double-reward button (circle icon) ─────────── */
     if (typeof lm.GoToLayoutByName === 'function') {
       var origGTLBN = lm.GoToLayoutByName.bind(lm);
       lm.GoToLayoutByName = function () {
@@ -360,7 +345,6 @@
           });
           return;
         }
-        /* Active session: GoToLayoutByName during play = back-button exploit */
         if (!gameOverSent && localPT > 0) {
           console.log('[Bridge] GoToLayoutByName mid-session → GAME_OVER (exploit blocked)');
           fireGameOver(rt(), 'back_button');
@@ -371,11 +355,6 @@
       console.log('[Bridge] Hooked GoToLayoutByName');
     }
 
-    /* ── All other layout-change methods: GoToLayout, RestartLayout, etc. ─
-     *  RestartLayout is the most likely method behind the back button since
-     *  it restarts the current layout (keeping the same layout name, which
-     *  is why our tick() layout-change detector misses it entirely).
-     * ─────────────────────────────────────────────────────────────────── */
     ['GoToLayout', 'RestartLayout', 'startLayout', '_startLayout'].forEach(function (method) {
       if (typeof lm[method] !== 'function') return;
       var orig = lm[method].bind(lm);
@@ -385,7 +364,6 @@
           pendingNav = { fn: orig, args: Array.prototype.slice.call(arguments) };
           return;
         }
-        /* Active session: back/restart button → lock score and end session */
         if (!gameOverSent && localPT > 0) {
           console.log('[Bridge] ' + method + ' mid-session → GAME_OVER (exploit blocked)');
           fireGameOver(rt(), 'back_button');
@@ -431,12 +409,10 @@
     if (msg.type === 'INJECT_VARS') {
       if (runtime) applyInject(runtime, msg);
       else         injectQueue = msg;
-      /* Open server WS for score validation once we have pbId + apiUrl */
       wsApiUrl = msg.apiUrl || '';
       if (wsApiUrl && msg.pbId) wsOpen(msg.pbId);
     }
 
-    /* TIME_UP — 2-minute timer from React Native expired */
     if (msg.type === 'TIME_UP') {
       console.log('[Bridge] TIME_UP received — forcing GAME_OVER');
       fireGameOver(runtime, 'time_limit');
@@ -453,10 +429,10 @@
     }
   });
 
-  /* ── Main loop — 100ms tick ─────────────────────────────────────────
-   *  PRIMARY role: drain pendingHits queue + layout change detection.
-   *  Score HIT DETECTION is handled by the SetValue hook (event-driven).
-   *  Polling fallback for hit detection activates only when hook fails.
+  /* ── Main loop — 100ms tick ──────────────────────────────────────────
+   *  PRIMARY: drain pendingHits queue + layout change detection.
+   *  Score HIT DETECTION is event-driven via the SetValue hook.
+   *  Polling fallback activates only when hook install fails.
    * ──────────────────────────────────────────────────────────────────── */
   function tick() {
     var runtime = rt();
@@ -486,7 +462,6 @@
       var currentScore = readGlobal(runtime, 'score');
       if (currentScore > lastTrackedScore) {
         var delta = currentScore - lastTrackedScore;
-        /* Clamp delta: max 15 pts per 100ms = 3 legitimate hits × 5 pts */
         if (delta > MAX_DELTA_PER_TICK) {
           var cappedScore = lastTrackedScore + MAX_DELTA_PER_TICK;
           console.warn('[Bridge] Fallback spike: ' + lastTrackedScore +
@@ -518,7 +493,7 @@
       wsSend('KNIFE_HIT', {});
     }
 
-    /* ── PT cap: 2000 hit-based points → force GAME_OVER ─────────────── */
+    /* ── PT cap: 2000 points → force GAME_OVER ────────────────────────── */
     if (!gameOverSent && localPT >= ABSOLUTE_MAX_SCORE) {
       console.log('[Bridge] localPT cap reached (' + localPT + ') — firing GAME_OVER');
       fireGameOver(runtime, 'score_limit');
@@ -526,7 +501,7 @@
       return;
     }
 
-    /* ── Broadcast SCORE_UPDATE using localPT (never drops mid-game) ─── */
+    /* ── Broadcast SCORE_UPDATE — localPT never drops mid-game ─────────── */
     if (!gameOverSent && localPT !== lastPostedScore) {
       post('SCORE_UPDATE', { score: localPT });
       lastPostedScore = localPT;
@@ -539,7 +514,6 @@
       lastLayout = name;
 
       if (name.toLowerCase() === 'death') {
-        /* Use localPT — the validated, additive count that never reset during gameplay */
         var score     = Math.min(localPT, ABSOLUTE_MAX_SCORE);
         var elapsedMs = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
 
@@ -569,7 +543,7 @@
           });
           wsSend('GAME_OVER', { score: score, elapsed_ms: elapsedMs });
 
-          /* ── Reset ALL hit tracking for the NEXT round ── */
+          /* Reset ALL hit tracking for the next round */
           sessionStartMs   = Date.now();
           lastTrackedScore = 0;
           lastPostedScore  = -1;
@@ -579,11 +553,11 @@
         }
 
       } else if (navBlocked && name.toLowerCase() !== 'death') {
-        /* Player re-entered the game from the menu — genuine new session */
+        /* Player re-entered game from menu — genuine new session */
         navBlocked      = false;
         gameOverSent    = false;
         lastPostedScore = -1;
-        localPT         = 0;   // fresh round
+        localPT         = 0;
         lastServerScore = 0;
         pendingHits     = 0;
       }
