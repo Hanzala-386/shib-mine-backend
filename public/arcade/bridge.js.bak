@@ -397,42 +397,6 @@
     });
   }
 
-  /* ── Hide back-arrow button (rstrt sprite) ───────────────────────────
-   *  Checks a list of probable C3 object names for the back/restart button
-   *  and sets every matching instance to invisible + non-interactive.
-   *  Called once on bridge ready AND again on every layout change so the
-   *  button cannot reappear when a new level loads.
-   *  To REVERT: remove calls to hideBackButton() — the button comes back
-   *  automatically since we never touch the C3 project source.
-   * ──────────────────────────────────────────────────────────────────── */
-  var BACK_BTN_NAMES = ['rstrt', 'back', 'backbtn', 'back_btn', 'backarrow', 'back_arrow'];
-
-  function hideBackButton(runtime) {
-    if (!runtime || !runtime.objects) return;
-    var hidden = 0;
-    BACK_BTN_NAMES.forEach(function (name) {
-      try {
-        var obj = runtime.objects[name];
-        if (!obj) return;
-        var insts = typeof obj.instances === 'function'
-          ? obj.instances()
-          : (obj._instances || []);
-        insts.forEach(function (inst) {
-          if (!inst) return;
-          /* Visibility */
-          if (typeof inst.isVisible !== 'undefined') inst.isVisible = false;
-          else if (typeof inst.visible !== 'undefined') inst.visible = false;
-          /* Interaction (makes it fully non-clickable) */
-          if (typeof inst.isTouchEnabled !== 'undefined') inst.isTouchEnabled = false;
-          if (typeof inst.isMouseEnabled !== 'undefined') inst.isMouseEnabled = false;
-          hidden++;
-        });
-        if (hidden > 0) console.log('[Bridge] hideBackButton: hid ' + hidden +
-          ' instance(s) of "' + name + '"');
-      } catch (e) { /* object may not exist in this layout — ignore */ }
-    });
-  }
-
   /* ── Inject server data into C3 globals ─────────────────────────────── */
   var injectQueue = null;
 
@@ -506,7 +470,6 @@
       gameOverSent     = false;
       hookNavigation(runtime);
       scoreVarHooked = hookScoreVar(runtime);
-      hideBackButton(runtime);
       if (injectQueue) { applyInject(runtime, injectQueue); injectQueue = null; }
       post('BRIDGE_READY', {});
       console.log('[Bridge] Ready | hook=' + scoreVarHooked);
@@ -615,9 +578,6 @@
           pendingHits      = 0;
         }
 
-        /* Re-hide the back button after death layout loads */
-        setTimeout(function () { hideBackButton(rt()); }, 200);
-
       } else if (navBlocked && name.toLowerCase() !== 'death') {
         /* Player re-entered the game from the menu — genuine new session */
         navBlocked      = false;
@@ -626,8 +586,6 @@
         localPT         = 0;   // fresh round
         lastServerScore = 0;
         pendingHits     = 0;
-        /* Re-hide the back button when game layout reloads */
-        setTimeout(function () { hideBackButton(rt()); }, 200);
       }
     }
 
