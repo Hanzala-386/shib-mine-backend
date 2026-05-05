@@ -31,7 +31,7 @@ import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
 const AVATAR_KEY = 'profile_avatar_uri';
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const APP_NAME    = 'Shiba Hit';
 
 /* ── Permanent Delete Account — PocketBase native email ───────────────────
