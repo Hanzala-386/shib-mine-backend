@@ -60,8 +60,9 @@ export default function GamesScreen() {
   const { showGameInterstitial, showRewarded } = useAds();
 
   const wvRef           = useRef<any>(null);
-  const scoreRef        = useRef(0);           // final score at game-over
-  const liveScoreRef    = useRef(0);           // live score during play (from SCORE_UPDATE)
+  const scoreRef           = useRef(0);        // final score at game-over
+  const liveScoreRef       = useRef(0);        // live score during play (from SCORE_UPDATE)
+  const sessionPeakScoreRef = useRef(0);       // highest score seen this session (never drops)
   const pbIdRef         = useRef<string>('');
   const gameDataRef     = useRef<GameData | null>(null);
   const sessionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -154,6 +155,7 @@ export default function GamesScreen() {
     gameOverFiredRef.current = false;
     scoreRef.current = 0;
     liveScoreRef.current = 0;
+    sessionPeakScoreRef.current = 0;
     sessionActiveRef.current = false;
     setScore(0);
     setLiveScore(0);
@@ -182,7 +184,10 @@ export default function GamesScreen() {
     sessionActiveRef.current = false;
     setSessionActive(false);
 
-    const s = Math.min(Math.max(0, Math.round(Number(rawScore) || 0)), SCORE_LIMIT);
+    const raw = Math.min(Math.max(0, Math.round(Number(rawScore) || 0)), SCORE_LIMIT);
+    // Retain the session's highest ever score — protects against a late score=0
+    // arriving from the bridge after the player had already accumulated points.
+    const s = Math.max(raw, sessionPeakScoreRef.current);
     const t = rawTomatoes !== undefined ? Math.max(0, Math.round(Number(rawTomatoes) || 0)) : undefined;
 
     scoreRef.current = s;
@@ -226,6 +231,7 @@ export default function GamesScreen() {
     stopSessionTimer();
     gameOverFiredRef.current = false;
     liveScoreRef.current = 0;
+    sessionPeakScoreRef.current = 0;
     sessionActiveRef.current = true;
     setLiveScore(0);
     setSessionTime(SESSION_SECONDS);
@@ -255,6 +261,7 @@ export default function GamesScreen() {
     // (bridge sends score=0 at the start of each new round; ignore if session running)
     if (sessionActiveRef.current && s < liveScoreRef.current) return;
     liveScoreRef.current = s;
+    if (s > sessionPeakScoreRef.current) sessionPeakScoreRef.current = s;
     setLiveScore(s);
 
     // Start pulsing warning near limit

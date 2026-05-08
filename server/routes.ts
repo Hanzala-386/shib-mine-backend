@@ -1448,6 +1448,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         appStoreLink: s.app_store_link || '',
         playStoreUrl: s.play_store_url || s.app_store_link || '',
         ratePopupFrequency: s.rate_popup_frequency || 5,
+        minimumVersion: s.minimum_version || '',
       });
     } catch (e: any) {
       console.error("[/api/app/settings]", e.message);
@@ -2546,6 +2547,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Mining history ─────────────────────────────────────────────────────────
+  app.get("/api/app/mine/history/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+      const filter = encodeURIComponent(`user="${pbId}" && claimed_amount > 0`);
+      const r = await pbGet(
+        `/api/collections/mining_sessions/records?filter=${filter}&sort=-created&perPage=20`,
+      );
+      const sessions = (r.items || []).map((s: any) => ({
+        id:                s.id,
+        startTime:         s.start_time,
+        claimedAmount:     s.claimed_amount,
+        boosterMultiplier: s.booster_multiplier || 1,
+        created:           s.created,
+      }));
+      res.json(sessions);
+    } catch (e: any) {
+      console.error("[/api/app/mine/history]", e.message);
+      res.status(500).json({ error: "Failed to fetch history" });
+    }
+  });
+
   // ── Withdrawal tier ───────────────────────────────────────────────────────
   app.get(
     "/api/app/withdrawals/tier/:pbId",
@@ -2930,6 +2954,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           pbUpdate.play_store_url = body.playStoreUrl;
         if (body.ratePopupFrequency !== undefined)
           pbUpdate.rate_popup_frequency = body.ratePopupFrequency;
+        if (body.minimumVersion !== undefined)
+          pbUpdate.minimum_version = body.minimumVersion;
 
         const updated = await pbPatch(
           `/api/collections/settings/records/${id}`,

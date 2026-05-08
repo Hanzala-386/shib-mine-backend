@@ -24,6 +24,7 @@ import { requestNotificationPermission } from "@/lib/notifications";
 import { TermsGateModal } from "@/components/TermsGateModal";
 import { SecurityProvider } from "@/context/SecurityContext";
 import { SecurityModal } from "@/components/SecurityModal";
+import { ForceUpdateModal } from "@/components/ForceUpdateModal";
 import { View, StyleSheet } from "react-native";
 import SpinningCoin from "@/components/SpinningCoin";
 
@@ -94,6 +95,8 @@ function ProvidedApp() {
       </AdProvider>
       {/* SecurityModal renders on top of all navigation — blocks the entire UI when triggered */}
       <SecurityModal />
+      {/* ForceUpdateModal — non-dismissible; shown when app version < minimum_version in settings */}
+      <ForceUpdateModal />
     </SecurityProvider>
   );
 }

@@ -88,39 +88,62 @@ async function checkVPN(): Promise<boolean> {
 // ── Ad-blocker / DNS-filter probe ─────────────────────────────────────────────
 // Probes known Google Ads URLs that DNS blockers reliably intercept.
 // Only triggers if the backend is reachable (excludes no-internet scenarios).
+//
+// Mobile-data safety: DNS blocks fail almost instantly (< ~1 s) because DNS
+// resolution returns NXDOMAIN immediately.  A slow mobile/cellular connection
+// that simply times out takes the full timeout duration before failing — that is
+// NOT an ad-blocker.  We distinguish the two by measuring elapsed probe time
+// and only counting "fast fails" (< DNS_BLOCK_THRESHOLD_MS) as DNS blocks.
+// We require ≥ 2 fast-fails out of 3 probes to avoid single-probe false positives.
 async function checkAdBlocker(): Promise<boolean> {
   if (Platform.OS === 'web') return false; // CORS makes probes unreliable on web
 
-  // Step 1: Verify internet + backend is reachable
+  // Step 1: Verify internet + backend is reachable (increased timeout for mobile data)
   const apiBase = getApiUrl();
   try {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 6000);
+    const t = setTimeout(() => ctrl.abort(), 10000);
     await fetch(`${apiBase}/api/app/settings`, { method: 'HEAD', signal: ctrl.signal });
     clearTimeout(t);
   } catch {
     return false; // No internet / backend down — do not blame an ad-blocker
   }
 
-  // Step 2: Probe Google Ads URLs — these are always intercepted by DNS filters
+  // Step 2: Probe three Google Ads URLs.
+  // DNS block  → fails in < DNS_BLOCK_THRESHOLD_MS  (immediate NXDOMAIN)
+  // Slow net   → fails after full PROBE_TIMEOUT_MS   (request timeout, not a block)
   const PROBES = [
     'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js',
     'https://googleads.g.doubleclick.net/pagead/id',
+    'https://adservice.google.com/adsid/integrator.js',
   ];
+  const PROBE_TIMEOUT_MS      = 10000; // generous timeout for mobile data
+  const DNS_BLOCK_THRESHOLD_MS = 1500; // DNS NXDOMAIN/reset < 1.5 s; network timeout ≥ several s
+
+  let fastFailCount = 0;
 
   for (const url of PROBES) {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 6000);
+    const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+    const startMs = Date.now();
     try {
       await fetch(url, { method: 'HEAD', signal: ctrl.signal, cache: 'no-store' });
-      clearTimeout(t);
-      return false; // Reached an ad URL — no blocker active
+      clearTimeout(timer);
+      return false; // At least one ad URL reachable → no blocker
     } catch {
-      clearTimeout(t);
-      // This probe failed — try next one
+      clearTimeout(timer);
+      const elapsed = Date.now() - startMs;
+      if (elapsed < DNS_BLOCK_THRESHOLD_MS) {
+        // Fast failure = DNS block or connection reset by filter
+        fastFailCount++;
+        if (fastFailCount >= 2) return true; // 2 fast-fails = confirmed ad-blocker
+      }
+      // Slow failure (timeout) = poor/cellular network — NOT an ad-blocker signal
     }
   }
-  return true; // All probes blocked while backend is reachable → ad-blocker
+
+  // Require ≥ 2 fast-fails to avoid single-probe false positives on mobile data
+  return fastFailCount >= 2;
 }
 
 // ── Provider ──────────────────────────────────────────────────────────────────

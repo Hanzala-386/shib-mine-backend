@@ -37,6 +37,7 @@ function formatPbSettings(s: any): AppSettings {
     appStoreLink:            s.app_store_link            ?? '',
     playStoreUrl:            s.play_store_url ?? s.app_store_link ?? '',
     ratePopupFrequency:      s.rate_popup_frequency      ?? 5,
+    minimumVersion:          s.minimum_version           ?? '',
   };
 }
 
@@ -80,6 +81,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   appStoreLink: '',
   playStoreUrl: '',
   ratePopupFrequency: 5,
+  minimumVersion: '',
 };
 
 const CACHE_KEY = 'shib_settings_cache_v2';

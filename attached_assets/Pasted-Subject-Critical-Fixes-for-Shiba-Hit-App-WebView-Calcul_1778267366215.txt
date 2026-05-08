@@ -1,0 +1,31 @@
+Subject: Critical Fixes for Shiba Hit App: WebView Calculation, Mobile Data Connectivity, Mining History, and Forced Update
+
+I need to fix 4 specific issues in my React Native (Expo) application. Please follow these instructions strictly without changing any other working features.
+
+1. WebView Game Power Token Calculation Fix:
+
+Issue: Power tokens are not calculating correctly in the new build. Some data goes to the server, some doesn't, causing inconsistent token balances across different app versions.
+
+Requirement: Standardize the token calculation flow. Ensure the WebView sends a postMessage to the React Native layer, which then syncs with the Railway Backend API (https://shib-mine-backend-production.up.railway.app).
+
+Logic Update: If a user’s score becomes zero during gameplay, the system MUST retain the Last High Score of that session as the final score. The final score sent to the backend should never be reset to zero if the user had points before losing.
+
+2. Mobile Data Connectivity & Security Fix:
+
+Issue: The app and its security systems (DNS filter/Ad-blocker detection) are failing to work when the user is on Mobile Data , though it works on Wi-Fi.
+
+Requirement: Optimize the Network interceptor and Security check logic to handle mobile data latencies. Ensure the DNS/Ad-blocker detection script doesn't time out on mobile networks. The app must perform "Fast" on mobile data.
+
+3. Mining Session History Sync:
+
+Issue: Users are completing mining sessions, but the data is not appearing in the "Mining History" section of the app or the Admin Panel (as per the provided screenshot).
+
+Requirement: Check the API call responsible for logging mining sessions to Pocketbase/Railway. Ensure every completed session triggers a successful POST request to the history table and verify the data fetching logic in the History UI.
+
+4. Compulsory/Force Update Implementation:
+
+Requirement: Implement a "Force Update" mechanism. On app launch, the app must check the current version against the minimum_version stored on the backend.
+
+Behavior: If an update is required, show a non-dismissible modal (No Skip Button) that forces the user to go to the Play Store to update the app.
+
+Note: Do not modify the core gameplay or the existing UI layout. Only fix the logic for these four points.

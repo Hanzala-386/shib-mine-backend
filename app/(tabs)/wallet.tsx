@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Platform, Pressable, TextInput, Alert, Modal,
 } from 'react-native';
@@ -11,6 +11,8 @@ import { useAuth } from '@/context/AuthContext';
 import { useAds } from '@/context/AdContext';
 import Colors from '@/constants/colors';
 import SpinningCoin from '@/components/SpinningCoin';
+import { pb } from '@/lib/pocketbase';
+import type { MiningHistoryRecord } from '@/lib/api';
 
 const BEP20_FEE = 3680; // fixed SHIB fee for BEP-20 network withdrawals
 
@@ -50,6 +52,32 @@ function WithdrawalItem({ w }: { w: WithdrawalRecord }) {
   );
 }
 
+function formatMultiplier(m: number) {
+  if (!m || m <= 1) return '1x';
+  return `${m}x`;
+}
+
+function MiningHistoryItem({ item }: { item: MiningHistoryRecord }) {
+  const color = item.boosterMultiplier > 1 ? Colors.neonOrange : Colors.gold;
+  return (
+    <View style={styles.txItem}>
+      <View style={[styles.txIconWrap, { backgroundColor: color + '20' }]}>
+        <MaterialCommunityIcons name="pickaxe" size={18} color={color} />
+      </View>
+      <View style={styles.txInfo}>
+        <Text style={styles.txDesc} numberOfLines={1}>
+          Mining Claim {item.boosterMultiplier > 1 ? `· ${formatMultiplier(item.boosterMultiplier)} Boost` : ''}
+        </Text>
+        <Text style={styles.txTime}>{formatDate(item.created)}</Text>
+      </View>
+      <View style={styles.txAmountWrap}>
+        <Text style={[styles.txAmount, { color }]}>+{formatShib(item.claimedAmount)}</Text>
+        <Text style={[styles.txCurrency, { color }]}>SHIB</Text>
+      </View>
+    </View>
+  );
+}
+
 export default function WalletScreen() {
   const insets = useSafeAreaInsets();
   const { shibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
@@ -58,6 +86,32 @@ export default function WalletScreen() {
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
   const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>('Binance Email');
+  const [miningHistory, setMiningHistory] = useState<MiningHistoryRecord[]>([]);
+
+  const fetchMiningHistory = useCallback(async (pbId: string) => {
+    try {
+      const filter = `user="${pbId}" && claimed_amount > 0`;
+      const res = await pb.collection('mining_sessions').getList(1, 20, {
+        filter,
+        sort: '-created',
+        fields: 'id,start_time,claimed_amount,booster_multiplier,created',
+      });
+      const records: MiningHistoryRecord[] = res.items.map((s: any) => ({
+        id:                s.id,
+        startTime:         s.start_time,
+        claimedAmount:     s.claimed_amount ?? 0,
+        boosterMultiplier: s.booster_multiplier || 1,
+        created:           s.created,
+      }));
+      setMiningHistory(records);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (pbUser?.pbId) {
+      fetchMiningHistory(pbUser.pbId);
+    }
+  }, [pbUser, fetchMiningHistory]);
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -230,6 +284,24 @@ export default function WalletScreen() {
               <Text style={styles.ptValue}>{powerTokens}</Text>
             </View>
           </LinearGradient>
+        </Animated.View>
+
+        {/* ── Mining History ── */}
+        <Animated.View entering={FadeInDown.delay(400).springify()} style={{ marginBottom: 28 }}>
+          <Text style={styles.sectionTitle}>Mining History</Text>
+          {miningHistory.length === 0 ? (
+            <View style={styles.emptyState}>
+              <MaterialCommunityIcons name="pickaxe" size={40} color={Colors.textMuted} />
+              <Text style={styles.emptyTitle}>No claims yet</Text>
+              <Text style={styles.emptyDesc}>Your completed mining sessions will appear here</Text>
+            </View>
+          ) : (
+            <View style={styles.txList}>
+              {miningHistory.map((item) => (
+                <MiningHistoryItem key={item.id} item={item} />
+              ))}
+            </View>
+          )}
         </Animated.View>
 
         {/* ── Withdrawal History ── */}

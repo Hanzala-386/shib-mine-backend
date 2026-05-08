@@ -327,6 +327,9 @@ export const api = {
   adminGetSubmissions: (status = 'pending') =>
     request<AdminTaskSubmission[]>('GET', `/api/admin/tasks/submissions?status=${status}`),
 
+  getMiningHistory: (pbId: string) =>
+    request<MiningHistoryRecord[]>('GET', `/api/app/mine/history/${encodeURIComponent(pbId)}`),
+
   adminApproveSubmission: (id: string, notes?: string) =>
     request<{ success: boolean }>('POST', `/api/admin/tasks/submissions/${id}/approve`, { notes: notes || '' }),
 
@@ -392,6 +395,7 @@ export interface AppSettings {
   appStoreLink: string;
   playStoreUrl: string;
   ratePopupFrequency: number;
+  minimumVersion: string;
 }
 
 export interface MiningSessionResponse {
@@ -492,6 +496,14 @@ export interface AdminTask {
   reward_amount: number;
   reward_type: string;
   is_active: boolean;
+  created: string;
+}
+
+export interface MiningHistoryRecord {
+  id: string;
+  startTime: string;
+  claimedAmount: number;
+  boosterMultiplier: number;
   created: string;
 }
 

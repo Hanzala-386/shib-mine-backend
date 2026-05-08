@@ -211,6 +211,7 @@ export default function AdminScreen() {
             <AdminField label="Unity Rewarded ID" value={local.unityRewardedId} onChangeText={(v) => setField('unityRewardedId', v)} placeholder="Unity Rewarded Placement ID" />
             <AdminField label="Play Store URL" value={local.playStoreUrl || ''} onChangeText={(v) => setField('playStoreUrl', v)} placeholder="https://play.google.com/store/apps/details?id=..." />
             <AdminField label="Rate Popup Frequency (claims)" value={String(local.ratePopupFrequency || 5)} onChangeText={(v) => setField('ratePopupFrequency', Number(v) || 5)} keyboardType="numeric" />
+            <AdminField label="Minimum App Version (Force Update)" value={(local as any).minimumVersion || ''} onChangeText={(v) => setField('minimumVersion' as any, v)} placeholder="e.g. 1.0.2 — leave empty to disable" />
           </AdminSection>
 
           {/* ── Create Task ─────────────────────────────────────────────── */}
