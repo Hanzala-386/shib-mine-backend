@@ -33,9 +33,12 @@ function buildGameUrl(): string {
 }
 const GAME_URL = buildGameUrl();
 
-const SESSION_SECONDS = 180; // 3-minute session
-const SCORE_LIMIT     = 2000;
-const SCORE_WARNING   = 1900;
+const SESSION_SECONDS     = 180; // 3-minute session
+const SCORE_LIMIT         = 2000;
+const SCORE_WARNING       = 1900;
+const WEBVIEW_MAX_RETRIES = 3;   // auto-retries before showing permanent error
+// Retry delays (ms) — exponential backoff for mobile data connection establishment
+const RETRY_DELAYS = [1500, 2500, 4000];
 
 interface GameData {
   power_tokens: number;
@@ -66,10 +69,14 @@ export default function GamesScreen() {
   const pbIdRef         = useRef<string>('');
   const gameDataRef     = useRef<GameData | null>(null);
   const sessionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const retryTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryCountRef   = useRef(0);           // how many auto-retries have fired so far
   const gameOverFiredRef  = useRef(false);     // guard against double GAME_OVER
   const sessionActiveRef  = useRef(false);     // ref mirror of sessionActive — safe in callbacks
   const warningPulse      = useRef(new Animated.Value(1)).current;
 
+  // wvKey: incrementing this forces the WebView to fully remount (= fresh network attempt)
+  const [wvKey,         setWvKey]         = useState(0);
   const [phase,         setPhase]         = useState<Phase>('game');
   const [score,         setScore]         = useState(0);
   const [liveScore,     setLiveScore]     = useState(0);
@@ -79,6 +86,7 @@ export default function GamesScreen() {
   const [sessionActive, setSessionActive] = useState(false);
   const [overReason,    setOverReason]    = useState<GameOverReason>('death');
   const [gameError,     setGameError]     = useState(false);
+  const [isAutoRetrying, setIsAutoRetrying] = useState(false);
 
   const TOP    = Platform.OS === 'web' ? 10 : insets.top;
   const HUDTOP = TOP + 4;
@@ -116,6 +124,7 @@ export default function GamesScreen() {
 
   useEffect(() => () => {
     if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+    if (retryTimerRef.current)   clearTimeout(retryTimerRef.current);
   }, []);
 
   /* ── Session countdown (2 minutes) ───────────────────────────────────────
@@ -149,9 +158,41 @@ export default function GamesScreen() {
     }
   }, []);
 
+  /* ── WebView load-error handler — auto-retry with exponential backoff ────────
+   *  Mobile data (4G/LTE) often fails the first connection attempt due to higher
+   *  RTT and TLS handshake latency.  Instead of showing a permanent error screen,
+   *  we silently retry up to WEBVIEW_MAX_RETRIES times with increasing delays.
+   *  Incrementing wvKey forces a full WebView remount (= fresh network attempt).
+   * ─────────────────────────────────────────────────────────────────────────── */
+  const handleLoadError = useCallback(() => {
+    if (retryCountRef.current < WEBVIEW_MAX_RETRIES) {
+      const attempt = retryCountRef.current;
+      retryCountRef.current += 1;
+      setIsAutoRetrying(true);
+      setGameError(false);
+      const delay = RETRY_DELAYS[attempt] ?? 4000;
+      console.log(`[Games] WebView load failed — retry ${retryCountRef.current}/${WEBVIEW_MAX_RETRIES} in ${delay}ms`);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = setTimeout(() => {
+        setWvKey(k => k + 1); // remount WebView with fresh connection
+        setIsAutoRetrying(false);
+      }, delay);
+    } else {
+      // All retries exhausted — show permanent error screen
+      console.warn('[Games] WebView load failed after all retries');
+      setIsAutoRetrying(false);
+      setGameError(true);
+    }
+  }, []);
+
   /* ── Reload / reset game ── */
   const reloadGame = useCallback(() => {
     stopSessionTimer();
+    // Reset retry state so the next load gets a fresh set of retries
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+    retryCountRef.current = 0;
+    setIsAutoRetrying(false);
+    setGameError(false);
     gameOverFiredRef.current = false;
     scoreRef.current = 0;
     liveScoreRef.current = 0;
@@ -166,7 +207,8 @@ export default function GamesScreen() {
     warningPulse.stopAnimation();
     warningPulse.setValue(1);
     if (Platform.OS !== 'web') {
-      wvRef.current?.reload();
+      // Remount WebView via key so it makes a fresh network request
+      setWvKey(k => k + 1);
     } else {
       const f = document.querySelector<HTMLIFrameElement>('iframe[title="WeaponMaster"]');
       if (f) { const s = f.src; f.src = ''; f.src = s; }
@@ -431,7 +473,11 @@ export default function GamesScreen() {
       );
     }
     return (
-      <WebView ref={wvRef} source={{ uri: GAME_URL }} style={{ flex: 1 }}
+      <WebView
+        key={wvKey}
+        ref={wvRef}
+        source={{ uri: GAME_URL }}
+        style={{ flex: 1 }}
         onMessage={onNativeMessage}
         javaScriptEnabled domStorageEnabled allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false} mixedContentMode="always"
@@ -443,17 +489,35 @@ export default function GamesScreen() {
           </View>
         )}
         renderError={() => (
-          <View style={S.loader}>
-            <Ionicons name="game-controller-outline" size={56} color={Colors.neonOrange} />
-            <Text style={[S.loaderTxt, { marginTop: 12 }]}>Game server unavailable</Text>
-            <Text style={[S.loaderTxt, { fontSize: 13, color: Colors.textMuted, marginTop: 4 }]}>
-              Please check your connection and try again.
-            </Text>
-          </View>
+          // During auto-retry show a subtle "Reconnecting…" indicator instead of
+          // the permanent error screen — the user sees a brief spinner, not an error.
+          isAutoRetrying ? (
+            <View style={S.loader}>
+              <ActivityIndicator size="large" color={Colors.neonOrange} />
+              <Text style={[S.loaderTxt, { marginTop: 12 }]}>
+                Reconnecting… ({retryCountRef.current}/{WEBVIEW_MAX_RETRIES})
+              </Text>
+              <Text style={[S.loaderTxt, { fontSize: 12, color: Colors.textMuted, marginTop: 4 }]}>
+                Slow connection detected — retrying
+              </Text>
+            </View>
+          ) : (
+            <View style={S.loader}>
+              <Ionicons name="game-controller-outline" size={56} color={Colors.neonOrange} />
+              <Text style={[S.loaderTxt, { marginTop: 12 }]}>Game server unavailable</Text>
+              <Text style={[S.loaderTxt, { fontSize: 13, color: Colors.textMuted, marginTop: 4 }]}>
+                Please check your connection and try again.
+              </Text>
+            </View>
+          )
         )}
+        onError={() => handleLoadError()}
         onHttpError={(e: any) => {
-          console.warn('[Games] WebView HTTP error:', e.nativeEvent?.statusCode, GAME_URL);
-          setGameError(true);
+          const status = e.nativeEvent?.statusCode;
+          console.warn('[Games] WebView HTTP error:', status, GAME_URL);
+          // Only trigger retry/error for non-2xx responses that indicate server issues
+          if (status && status >= 500) handleLoadError();
+          else setGameError(true);
         }}
         containerStyle={{ flex: 1 }} />
     );
