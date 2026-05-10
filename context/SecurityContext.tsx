@@ -2,7 +2,7 @@ import React, { createContext, useContext, useCallback, useEffect, useRef, useSt
 import { Platform } from 'react-native';
 import { getApiUrl } from '@/lib/query-client';
 
-export type SecurityBlockType = 'root' | 'vpn' | 'adblock' | null;
+export type SecurityBlockType = 'root' | 'adblock' | null;
 
 interface SecurityContextValue {
   blockType: SecurityBlockType;
@@ -20,17 +20,10 @@ export function useSecurity() { return useContext(SecurityContext); }
 
 // ── Lazy-loaded native modules (only available on Android/iOS native builds) ──
 let Device: any = null;
-let Network: any = null;
-let NetworkStateType: any = null;
 let JailMonkey: any = null;
 
 if (Platform.OS !== 'web') {
   try { Device = require('expo-device'); } catch {}
-  try {
-    const net = require('expo-network');
-    Network = net;
-    NetworkStateType = net.NetworkStateType;
-  } catch {}
   try {
     /* jail-monkey is a native module — available in EAS/production builds.
      * In Expo Go it throws on require; we silently catch and fall back to
@@ -73,16 +66,6 @@ async function checkRoot(): Promise<boolean> {
   }
 
   return false;
-}
-
-// ── VPN detection (expo-network, Android only) ────────────────────────────────
-// iOS does not expose VPN type to JS; Android NetworkStateType.VPN is reliable.
-async function checkVPN(): Promise<boolean> {
-  if (!Network || !NetworkStateType || Platform.OS !== 'android') return false;
-  try {
-    const state = await Network.getNetworkStateAsync();
-    return state.type === NetworkStateType.VPN;
-  } catch { return false; }
 }
 
 // ── Ad-blocker / DNS-filter probe ─────────────────────────────────────────────
@@ -155,8 +138,6 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
   const runFullCheck = useCallback(async (): Promise<SecurityBlockType> => {
     // Root (fast, synchronous-ish)
     if (await checkRoot()) return 'root';
-    // VPN (fast)
-    if (await checkVPN()) return 'vpn';
     // Ad-blocker (slow — requires network round-trip)
     if (await checkAdBlocker()) return 'adblock';
     return null;
@@ -175,24 +156,31 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
     // In production native builds __DEV__ is always false — checks run normally.
     if (__DEV__) return;
 
-    // Initial checks on mount (non-blocking — app can load while ad probe runs)
+    // Root check runs immediately (fast, native — does not hit the network).
     (async () => {
-      // Root + VPN are fast — run immediately
       if (await checkRoot()) { setBlockType('root'); return; }
-      if (await checkVPN())  { setBlockType('vpn');  return; }
-      // Ad-blocker probe is slower — run in background
-      if (await checkAdBlocker()) setBlockType('adblock');
     })();
 
-    // Re-check VPN + ad-blocker every 60 seconds
+    // Ad-blocker probe is delayed by 8 seconds so it does NOT run during the
+    // critical startup window (game load, auth restore, settings fetch).
+    // This prevents the backend reachability sub-probe from competing with
+    // app startup requests on slow mobile connections.
+    const adProbeTimer = setTimeout(async () => {
+      if (await checkAdBlocker()) setBlockType('adblock');
+    }, 8000);
+
+    // Re-check ad-blocker every 60 seconds (no VPN check — unreliable on
+    // mobile carriers that use CGNAT / transparent proxy routing).
     intervalRef.current = setInterval(async () => {
-      if (await checkVPN())       { setBlockType('vpn');     return; }
       if (await checkAdBlocker()) { setBlockType('adblock'); return; }
-      // If previously blocked by vpn/adblock and now clear, unblock
-      setBlockType(prev => (prev === 'vpn' || prev === 'adblock') ? null : prev);
+      // If previously blocked by adblock and probe now clears, unblock
+      setBlockType(prev => prev === 'adblock' ? null : prev);
     }, 60_000);
 
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    return () => {
+      clearTimeout(adProbeTimer);
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
   }, []);
 
   return (

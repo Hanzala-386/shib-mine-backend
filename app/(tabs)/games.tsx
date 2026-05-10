@@ -12,7 +12,6 @@ import { pb } from '@/lib/pocketbase';
 import { api } from '@/lib/api';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
-import { getApiUrl } from '@/lib/query-client';
 
 let WebView: any = null;
 if (Platform.OS !== 'web') {
@@ -21,17 +20,9 @@ if (Platform.OS !== 'web') {
 
 const { width: SW, height: SH } = Dimensions.get('window');
 
-// Weapon Master (Construct 3) is served from the Railway server at /arcade/index.html.
-// Using the dynamic API URL ensures it always resolves to the correct Railway host.
-function buildGameUrl(): string {
-  try {
-    const base = getApiUrl();
-    return new URL('/arcade/index.html', base).toString();
-  } catch {
-    return 'https://webcod.in/arcade/index.html';
-  }
-}
-const GAME_URL = buildGameUrl();
+// Game assets are served from stable shared hosting (webcod.in).
+// The WebSocket scoring bridge connects to Railway separately via INJECT_VARS.
+const GAME_URL = 'https://webcod.in/arcade/index.html';
 
 const SESSION_SECONDS     = 180; // 3-minute session
 const SCORE_LIMIT         = 2000;

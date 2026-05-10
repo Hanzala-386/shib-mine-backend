@@ -35,15 +35,6 @@ const BLOCK_CONFIG: Record<NonNullable<SecurityBlockType>, BlockConfig> = {
       'to continue.',
     canRetry: false,
   },
-  vpn: {
-    icon: 'shield-half',
-    title: 'VPN Detected',
-    subtitle: 'Active VPN Connection Found',
-    message:
-      'For security and fair play, please disable any active VPN ' +
-      'to access the Shiba Mining app.',
-    canRetry: true,
-  },
   adblock: {
     icon: 'ban',
     title: 'Network Error',
