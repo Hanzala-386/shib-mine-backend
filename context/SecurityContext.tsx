@@ -81,15 +81,17 @@ async function checkRoot(): Promise<boolean> {
 async function checkAdBlocker(): Promise<boolean> {
   if (Platform.OS === 'web') return false; // CORS makes probes unreliable on web
 
-  // Step 1: Verify internet + backend is reachable (increased timeout for mobile data)
-  const apiBase = getApiUrl();
+  // Step 1: Verify internet is reachable by pinging PocketBase (always-on,
+  // no cold-start, responds in < 500 ms on any network including cellular).
+  // Using Railway here caused Step 2 to never run on mobile data because
+  // Railway's cold-start exceeded the abort timeout.
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 10000);
-    await fetch(`${apiBase}/api/app/settings`, { method: 'HEAD', signal: ctrl.signal });
+    await fetch('https://api.webcod.in/api/health', { method: 'HEAD', signal: ctrl.signal });
     clearTimeout(t);
   } catch {
-    return false; // No internet / backend down — do not blame an ad-blocker
+    return false; // No internet — do not blame an ad-blocker
   }
 
   // Step 2: Probe three Google Ads URLs.

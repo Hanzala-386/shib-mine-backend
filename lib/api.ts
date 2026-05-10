@@ -1,4 +1,3 @@
-import { fetch } from 'expo/fetch';
 import { getApiUrl } from '@/lib/query-client';
 
 async function request<T = any>(
@@ -11,7 +10,7 @@ async function request<T = any>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
+    const res = await globalThis.fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
