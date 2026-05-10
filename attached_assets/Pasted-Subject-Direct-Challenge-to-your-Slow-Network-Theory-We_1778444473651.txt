@@ -1,0 +1,31 @@
+Subject: Direct Challenge to your "Slow Network" Theory - We have Proof of Systemic Failure on Mobile Data
+
+Your previous explanation regarding "latency" or "slow mobile data" is factually incorrect and rejected. We have tested this across multiple different devices and different 5G mobile networks, and the results are consistent.
+
+Please explain the following contradictions:
+
+1. Power Token (PT) Credit Failure:
+We tested on high-speed 5G mobile networks (with download speeds faster than Wi-Fi). Power tokens NEVER add on mobile data, regardless of the phone or network provider. However, even on a Slow Wi-Fi, the tokens add instantly.
+
+If it was a "timeout" issue, it would work on 5G and fail on slow Wi-Fi. But it's the opposite.
+
+Question: Why is your server-side or bridge logic specifically failing to credit PT when the source is a Cellular IP, regardless of speed?
+
+2. Live Withdrawal & Tasks Visibility:
+On every single phone we tested:
+
+Mobile Data: Live withdrawals (Top Player/Home page) and Tasks are invisible.
+
+Wi-Fi: They appear instantly.
+
+Fact: The OLD APK shows these perfectly on mobile data. This proves your new code has a systemic block against mobile carrier traffic. Why is the PocketBase fetch working for Wi-Fi but being discarded/blocked for Mobile Data?
+
+3. Ad-Blocker Detection Bias:
+This is the most suspicious part. On mobile data, the ad-blocker detection is completely dead (it doesn't detect anything). As soon as Wi-Fi is toggled on, it detects the ad-blocker instantly.
+
+Internet is internet. If the probe can reach the target via Wi-Fi, it should reach it via Mobile Data.
+
+Question: Did you hardcode the security probes to only function on certain network types? Why is there such a massive difference in detection accuracy between the two?
+
+Final Demand:
+We are speaking with proof from multiple devices. The "Slow Internet" excuse is invalid. There is a deep logical flaw or a "Carrier-Block" in your new architecture that wasn't there in the old version.
