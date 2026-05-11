@@ -4,13 +4,13 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
  * Gets the base URL for the Express API server (e.g., "http://localhost:3000")
  * @returns {string} The API base URL
  */
-const RAILWAY_URL = 'https://shib-mine-backend-production.up.railway.app';
+const PRODUCTION_URL = 'https://backend.webcod.in';
 
 export function getApiUrl(): string {
   const host = process.env.EXPO_PUBLIC_DOMAIN ?? '';
 
-  if (!host || host.includes('.replit.dev') || host.includes('riker.replit')) {
-    return RAILWAY_URL;
+  if (!host || host.includes('.replit.dev') || host.includes('riker.replit') || host.includes('railway.app')) {
+    return PRODUCTION_URL;
   }
 
   return new URL(`https://${host}`).href;
