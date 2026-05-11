@@ -4,16 +4,21 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
  * Gets the base URL for the Express API server (e.g., "http://localhost:3000")
  * @returns {string} The API base URL
  */
-export function getApiUrl(): string {
-  let host = process.env.EXPO_PUBLIC_DOMAIN;
+// Railway production backend — the single source of truth for all API calls.
+// This is a paid, always-on server accessible from any network without a VPN.
+const RAILWAY_URL = 'https://shib-mine-backend-production.up.railway.app';
 
-  if (!host) {
-    throw new Error("EXPO_PUBLIC_DOMAIN is not set");
+export function getApiUrl(): string {
+  const host = process.env.EXPO_PUBLIC_DOMAIN ?? '';
+
+  // If the host is empty or is a Replit dev tunnel (*.replit.dev / riker.replit),
+  // use Railway directly. Replit dev tunnels are blocked by mobile ISPs and
+  // require a VPN — they must never reach a production APK or web preview.
+  if (!host || host.includes('.replit.dev') || host.includes('riker.replit')) {
+    return RAILWAY_URL;
   }
 
-  let url = new URL(`https://${host}`);
-
-  return url.href;
+  return new URL(`https://${host}`).href;
 }
 
 async function throwIfResNotOk(res: Response) {

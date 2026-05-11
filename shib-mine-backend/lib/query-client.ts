@@ -4,16 +4,16 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
  * Gets the base URL for the Express API server (e.g., "http://localhost:3000")
  * @returns {string} The API base URL
  */
-export function getApiUrl(): string {
-  let host = process.env.EXPO_PUBLIC_DOMAIN;
+const RAILWAY_URL = 'https://shib-mine-backend-production.up.railway.app';
 
-  if (!host) {
-    throw new Error("EXPO_PUBLIC_DOMAIN is not set");
+export function getApiUrl(): string {
+  const host = process.env.EXPO_PUBLIC_DOMAIN ?? '';
+
+  if (!host || host.includes('.replit.dev') || host.includes('riker.replit')) {
+    return RAILWAY_URL;
   }
 
-  let url = new URL(`https://${host}`);
-
-  return url.href;
+  return new URL(`https://${host}`).href;
 }
 
 async function throwIfResNotOk(res: Response) {

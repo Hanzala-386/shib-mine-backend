@@ -62,6 +62,7 @@
           "photosPermission": "Allow Shiba Hit to access your photos."
         }
       ],
+      "./plugins/withAndroidConfig",
       [
         "expo-build-properties",
         {
