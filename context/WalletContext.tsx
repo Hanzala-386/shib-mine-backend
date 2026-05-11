@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useMemo, ReactNode } from 'react';
 import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
 import { pb } from '@/lib/pocketbase';
+import { notifyWithdrawalCancelled } from '@/lib/notifications';
 
 export interface WithdrawalRecord {
   id: string;
@@ -48,6 +49,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [minWithdrawalAmount, setMinWithdrawalAmount] = useState(100);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Track previous statuses to detect admin cancellations
+  const prevStatusMapRef = useRef<Record<string, string>>({});
+
   const pbId = pbUser?.pbId ?? null;
   const uid = user?.uid ?? null;
   const rawShib = pbUser?.shibBalance;
@@ -59,6 +63,26 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     if (pbId) fetchWalletData();
   }, [pbId]);
 
+  // Compares fetched withdrawals against previous statuses; fires push if any
+  // moved from 'pending' → 'rejected' (admin cancellation).
+  function detectCancellations(freshWds: WithdrawalRecord[]) {
+    const prev = prevStatusMapRef.current;
+    const isFirstLoad = Object.keys(prev).length === 0;
+    const next: Record<string, string> = {};
+    freshWds.forEach(w => { next[w.id] = w.status; });
+    if (!isFirstLoad) {
+      freshWds.forEach(w => {
+        const wasStatus = prev[w.id];
+        if (wasStatus === 'pending' && w.status === 'rejected') {
+          // Fire local push — reason from PB field if available
+          const reason = (w as any).cancellationReason || (w as any).cancellation_reason || undefined;
+          notifyWithdrawalCancelled(reason).catch(() => {});
+        }
+      });
+    }
+    prevStatusMapRef.current = next;
+  }
+
   async function fetchWalletData() {
     if (!pbId) return;
     setIsLoading(true);
@@ -68,6 +92,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         api.getWithdrawals(pbId),
         api.getWithdrawalTier(pbId),
       ]);
+      detectCancellations(wds);
       setWithdrawals(wds);
       setWithdrawalTier(tier.tier);
       setMinWithdrawalAmount(tier.minAmount);
@@ -77,6 +102,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const res = await pb.collection('withdrawals').getList(1, 50, {
           filter: `user="${pbId}"`,
           sort: '-created',
+          fields: 'id,method,address_or_email,amount,status,cancellation_reason,created',
         });
         const wds: WithdrawalRecord[] = (res.items || []).map((w: any) => ({
           id: w.id,
@@ -84,8 +110,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           addressOrEmail: w.address_or_email,
           amount: w.amount,
           status: w.status,
+          cancellation_reason: w.cancellation_reason,
           created: w.created,
         }));
+        detectCancellations(wds);
         setWithdrawals(wds);
 
         const completedCount = wds.filter(w => w.status === 'completed').length;

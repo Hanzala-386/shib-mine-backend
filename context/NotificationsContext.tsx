@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from './AuthContext';
 import { pb } from '@/lib/pocketbase';
 import { getApiUrl } from '@/lib/query-client';
+import { notifyPersonalNotification } from '@/lib/notifications';
 
 export interface AppNotification {
   id: string;
@@ -37,6 +38,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false);
 
   const storageKey = pbId ? `notifs_last_seen_${pbId}` : null;
+  // Tracks which personal notification IDs have already triggered a push
+  const pushedIdsKey = pbId ? `notifs_pushed_ids_${pbId}` : null;
+  const pushedIdsRef = useRef<Set<string>>(new Set());
+  const isFirstFetchRef = useRef(true);
 
   useEffect(() => {
     if (!storageKey) return;
@@ -45,36 +50,70 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     }).catch(() => {});
   }, [storageKey]);
 
+  // Load previously pushed IDs from storage so we never re-push after an app restart
+  useEffect(() => {
+    if (!pushedIdsKey) return;
+    AsyncStorage.getItem(pushedIdsKey).then(val => {
+      if (val) {
+        try {
+          const arr: string[] = JSON.parse(val);
+          pushedIdsRef.current = new Set(arr);
+        } catch { /* ignore */ }
+      }
+    }).catch(() => {});
+    // Reset first-fetch flag when user changes
+    isFirstFetchRef.current = true;
+  }, [pushedIdsKey]);
+
   const fetchNotifications = useCallback(async () => {
     if (!pbId) return;
     setIsLoading(true);
+    let fetched: AppNotification[] = [];
     try {
       const url = new URL(`/api/app/notifications/${pbId}`, getApiUrl());
       const res = await globalThis.fetch(url.toString());
       if (res.ok) {
         const data = await res.json();
-        setNotifications(data.items || []);
-        setIsLoading(false);
-        return;
+        fetched = data.items || [];
+      } else {
+        throw new Error('non-ok');
       }
-    } catch { /* fall through to PB SDK */ }
+    } catch {
+      try {
+        const r = await pb.collection('notifications').getList(1, 50, {
+          filter: `type = "global" || (type = "personal" && target_user = "${pbId}")`,
+          sort: '-created',
+        });
+        fetched = (r.items || []).map((n: any) => ({
+          id: n.id,
+          title: n.title,
+          message: n.message,
+          type: (n.type || 'global') as 'global' | 'personal',
+          created: n.created,
+        }));
+      } catch { /* ignore */ }
+    }
 
-    try {
-      const r = await pb.collection('notifications').getList(1, 50, {
-        filter: `type = "global" || (type = "personal" && target_user = "${pbId}")`,
-        sort: '-created',
-      });
-      setNotifications((r.items || []).map((n: any) => ({
-        id: n.id,
-        title: n.title,
-        message: n.message,
-        type: (n.type || 'global') as 'global' | 'personal',
-        created: n.created,
-      })));
-    } catch { /* ignore */ }
+    setNotifications(fetched);
+
+    // Fire a push for each personal notification that hasn't been pushed yet.
+    // Skip the very first fetch on startup so we don't re-notify for old entries.
+    if (!isFirstFetchRef.current && pushedIdsKey) {
+      const newPersonal = fetched.filter(
+        n => n.type === 'personal' && !pushedIdsRef.current.has(n.id)
+      );
+      for (const n of newPersonal) {
+        notifyPersonalNotification(n.title, n.message).catch(() => {});
+        pushedIdsRef.current.add(n.id);
+      }
+      if (newPersonal.length > 0) {
+        AsyncStorage.setItem(pushedIdsKey, JSON.stringify([...pushedIdsRef.current])).catch(() => {});
+      }
+    }
+    isFirstFetchRef.current = false;
 
     setIsLoading(false);
-  }, [pbId]);
+  }, [pbId, pushedIdsKey]);
 
   useEffect(() => {
     if (!pbId) return;

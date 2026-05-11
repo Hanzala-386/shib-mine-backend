@@ -85,6 +85,7 @@ export default function WalletScreen() {
   const { showMiningInterstitial } = useAds();
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
+  const [binanceVerified, setBinanceVerified] = useState(false);
   const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>('Binance Email');
   const [miningHistory, setMiningHistory] = useState<MiningHistoryRecord[]>([]);
 
@@ -201,6 +202,7 @@ export default function WalletScreen() {
   function handleMethodChange(m: 'BEP-20' | 'Binance Email') {
     setMethod(m);
     setAddress('');
+    setBinanceVerified(false);
   }
 
   return (
@@ -449,25 +451,62 @@ export default function WalletScreen() {
       </Modal>
 
       {/* ══ WARNING POPUP ════════════════════════════════════════════════════ */}
-      <Modal visible={showWarning} transparent animationType="fade" onRequestClose={() => setShowWarning(false)}>
+      <Modal visible={showWarning} transparent animationType="fade" onRequestClose={() => { setShowWarning(false); setBinanceVerified(false); }}>
         <View style={styles.warnOverlay}>
           <View style={styles.warnSheet}>
             <View style={styles.warnIconWrap}>
               <Ionicons name="warning" size={40} color="#FF3B30" />
             </View>
-            <Text style={styles.warnTitle}>WARNING</Text>
-            <Text style={styles.warnBody}>
-              Please double-check your Email or Wallet Address. If you provide an incorrect address, your funds will be{' '}
-              <Text style={styles.warnBold}>permanently lost</Text> and cannot be recovered. Ensure everything is correct before proceeding.
-            </Text>
-            <View style={styles.warnAddrBox}>
-              <Text style={styles.warnAddrLabel}>{method === 'BEP-20' ? 'Wallet Address' : 'Binance Email'}</Text>
-              <Text style={styles.warnAddrValue} numberOfLines={2}>{address.trim()}</Text>
-            </View>
-            <Pressable style={styles.warnConfirmBtn} onPress={handleConfirmedWithdraw}>
-              <Text style={styles.warnConfirmText}>I Understand — Confirm</Text>
-            </Pressable>
-            <Pressable style={styles.warnCancelBtn} onPress={() => setShowWarning(false)}>
+            <Text style={styles.warnTitle}>⚠️ IMPORTANT WARNING</Text>
+
+            {method === 'Binance Email' ? (
+              <>
+                <Text style={styles.warnBody}>
+                  If your Binance email is <Text style={styles.warnBold}>NOT verified</Text>, the funds will be{' '}
+                  <Text style={styles.warnBold}>permanently lost</Text> and cannot be recovered.{'\n\n'}
+                  Please also confirm the email address below is correct before proceeding.
+                </Text>
+                <View style={styles.warnAddrBox}>
+                  <Text style={styles.warnAddrLabel}>Binance Email</Text>
+                  <Text style={styles.warnAddrValue} numberOfLines={2}>{address.trim()}</Text>
+                </View>
+                {/* Verification checkbox */}
+                <Pressable
+                  style={styles.checkRow}
+                  onPress={() => setBinanceVerified(v => !v)}
+                >
+                  <View style={[styles.checkbox, binanceVerified && styles.checkboxChecked]}>
+                    {binanceVerified && <Ionicons name="checkmark" size={14} color="#000" />}
+                  </View>
+                  <Text style={styles.checkLabel}>I confirm that my Binance account is fully verified.</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.warnConfirmBtn, !binanceVerified && styles.warnConfirmBtnDisabled]}
+                  onPress={binanceVerified ? handleConfirmedWithdraw : undefined}
+                  disabled={!binanceVerified}
+                >
+                  <Text style={[styles.warnConfirmText, !binanceVerified && { opacity: 0.45 }]}>
+                    I Understand — Confirm
+                  </Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={styles.warnBody}>
+                  Please double-check your wallet address. If you provide an incorrect address, your funds will be{' '}
+                  <Text style={styles.warnBold}>permanently lost</Text> and cannot be recovered.
+                </Text>
+                <View style={styles.warnAddrBox}>
+                  <Text style={styles.warnAddrLabel}>Wallet Address</Text>
+                  <Text style={styles.warnAddrValue} numberOfLines={2}>{address.trim()}</Text>
+                </View>
+                <Pressable style={styles.warnConfirmBtn} onPress={handleConfirmedWithdraw}>
+                  <Text style={styles.warnConfirmText}>I Understand — Confirm</Text>
+                </Pressable>
+              </>
+            )}
+
+            <Pressable style={styles.warnCancelBtn} onPress={() => { setShowWarning(false); setBinanceVerified(false); }}>
               <Text style={styles.warnCancelText}>Go Back &amp; Check</Text>
             </Pressable>
           </View>
@@ -592,10 +631,22 @@ const styles = StyleSheet.create({
                      borderWidth: 1, borderColor: 'rgba(255,59,48,0.25)' },
   warnAddrLabel:   { fontFamily: 'Inter_500Medium', fontSize: 11, color: 'rgba(255,59,48,0.7)', marginBottom: 4 },
   warnAddrValue:   { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#FF3B30' },
-  warnConfirmBtn:  { backgroundColor: '#FF3B30', borderRadius: 14, height: 52, width: '100%', alignItems: 'center', justifyContent: 'center', marginTop: 4 },
-  warnConfirmText: { fontFamily: 'Inter_700Bold', fontSize: 15, color: '#fff' },
-  warnCancelBtn:   { paddingVertical: 10, width: '100%', alignItems: 'center' },
-  warnCancelText:  { fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.textMuted },
+  warnConfirmBtn:        { backgroundColor: '#FF3B30', borderRadius: 14, height: 52, width: '100%', alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  warnConfirmBtnDisabled:{ backgroundColor: '#4a1a1a' },
+  warnConfirmText:       { fontFamily: 'Inter_700Bold', fontSize: 15, color: '#fff' },
+  warnCancelBtn:         { paddingVertical: 10, width: '100%', alignItems: 'center' },
+  warnCancelText:        { fontFamily: 'Inter_500Medium', fontSize: 14, color: Colors.textMuted },
+
+  /* ── Binance verification checkbox ── */
+  checkRow:     { flexDirection: 'row', alignItems: 'flex-start', gap: 10, width: '100%',
+                  backgroundColor: 'rgba(255,59,48,0.06)', borderRadius: 12, padding: 12,
+                  borderWidth: 1, borderColor: 'rgba(255,59,48,0.2)' },
+  checkbox:     { width: 22, height: 22, borderRadius: 6, borderWidth: 2,
+                  borderColor: 'rgba(255,59,48,0.5)', alignItems: 'center', justifyContent: 'center',
+                  marginTop: 1, backgroundColor: 'transparent' },
+  checkboxChecked: { backgroundColor: Colors.gold, borderColor: Colors.gold },
+  checkLabel:   { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 13, color: '#FF3B30',
+                  lineHeight: 20, opacity: 0.95 },
 
   pendingBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,

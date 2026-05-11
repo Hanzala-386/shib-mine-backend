@@ -361,14 +361,15 @@ async function backfillWithdrawalMaskedNames() {
     const col = await pbGet("/api/collections/withdrawals");
     if (!col.code) {
       const hasField = (col.fields || []).some((f: any) => f.name === "masked_name");
-      if (!hasField) {
+      const hasReason = (col.fields || []).some((f: any) => f.name === "cancellation_reason");
+      if (!hasField || !hasReason) {
         const token = await getAdminToken();
-        const updatedFields = [
-          ...(col.fields || []),
-          { name: "masked_name", type: "text", required: false },
-        ];
+        const newFields: any[] = [];
+        if (!hasField) newFields.push({ name: "masked_name", type: "text", required: false });
+        if (!hasReason) newFields.push({ name: "cancellation_reason", type: "text", required: false });
+        const updatedFields = [...(col.fields || []), ...newFields];
         await pbHttp("PATCH", `/api/collections/${col.id}`, { fields: updatedFields }, token);
-        console.log("[withdrawals] masked_name field added ✓");
+        console.log("[withdrawals] masked_name / cancellation_reason fields added ✓");
       }
     }
 
@@ -2882,13 +2883,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     async (req: Request, res: Response) => {
       try {
         const { id } = req.params;
-        const { status } = req.body;
+        const { status, reason } = req.body;
         if (!["pending", "completed", "rejected"].includes(status))
           return res.status(400).json({ error: "Invalid status" });
 
+        const patchBody: Record<string, any> = { status };
+        if (status === "rejected" && reason) {
+          patchBody.cancellation_reason = reason;
+        }
+
         const updated = await pbPatch(
           `/api/collections/withdrawals/records/${id}`,
-          { status },
+          patchBody,
         );
 
         // Auto-create personal notification when status → completed
@@ -2903,8 +2909,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           );
         }
 
-        // If rejected, refund the amount
-        if (status === "rejected") {
+        // If rejected, refund the amount + create cancellation notification
+        if (status === "rejected" && updated && !updated.code && updated.user) {
           const withdrawal = updated;
           const user = await pbGet(
             `/api/collections/users/records/${withdrawal.user}`,
@@ -2914,6 +2920,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
               shib_balance: (user.shib_balance || 0) + withdrawal.amount,
             });
           }
+
+          const cancelMsg = reason
+            ? `Your withdrawal has been cancelled. Reason: ${reason}`
+            : "Your withdrawal request has been cancelled. Please contact support if you have any questions.";
+          pbPost("/api/collections/notifications/records", {
+            title: "Withdrawal Cancelled",
+            message: cancelMsg,
+            type: "personal",
+            target_user: updated.user,
+          }).catch((e: any) =>
+            console.warn("[withdrawals/rejected] Notification failed:", e.message)
+          );
         }
 
         res.json({ success: true, status });

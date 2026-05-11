@@ -743,8 +743,9 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       if (remaining === 0) {
         clearAllTimers();
-        import('@/lib/notifications').then(({ notifyMiningComplete }) => {
+        import('@/lib/notifications').then(({ notifyMiningComplete, scheduleMiningReminder }) => {
           notifyMiningComplete().catch(() => {});
+          scheduleMiningReminder().catch(() => {});
         });
         setSession((prev) => {
           if (!prev) return null;
@@ -880,6 +881,11 @@ export function MiningProvider({ children }: { children: ReactNode }) {
 
       // ── Success path ────────────────────────────────────────────────────
       resetLocalSession();
+
+      // Cancel the 24-hour reminder — user has claimed
+      import('@/lib/notifications').then(({ cancelMiningReminder }) => {
+        cancelMiningReminder().catch(() => {});
+      });
 
       // BUG 3 FIX: AWAIT refreshBalance() so the wallet balance is updated
       // BEFORE the success alert fires. Previously this was fire-and-forget,
