@@ -1,4 +1,5 @@
 import { getApiUrl } from '@/lib/query-client';
+import { pb } from '@/lib/pocketbase';
 
 async function request<T = any>(
   method: string,
@@ -287,8 +288,43 @@ export const api = {
   adminGetStats: () => request<AdminStats>('GET', '/api/app/admin/stats'),
 
   // ── Tasks ─────────────────────────────────────────────────────────────
-  getTasks: (pbId: string) =>
-    request<TaskItem[]>('GET', `/api/app/tasks?userId=${encodeURIComponent(pbId)}`),
+  getTasks: async (pbId: string): Promise<TaskItem[]> => {
+    try {
+      return await request<TaskItem[]>('GET', `/api/app/tasks?userId=${encodeURIComponent(pbId)}`);
+    } catch {
+      // PocketBase SDK fallback — replicates server logic exactly:
+      // fetch active tasks + user submissions, then merge by task_id.
+      try {
+        const [tasksRes, subsRes] = await Promise.all([
+          pb.collection('tasks').getList(1, 50, { filter: 'is_active=true', sort: 'created' }),
+          pbId
+            ? pb.collection('task_submissions').getList(1, 200, {
+                filter: `user_id="${pbId}"`,
+                fields: 'id,task_id,status,admin_notes',
+              })
+            : Promise.resolve({ items: [] } as any),
+        ]);
+        const subByTask: Record<string, any> = {};
+        for (const s of subsRes.items || []) {
+          // approved submission wins if multiple exist (matches server logic)
+          if (!subByTask[s.task_id] || s.status === 'approved') {
+            subByTask[s.task_id] = { id: s.id, status: s.status, admin_notes: s.admin_notes || '' };
+          }
+        }
+        return (tasksRes.items || []).map((t: any) => ({
+          id: t.id,
+          title: t.title || '',
+          description: t.description || '',
+          link: t.link || '',
+          reward_amount: Number(t.reward_amount) || 0,
+          reward_type: (t.reward_type || 'PT') as 'SHIB' | 'PT',
+          submission: subByTask[t.id] ?? null,
+        }));
+      } catch {
+        return [];
+      }
+    }
+  },
 
   submitTaskProof: async (params: { pbId: string; taskId: string; uri: string; base64: string }): Promise<{ success: boolean; submissionId: string }> => {
     const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();

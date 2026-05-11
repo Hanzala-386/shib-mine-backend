@@ -847,6 +847,34 @@ async function migrateProofScreenshotToFile() {
   }
 }
 
+// ─── Patch tasks + task_submissions collection rules for PB SDK access ────
+// These collections are created with listRule:null (admin-only) by default.
+// This function patches them to allow:
+//   tasks            → public read (listRule: "")    — tasks are public info
+//   task_submissions → authenticated read (listRule: "@request.auth.id != ''")
+async function patchTasksCollectionRules() {
+  try {
+    const token = await getAdminToken();
+    const [tasksCol, subsCol] = await Promise.all([
+      pbGet("/api/collections/tasks"),
+      pbGet("/api/collections/task_submissions"),
+    ]);
+    if (!tasksCol.code) {
+      await pbHttp("PATCH", `/api/collections/${tasksCol.id}`, { listRule: "", viewRule: "" }, token);
+      console.log("[tasks] listRule/viewRule patched → public read ✓");
+    }
+    if (!subsCol.code) {
+      await pbHttp("PATCH", `/api/collections/${subsCol.id}`, {
+        listRule: "@request.auth.id != ''",
+        viewRule: "@request.auth.id != ''",
+      }, token);
+      console.log("[task_submissions] listRule/viewRule patched → authenticated read ✓");
+    }
+  } catch (e: any) {
+    console.warn("[tasks/task_submissions] Rule patch failed:", e.message);
+  }
+}
+
 // ─── Ensure notifications collection exists in PocketBase ─────────────────
 async function ensureNotificationsCollection() {
   try {
@@ -1281,6 +1309,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
     .then(() => migrateProofScreenshotToFile())
+    .then(() => patchTasksCollectionRules())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────

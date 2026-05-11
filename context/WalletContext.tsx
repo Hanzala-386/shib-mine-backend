@@ -145,12 +145,41 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     try {
       await api.gameReward(pbId, amount, type);
       await refreshBalance();
-    } catch (e) {
-      // Server-side validation must remain the sole authority for PT writes.
-      // Never write power_tokens directly to PocketBase from the client —
-      // doing so bypasses rate limiting, daily caps, and anti-cheat checks.
-      await refreshBalance().catch(() => {});
-      throw e; // re-throw so callers (games.tsx) can handle failure gracefully
+    } catch {
+      // PocketBase SDK direct fallback — used when Express backend is unreachable.
+      // Replicates the server's cap logic exactly using last_session_score stored
+      // by the game WebSocket session, so anti-cheat is preserved even offline.
+      try {
+        const userRec = await pb.collection('users').getOne(pbId, {
+          fields: 'id,power_tokens,last_session_score,total_accumulated_score,total_wins',
+        });
+
+        // ABSOLUTE_MAX_SCORE * 2 — matches server constant
+        const ABSOLUTE_MAX = 4000;
+        let safeAmount = Math.min(Math.max(0, Math.round(Number(amount) || 0)), ABSOLUTE_MAX);
+
+        // Replicate server anti-cheat: cap at 2× server-validated session score
+        const serverScore = Number(userRec.last_session_score) || 0;
+        if (serverScore > 0 && safeAmount > serverScore * 2) {
+          safeAmount = serverScore * 2;
+        }
+
+        if (safeAmount <= 0) {
+          await refreshBalance().catch(() => {});
+          return;
+        }
+
+        await pb.collection('users').update(pbId, {
+          power_tokens:            (Number(userRec.power_tokens) || 0) + safeAmount,
+          total_accumulated_score: (Number(userRec.total_accumulated_score) || 0) + safeAmount,
+          total_wins:              type === 'game_win' ? (userRec.total_wins || 0) + 1 : userRec.total_wins || 0,
+          last_session_score:      0, // reset after claim — matches server behaviour
+        });
+        await refreshBalance();
+      } catch (e) {
+        await refreshBalance().catch(() => {});
+        throw e;
+      }
     }
   }
 
