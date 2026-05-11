@@ -50,7 +50,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     setIsLoading(true);
     try {
       const url = new URL(`/api/app/notifications/${pbId}`, getApiUrl());
-      const res = await fetch(url.toString());
+      const res = await globalThis.fetch(url.toString());
       if (res.ok) {
         const data = await res.json();
         setNotifications(data.items || []);

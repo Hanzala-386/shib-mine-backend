@@ -43,7 +43,7 @@ function formatShib(val: number) {
 
 async function fetchJson(path: string) {
   const url = new URL(path, getApiUrl());
-  const r = await fetch(url.toString());
+  const r = await globalThis.fetch(url.toString());
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -291,7 +291,7 @@ export default function LeaderboardScreen() {
       // ── Primary: Express API (admin-authed, display_name guaranteed) ──────
       try {
         const url = new URL('/api/app/withdrawals/approved/recent', getApiUrl()).href;
-        const res = await fetch(url);
+        const res = await globalThis.fetch(url);
         if (res.ok) {
           const json: TickerItem[] = await res.json();
           return json;

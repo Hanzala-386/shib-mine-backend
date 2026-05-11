@@ -56,7 +56,7 @@ function formatDate(ts: number): string {
 }
 async function fetchJson(path: string) {
   const url = new URL(path, getApiUrl());
-  const r = await fetch(url.toString());
+  const r = await globalThis.fetch(url.toString());
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
