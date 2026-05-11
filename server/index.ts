@@ -17,14 +17,11 @@ declare module "http" {
 
 function setupCors(app: express.Application) {
   app.use((req, res, next) => {
-    // Public read-only app API endpoints — open to any origin (no credentials)
-    const isPublicRead =
-      (req.method === "GET" || req.method === "OPTIONS") &&
-      req.path.startsWith("/api/app/");
-
-    if (isPublicRead) {
+    // All /api/app/* endpoints — open to any origin so the web preview works
+    // on mobile data, Wi-Fi, and all networks without CORS rejections.
+    if (req.path.startsWith("/api/app/") || req.path.startsWith("/api/ws/")) {
       res.header("Access-Control-Allow-Origin", "*");
-      res.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
       res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
       if (req.method === "OPTIONS") return res.sendStatus(200);
       return next();
