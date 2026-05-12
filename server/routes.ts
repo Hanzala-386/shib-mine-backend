@@ -866,10 +866,11 @@ async function patchTasksCollectionRules() {
     }
     if (!subsCol.code) {
       await pbHttp("PATCH", `/api/collections/${subsCol.id}`, {
-        listRule: "@request.auth.id != ''",
-        viewRule: "@request.auth.id != ''",
+        listRule:   "@request.auth.id != ''",
+        viewRule:   "@request.auth.id != ''",
+        createRule: "@request.auth.id != ''",
       }, token);
-      console.log("[task_submissions] listRule/viewRule patched → authenticated read ✓");
+      console.log("[task_submissions] listRule/viewRule/createRule patched → authenticated read+create ✓");
     }
   } catch (e: any) {
     console.warn("[tasks/task_submissions] Rule patch failed:", e.message);

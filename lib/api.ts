@@ -327,25 +327,41 @@ export const api = {
   },
 
   submitTaskProof: async (params: { pbId: string; taskId: string; uri: string; base64: string }): Promise<{ success: boolean; submissionId: string }> => {
-    const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
-    const form = new FormData();
-    form.append('pbId',   params.pbId);
-    form.append('taskId', params.taskId);
-    // Convert base64 → Uint8Array → Blob for reliable binary upload on all RN/web platforms.
-    // The { uri, name, type } FormData trick only works with the native RN fetch polyfill.
-    // globalThis.fetch / expo/fetch bypass that polyfill, so the file bytes are never sent.
-    // Using an explicit Blob avoids all polyfill ambiguity.
-    const binaryStr = atob(params.base64);
-    const len = binaryStr.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
-    const blob = new Blob([bytes], { type: 'image/jpeg' });
-    form.append('proof_screenshot', blob, 'proof.jpg');
-    const res = await fetch(url, { method: 'POST', body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-    if (!data.submissionId) throw new Error('Upload failed — screenshot was not saved on the server');
-    return data;
+    // PRIMARY: PocketBase SDK direct upload — works on APK without Express.
+    // Uses the React Native native FormData { uri, name, type } object — the only
+    // supported way to attach a local file URI in React Native (Hermes engine).
+    // new Blob([ArrayBuffer/Uint8Array]) is explicitly NOT supported in Hermes and
+    // throws "Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not supported".
+    try {
+      const form = new FormData();
+      form.append('user_id', params.pbId);
+      form.append('task_id', params.taskId);
+      form.append('status', 'pending');
+      // React Native native file attachment — no Blob, no ArrayBuffer
+      form.append('proof_screenshot', {
+        uri: params.uri,
+        name: 'proof.jpg',
+        type: 'image/jpeg',
+      } as any);
+      const rec = await pb.collection('task_submissions').create(form);
+      return { success: true, submissionId: rec.id };
+    } catch (pbErr: any) {
+      // FALLBACK: Express backend with the same URI-based FormData trick
+      const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
+      const form = new FormData();
+      form.append('pbId',   params.pbId);
+      form.append('taskId', params.taskId);
+      form.append('proof_screenshot', {
+        uri: params.uri,
+        name: 'proof.jpg',
+        type: 'image/jpeg',
+      } as any);
+      const res = await globalThis.fetch(url, { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      if (!data.submissionId) throw new Error('Upload failed — screenshot was not saved on the server');
+      return data;
+    }
   },
 
   // ── Admin: Tasks ──────────────────────────────────────────────────────

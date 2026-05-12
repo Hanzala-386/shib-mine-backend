@@ -63,7 +63,7 @@ function TaskCard({ item, pbId, onProofSelected }: {
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: false,
       quality: 1, // keep full quality here — we compress manually below
       base64: false, // we get base64 from the manipulator step
