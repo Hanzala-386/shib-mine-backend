@@ -29,11 +29,17 @@ export interface AdSettings {
 
 export type BannerProvider = 'admob' | 'unity' | 'applovin';
 
+export interface AdapterStatus {
+  name:  string;
+  state: 'READY' | 'NOT_READY' | 'UNKNOWN';
+}
+
 interface AdContextValue {
   settings:               AdSettings;
   sdkReady:               boolean;
   isAdLoading:            boolean;
   bannerProvider:         BannerProvider;
+  adapterStatuses:        AdapterStatus[];
   showGameInterstitial:   (onDone: (shown: boolean) => void) => void;
   showMiningInterstitial: (onDone: (shown: boolean) => void) => void;
   showRewarded:           (onDone: (watched: boolean) => void) => void;
@@ -112,6 +118,7 @@ const AdContext = createContext<AdContextValue>({
   sdkReady:               false,
   isAdLoading:            false,
   bannerProvider:         'admob',
+  adapterStatuses:        [],
   showGameInterstitial:   (cb) => setTimeout(() => cb(true), 2500),
   showMiningInterstitial: (cb) => setTimeout(() => cb(true), 2500),
   showRewarded:           (cb) => setTimeout(() => cb(true), 4000),
@@ -122,10 +129,11 @@ export function useAds() { return useContext(AdContext); }
 
 /* ─── Provider ───────────────────────────────────────────────────────────────── */
 export function AdProvider({ children }: { children: React.ReactNode }) {
-  const [settings, setSettings]         = useState<AdSettings>(DEFAULT_SETTINGS);
-  const [sdkReady, setSdkReady]         = useState(false);
-  const [isAdLoading, setAdLoading]     = useState(false);
-  const [bannerProvider, setBannerProvider] = useState<BannerProvider>('admob');
+  const [settings, setSettings]               = useState<AdSettings>(DEFAULT_SETTINGS);
+  const [sdkReady, setSdkReady]               = useState(false);
+  const [isAdLoading, setAdLoading]           = useState(false);
+  const [bannerProvider, setBannerProvider]   = useState<BannerProvider>('admob');
+  const [adapterStatuses, setAdapterStatuses] = useState<AdapterStatus[]>([]);
 
   const settingsRef  = useRef<AdSettings>(DEFAULT_SETTINGS);
   const bannerIdxRef = useRef(0);
@@ -169,7 +177,7 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
       .catch(e => console.warn('[AdContext] Failed to fetch settings:', e));
   }, []);
 
-  /* ── 2. Initialize AdMob SDK ── */
+  /* ── 2. Initialize AdMob SDK + parse per-adapter mediation status ── */
   useEffect(() => {
     if (!nativeSdkAvailable || !GoogleAds) {
       setSdkReady(false);
@@ -177,8 +185,30 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
     }
     GoogleAds().initialize()
       .then((statuses: any[]) => {
-        console.log('[AdContext] AdMob initialized (mediation ready):', JSON.stringify(statuses));
+        // Parse the adapter initialization report — each entry has adapterName + state.
+        // state === 'READY' means the mediation adapter initialized successfully and
+        // can fill ads for that network.  Log each adapter so we can confirm the
+        // waterfall is working in production crash logs / Sentry.
+        const parsed: AdapterStatus[] = (Array.isArray(statuses) ? statuses : []).map(s => {
+          const raw  = (s.adapterName || s.name || 'unknown') as string;
+          // Shorten com.google.ads.mediation.unity.UnityMediationAdapter → Unity Ads, etc.
+          const name = raw.includes('unity')    ? 'Unity Ads'
+                     : raw.includes('applovin') ? 'AppLovin MAX'
+                     : raw.includes('admob')    ? 'AdMob'
+                     : raw.split('.').pop() || raw;
+          const state: AdapterStatus['state'] =
+            s.state === 'READY' ? 'READY' : s.state === 'NOT_READY' ? 'NOT_READY' : 'UNKNOWN';
+          return { name, state };
+        });
+
+        setAdapterStatuses(parsed);
         setSdkReady(true);
+
+        const ready    = parsed.filter(a => a.state === 'READY').map(a => a.name);
+        const notReady = parsed.filter(a => a.state !== 'READY').map(a => a.name);
+        console.log('[AdContext] Mediation initialized ✓');
+        if (ready.length)    console.log('[AdContext]  READY    →', ready.join(', '));
+        if (notReady.length) console.log('[AdContext]  NOT READY→', notReady.join(', '));
       })
       .catch((e: Error) => {
         console.warn('[AdContext] AdMob init failed:', e.message);
@@ -261,7 +291,7 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AdContext.Provider value={{
-      settings, sdkReady, isAdLoading, bannerProvider,
+      settings, sdkReady, isAdLoading, bannerProvider, adapterStatuses,
       showGameInterstitial, showMiningInterstitial, showRewarded, showInterstitial,
     }}>
       {children}
