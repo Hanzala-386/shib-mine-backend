@@ -185,13 +185,6 @@ function SupportWidgetInner() {
     setTicket(t);
     setHasUnread(!!(t && t.status === 'Replied' && !t.is_read_by_user));
     setLoading(false);
-
-    // Mark read immediately if there is an unread reply
-    if (t && t.status === 'Replied' && !t.is_read_by_user) {
-      await markTicketRead(t.id);
-      setHasUnread(false);
-      setTicket(prev => prev ? { ...prev, is_read_by_user: true } : prev);
-    }
   }, [user?.pbId]);
 
   // ── Submit ticket ──
@@ -281,7 +274,7 @@ function SupportWidgetInner() {
               <ScrollView contentContainerStyle={styles.sheetBody} showsVerticalScrollIndicator={false}>
                 <View style={styles.repliedBadge}>
                   <Ionicons name="checkmark-circle" size={14} color="#4CAF50" />
-                  <Text style={styles.repliedBadgeText}>Admin replied</Text>
+                  <Text style={styles.repliedBadgeText}>Support team replied</Text>
                 </View>
                 <Text style={styles.qLabel}>Your question</Text>
                 <Text style={styles.qText}>{ticket.question}</Text>
