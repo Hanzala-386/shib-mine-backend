@@ -48,6 +48,18 @@ export default function AdminScreen() {
   const [replyingId, setReplyingId]         = useState<string | null>(null);
   const [supportTab, setSupportTab]         = useState<'Pending' | 'Replied'>('Pending');
 
+  // ── Tournament state ──
+  const [tournament, setTournament] = useState({
+    id: '',
+    prizePool: '500000',
+    winnersCount: '3',
+    bannerUrl: '',
+    rank1: '250000',
+    rank2: '150000',
+    rank3: '100000',
+  });
+  const [savingTournament, setSavingTournament] = useState(false);
+
   const fetchSupportTickets = useCallback(async () => {
     setSupportLoading(true);
     try {
@@ -111,6 +123,23 @@ export default function AdminScreen() {
       fetchTasks();
       fetchSubmissions();
       fetchSupportTickets();
+      // Load tournament config
+      pb.collection('tournament_config').getList(1, 1, { sort: '-created' })
+        .then(res => {
+          const raw = res.items[0];
+          if (!raw) return;
+          let rw: Record<string, number> = {};
+          try { rw = JSON.parse(raw.reward_structure || '{}'); } catch {}
+          setTournament({
+            id: raw.id,
+            prizePool: String(raw.prize_pool_total || 500000),
+            winnersCount: String(raw.winners_count || 3),
+            bannerUrl: raw.banner_url || '',
+            rank1: String(rw['1'] || 250000),
+            rank2: String(rw['2'] || 150000),
+            rank3: String(rw['3'] || 100000),
+          });
+        }).catch(() => {});
     }
   }, [isAdmin]);
 
@@ -134,6 +163,37 @@ export default function AdminScreen() {
 
   function setField<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
     setLocal(prev => prev ? { ...prev, [key]: value } : prev);
+  }
+
+  async function handleSaveTournament() {
+    setSavingTournament(true);
+    try {
+      const rewardStructure = JSON.stringify({
+        '1': Number(tournament.rank1) || 0,
+        '2': Number(tournament.rank2) || 0,
+        '3': Number(tournament.rank3) || 0,
+      });
+      const payload = {
+        prize_pool_total: Number(tournament.prizePool) || 0,
+        winners_count:    Number(tournament.winnersCount) || 3,
+        reward_structure: rewardStructure,
+        banner_url:       tournament.bannerUrl.trim(),
+        week_start:       new Date().toISOString(),
+        is_active:        true,
+      };
+      if (tournament.id) {
+        await pb.collection('tournament_config').update(tournament.id, payload);
+      } else {
+        const rec = await pb.collection('tournament_config').create(payload);
+        setTournament(prev => ({ ...prev, id: rec.id }));
+      }
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Tournament Started', 'New weekly tournament is now live for all users!');
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to save tournament config.');
+    } finally {
+      setSavingTournament(false);
+    }
   }
 
   function setBoostCost(tier: '2x' | '4x' | '6x' | '10x', value: number) {
@@ -512,6 +572,64 @@ export default function AdminScreen() {
                   </View>
                 ))
             )}
+          </AdminSection>
+
+          {/* ── Weekly Tournament Setup ──────────────────────────────── */}
+          <AdminSection title="Weekly Tournament Setup" icon="trophy">
+            <AdminField
+              label="Banner Image URL"
+              value={tournament.bannerUrl}
+              onChangeText={v => setTournament(p => ({ ...p, bannerUrl: v }))}
+              placeholder="https://… (paste a direct image URL)"
+            />
+            <AdminField
+              label="Total Prize Pool (SHIB)"
+              value={tournament.prizePool}
+              onChangeText={v => setTournament(p => ({ ...p, prizePool: v }))}
+              keyboardType="numeric"
+            />
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Winners Cap</Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {(['3', '50', '100'] as const).map(n => (
+                  <Pressable
+                    key={n}
+                    style={[styles.typeBtn, tournament.winnersCount === n && styles.typeBtnActive]}
+                    onPress={() => setTournament(p => ({ ...p, winnersCount: n }))}
+                  >
+                    <Text style={[styles.typeBtnText, tournament.winnersCount === n && styles.typeBtnTextActive]}>
+                      Top {n}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Rank Prizes (SHIB)</Text>
+              <View style={{ gap: 8 }}>
+                <AdminField label="🥇 1st Place"  value={tournament.rank1} onChangeText={v => setTournament(p => ({ ...p, rank1: v }))} keyboardType="numeric" />
+                <AdminField label="🥈 2nd Place"  value={tournament.rank2} onChangeText={v => setTournament(p => ({ ...p, rank2: v }))} keyboardType="numeric" />
+                <AdminField label="🥉 3rd Place"  value={tournament.rank3} onChangeText={v => setTournament(p => ({ ...p, rank3: v }))} keyboardType="numeric" />
+              </View>
+            </View>
+
+            <Pressable
+              style={[styles.createBtn, savingTournament && { opacity: 0.6 }]}
+              disabled={savingTournament}
+              onPress={handleSaveTournament}
+            >
+              <LinearGradient colors={['#00C853', '#1B5E20']} style={styles.createBtnGrad}>
+                {savingTournament
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={[styles.createBtnText, { color: '#fff' }]}>💾  Save &amp; Start Tournament</Text>}
+              </LinearGradient>
+            </Pressable>
+
+            <Text style={[styles.emptyText, { marginTop: 4 }]}>
+              Saving resets the week timer and shows the popup to all users.
+            </Text>
           </AdminSection>
 
           <View style={styles.adminNote}>

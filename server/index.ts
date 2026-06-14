@@ -1,6 +1,7 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { registerRoutes, setupGameWebSocket } from "./routes";
+import { setupTournamentSchema, startTournamentCron } from "./tournament";
 import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
@@ -290,6 +291,12 @@ function setupErrorHandler(app: express.Application) {
   const server = await registerRoutes(app);
 
   setupErrorHandler(app);
+
+  // ── Tournament schema + weekly CRON ─────────────────────────────────────
+  setupTournamentSchema().catch((e) =>
+    console.warn("[tournament] schema setup failed:", e?.message),
+  );
+  startTournamentCron();
 
   // ── WebSocket server for server-authoritative game scoring ──────────────
   // Path: /api/ws/game — starts with /api so the Metro proxy pathFilter

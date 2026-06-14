@@ -1,0 +1,1 @@
+- [Tournament system](tournament-system.md) — Weekly tournament: PB collections, CRON in server/tournament.ts, context in TournamentContext.tsx; all user ops use PB SDK (APK-safe).

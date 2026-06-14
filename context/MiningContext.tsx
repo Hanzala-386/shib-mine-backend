@@ -216,10 +216,16 @@ async function pbClaimMining(
     is_verified: true,
   });
 
+  // Add to tournament score simultaneously if user is registered this week
+  const tournamentUpdate = user.tournament_joined
+    ? { weekly_tournament_points: (Number(user.weekly_tournament_points) || 0) + reward }
+    : {};
+
   await pb.collection('users').update(pbId, {
     shib_balance: (Number(user.shib_balance) || 0) + reward,
     total_claims: (Number(user.total_claims) || 0) + 1,
     current_mining_session: null,
+    ...tournamentUpdate,
   });
 
   // Referral commission (10%) — written to referral_earnings_log for secure deferred crediting.
