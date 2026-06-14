@@ -17,7 +17,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, {
   useSharedValue, useAnimatedStyle, withRepeat, withTiming,
-  withSequence, Easing, FadeInDown,
+  withSequence, Easing, FadeInDown, withSpring, interpolate,
 } from 'react-native-reanimated';
 import { useAuth } from '@/context/AuthContext';
 import { useWallet } from '@/context/WalletContext';
@@ -26,6 +26,19 @@ import { useAdmin } from '@/context/AdminContext';
 import { useAds } from '@/context/AdContext';
 import { useNotifications } from '@/context/NotificationsContext';
 import Colors from '@/constants/colors';
+
+// ── Press 3D hook — spring physics for any interactive element ─────────────────
+
+function usePress3D() {
+  const scale = useSharedValue(1);
+  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  const onPressIn  = () => {
+    scale.value = withSpring(0.953, { damping: 18, stiffness: 500 });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+  const onPressOut = () => { scale.value = withSpring(1, { damping: 5, stiffness: 320 }); };
+  return { animStyle, onPressIn, onPressOut };
+}
 
 // ── Live Withdrawal Ticker (identical to leaderboard.tsx) ──────────────────────
 interface TickerItem {
@@ -99,6 +112,19 @@ function WithdrawalTicker({ items }: { items: TickerItem[] }) {
             </View>
           ))}
         </RNAnimated.View>
+        {/* Edge fade masks */}
+        <LinearGradient
+          colors={['rgba(10,10,15,1)', 'rgba(10,10,15,0)']}
+          start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }}
+          style={tkStyles.fadeLeft}
+          pointerEvents="none"
+        />
+        <LinearGradient
+          colors={['rgba(10,10,15,0)', 'rgba(10,10,15,1)']}
+          start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }}
+          style={tkStyles.fadeRight}
+          pointerEvents="none"
+        />
       </View>
     </View>
   );
@@ -117,6 +143,8 @@ const tkStyles = StyleSheet.create({
   dot:       { width: 4, height: 4, borderRadius: 2, backgroundColor: Colors.textMuted },
   emptyBox:  { height: TICKER_H + 22, alignItems: 'center', justifyContent: 'center' },
   emptyText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted },
+  fadeLeft:  { position: 'absolute', left: 0, top: 0, bottom: 0, width: 40 },
+  fadeRight: { position: 'absolute', right: 0, top: 0, bottom: 0, width: 40 },
 });
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
@@ -355,6 +383,68 @@ const BoosterModal = memo(function BoosterModal({
   );
 });
 
+// ── Booster Card 3D — spring-press wrapper for each booster tile ───────────────
+
+interface BoosterCard3DProps {
+  b: BoosterItem;
+  isActive: boolean;
+  anyActive: boolean;
+  isMiningLocked: boolean;
+  timeLeft: number;
+  onPress: (b: BoosterItem) => void;
+  disabled: boolean;
+}
+
+const BoosterCard3D = memo(function BoosterCard3D({
+  b, isActive, anyActive, isMiningLocked, timeLeft, onPress, disabled,
+}: BoosterCard3DProps) {
+  const scale = useSharedValue(1);
+  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+
+  return (
+    <Animated.View style={[{ flex: 1 }, animStyle]}>
+      <Pressable
+        style={[
+          styles.boosterCard,
+          {
+            opacity: isMiningLocked ? 0.42 : 1,
+            borderColor: isMiningLocked
+              ? Colors.darkBorder
+              : isActive ? b.color : anyActive ? Colors.darkBorder : b.color + '35',
+            backgroundColor: isMiningLocked ? Colors.darkCard : isActive ? b.color + '18' : Colors.darkCard,
+          },
+        ]}
+        onPressIn={() => {
+          if (!isMiningLocked) {
+            scale.value = withSpring(0.9, { damping: 18, stiffness: 450 });
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }
+        }}
+        onPressOut={() => { scale.value = withSpring(1, { damping: 5, stiffness: 350 }); }}
+        onPress={() => onPress(b)}
+        disabled={disabled}
+      >
+        {isMiningLocked
+          ? <Ionicons name="lock-closed" size={16} color={Colors.textMuted} />
+          : <Text style={[styles.boosterLabel, { color: b.color }]}>{b.label}</Text>
+        }
+        {isMiningLocked ? (
+          <Text style={styles.boosterCost}>{b.label}</Text>
+        ) : isActive ? (
+          <Text style={[styles.boosterTimer, { color: b.color }]}>
+            {formatTime(timeLeft).substring(3)}
+          </Text>
+        ) : (
+          <>
+            <MaterialCommunityIcons name="lightning-bolt" size={16} color={b.color} />
+            <Text style={styles.boosterCost}>{b.cost} PT</Text>
+          </>
+        )}
+      </Pressable>
+    </Animated.View>
+  );
+});
+
 // ── Home screen ────────────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
@@ -432,8 +522,14 @@ export default function HomeScreen() {
 
   // Animations
   const rotation    = useSharedValue(0);
+  const rotation2   = useSharedValue(0);   // counter-rotating inner ring
+  const glowScale   = useSharedValue(1);   // breathing ambient glow
   const pulse       = useSharedValue(1);
   const glowOpacity = useSharedValue(0.4);
+
+  // 3D press hooks — each button gets its own spring instance
+  const startMining3D = usePress3D();
+  const claim3D       = usePress3D();
 
   const boostCosts = settings?.boostCosts ?? { '2x': 200, '4x': 400, '6x': 600, '10x': 800 };
   const BOOSTERS: BoosterItem[] = [
@@ -444,7 +540,15 @@ export default function HomeScreen() {
   ];
 
   useEffect(() => {
-    rotation.value = withRepeat(withTiming(360, { duration: 8000, easing: Easing.linear }), -1, false);
+    rotation.value  = withRepeat(withTiming(360,  { duration: 8000, easing: Easing.linear }), -1, false);
+    rotation2.value = withRepeat(withTiming(-360, { duration: 5500, easing: Easing.linear }), -1, false);
+    glowScale.value = withRepeat(
+      withSequence(
+        withTiming(1.18, { duration: 2400, easing: Easing.inOut(Easing.sin) }),
+        withTiming(0.85, { duration: 2400, easing: Easing.inOut(Easing.sin) }),
+      ),
+      -1, true,
+    );
   }, []);
 
   useEffect(() => {
@@ -469,9 +573,13 @@ export default function HomeScreen() {
     }
   }, [status]);
 
-  const ringStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
-  const coreStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
-  const glowStyle = useAnimatedStyle(() => ({ opacity: glowOpacity.value }));
+  const ringStyle  = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
+  const ring2Style = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation2.value}deg` }] }));
+  const coreStyle  = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
+  const ambientGlowStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: glowScale.value }],
+    opacity: glowOpacity.value * 0.22,
+  }));
 
   // ── Toast helper ─────────────────────────────────────────────────────────
 
@@ -683,38 +791,68 @@ export default function HomeScreen() {
           </Animated.View>
         )}
 
-        {/* Mining Core */}
+        {/* Mining Core — multi-ring orbital */}
         <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.miningCore}>
-          <Animated.View style={[styles.outerGlow, glowStyle]} />
+
+          {/* Ambient breathing glow behind everything */}
+          <Animated.View style={[styles.ambientGlow, ambientGlowStyle]} />
+
+          {/* Outer rotating ring — 12 nodes at r=108, CW */}
           <Animated.View style={[styles.rotatingRing, ringStyle]}>
             {[...Array(12)].map((_, i) => (
               <View
                 key={i}
                 style={[
-                  styles.ringDot,
+                  styles.ringNode,
                   {
-                    transform: [{ rotate: `${i * 30}deg` }, { translateX: 100 }],
+                    transform: [{ rotate: `${i * 30}deg` }, { translateX: 108 }],
                     backgroundColor:
-                      i % 3 === 0 ? Colors.gold
-                      : i % 3 === 1 ? Colors.neonOrange
-                      : 'rgba(244,196,48,0.3)',
-                    opacity: status === 'idle' ? 0.2 : 1,
-                    width: i % 3 === 0 ? 9 : 6,
-                    height: i % 3 === 0 ? 9 : 6,
-                    borderRadius: 5,
+                      i % 4 === 0 ? Colors.gold
+                      : i % 4 === 1 ? Colors.neonOrange
+                      : i % 4 === 2 ? 'rgba(244,196,48,0.55)'
+                      : 'rgba(255,107,0,0.3)',
+                    opacity: status === 'idle' ? (i % 4 === 0 ? 0.45 : 0.2) : 1,
+                    width:  i % 4 === 0 ? 11 : i % 4 === 2 ? 8 : 5,
+                    height: i % 4 === 0 ? 11 : i % 4 === 2 ? 8 : 5,
+                    borderRadius: 6,
+                    shadowColor: i % 4 === 0 ? Colors.gold : Colors.neonOrange,
+                    shadowRadius: status === 'mining' ? 8 : 3,
+                    shadowOpacity: status === 'mining' ? 0.85 : 0.25,
                   },
                 ]}
               />
             ))}
           </Animated.View>
+
+          {/* Inner counter-rotating ring — 8 dash nodes at r=76, CCW */}
+          <Animated.View style={[styles.rotatingRing2, ring2Style]}>
+            {[...Array(8)].map((_, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.ringNode,
+                  {
+                    transform: [{ rotate: `${i * 45}deg` }, { translateX: 76 }],
+                    backgroundColor: i % 2 === 0 ? Colors.neonOrange : Colors.gold,
+                    opacity: status === 'idle' ? 0.14 : status === 'ready_to_claim' ? 1 : 0.6,
+                    width:  i % 2 === 0 ? 14 : 7,
+                    height: i % 2 === 0 ? 4  : 7,
+                    borderRadius: 2,
+                  },
+                ]}
+              />
+            ))}
+          </Animated.View>
+
+          {/* Core */}
           <Animated.View style={[styles.coreContainer, coreStyle]}>
             <LinearGradient
               colors={
                 status === 'ready_to_claim'
                   ? [Colors.gold, Colors.neonOrange]
                   : status === 'mining'
-                  ? ['rgba(244,196,48,0.25)', 'rgba(255,107,0,0.15)']
-                  : ['rgba(26,26,40,0.95)', 'rgba(18,18,26,0.95)']
+                  ? ['rgba(244,196,48,0.28)', 'rgba(255,107,0,0.16)', 'rgba(10,10,22,0.92)']
+                  : ['rgba(22,22,38,0.98)', 'rgba(12,12,22,0.98)']
               }
               style={styles.core}
             >
@@ -766,24 +904,27 @@ export default function HomeScreen() {
                 </Pressable>
               </Animated.View>
             )}
-            <Pressable
-              style={({ pressed }) => [styles.actionBtn, { opacity: (pressed || showAdLoader) ? 0.85 : 1 }]}
-              onPress={handleStartMining}
-              disabled={showAdLoader}
-            >
-              <LinearGradient
-                colors={[Colors.gold, Colors.neonOrange]}
-                style={styles.actionGradient}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+            <Animated.View style={[styles.actionBtn, startMining3D.animStyle]}>
+              <Pressable
+                onPressIn={startMining3D.onPressIn}
+                onPressOut={startMining3D.onPressOut}
+                onPress={handleStartMining}
+                disabled={showAdLoader}
               >
-                <SpinningCoin size={20} spinning speed="normal" />
-                <Text style={styles.actionText}>{showAdLoader ? 'Loading…' : 'Start Mining'}</Text>
-                <View style={styles.feeTag}>
-                  <MaterialCommunityIcons name="lightning-bolt" size={12} color="#000" />
-                  <Text style={styles.feeText}>{miningEntryCost} PT</Text>
-                </View>
-              </LinearGradient>
-            </Pressable>
+                <LinearGradient
+                  colors={[Colors.gold, Colors.neonOrange]}
+                  style={styles.actionGradient}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                >
+                  <SpinningCoin size={20} spinning speed="normal" />
+                  <Text style={styles.actionText}>{showAdLoader ? 'Loading…' : 'Start Mining'}</Text>
+                  <View style={styles.feeTag}>
+                    <MaterialCommunityIcons name="lightning-bolt" size={12} color="#000" />
+                    <Text style={styles.feeText}>{miningEntryCost} PT</Text>
+                  </View>
+                </LinearGradient>
+              </Pressable>
+            </Animated.View>
             <Text style={styles.rewardPreview}>
               Earns ~{formatShib(safeShibReward)} SHIB in {settings?.miningDurationMinutes ?? 60} min
             </Text>
@@ -793,23 +934,26 @@ export default function HomeScreen() {
         {/* ── READY TO CLAIM ───────────────────────────────────────────── */}
         {status === 'ready_to_claim' && (
           <Animated.View entering={FadeInDown.delay(50).springify()} style={styles.actionsArea}>
-            <Pressable
-              style={({ pressed }) => [styles.actionBtn, { opacity: pressed ? 0.8 : 1 }]}
-              onPress={handleClaim}
-            >
-              <LinearGradient
-                colors={[Colors.gold, Colors.neonOrange]}
-                style={styles.actionGradient}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+            <Animated.View style={[styles.actionBtn, claim3D.animStyle]}>
+              <Pressable
+                onPressIn={claim3D.onPressIn}
+                onPressOut={claim3D.onPressOut}
+                onPress={handleClaim}
               >
-                {isClaiming
-                  ? <ActivityIndicator size="small" color="#000" />
-                  : <Ionicons name="checkmark-circle" size={22} color="#000" />}
-                <Text style={styles.actionText}>
-                  {isClaiming ? 'Claiming…' : `Claim ~${formatShib(safeShibReward)} SHIB`}
-                </Text>
-              </LinearGradient>
-            </Pressable>
+                <LinearGradient
+                  colors={[Colors.gold, Colors.neonOrange]}
+                  style={styles.actionGradient}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                >
+                  {isClaiming
+                    ? <ActivityIndicator size="small" color="#000" />
+                    : <Ionicons name="checkmark-circle" size={22} color="#000" />}
+                  <Text style={styles.actionText}>
+                    {isClaiming ? 'Claiming…' : `Claim ~${formatShib(safeShibReward)} SHIB`}
+                  </Text>
+                </LinearGradient>
+              </Pressable>
+            </Animated.View>
             <Text style={styles.rewardPreview}>Mining complete — tap to collect your SHIB</Text>
           </Animated.View>
         )}
@@ -830,47 +974,21 @@ export default function HomeScreen() {
             </View>
             <View style={styles.boostersGrid}>
               {BOOSTERS.map((b) => {
-                const isActive = !!(activeBooster && activeBooster.multiplier === b.multiplier && activeBooster.expiresAt > now);
-                const anyActive = !!(activeBooster && activeBooster.expiresAt > now);
-                const timeLeft = isActive ? Math.max(0, activeBooster!.expiresAt - now) : 0;
-                // Cards are visually dimmed and locked while a session is running
+                const isActive     = !!(activeBooster && activeBooster.multiplier === b.multiplier && activeBooster.expiresAt > now);
+                const anyActive    = !!(activeBooster && activeBooster.expiresAt > now);
+                const timeLeft     = isActive ? Math.max(0, activeBooster!.expiresAt - now) : 0;
                 const isMiningLocked = status === 'mining';
-
                 return (
-                  <Pressable
+                  <BoosterCard3D
                     key={b.label}
-                    style={({ pressed }) => [
-                      styles.boosterCard,
-                      {
-                        opacity: isMiningLocked ? 0.42 : pressed ? 0.7 : 1,
-                        borderColor: isMiningLocked
-                          ? Colors.darkBorder
-                          : isActive ? b.color : anyActive ? Colors.darkBorder : b.color + '35',
-                        backgroundColor: isMiningLocked
-                          ? Colors.darkCard
-                          : isActive ? b.color + '15' : Colors.darkCard,
-                      },
-                    ]}
-                    onPress={() => handleBoosterTap(b)}
+                    b={b}
+                    isActive={isActive}
+                    anyActive={anyActive}
+                    isMiningLocked={isMiningLocked}
+                    timeLeft={timeLeft}
+                    onPress={handleBoosterTap}
                     disabled={showAdLoader}
-                  >
-                    {isMiningLocked
-                      ? <Ionicons name="lock-closed" size={16} color={Colors.textMuted} />
-                      : <Text style={[styles.boosterLabel, { color: b.color }]}>{b.label}</Text>
-                    }
-                    {isMiningLocked ? (
-                      <Text style={styles.boosterCost}>{b.label}</Text>
-                    ) : isActive ? (
-                      <Text style={[styles.boosterTimer, { color: b.color }]}>
-                        {formatTime(timeLeft).substring(3)}
-                      </Text>
-                    ) : (
-                      <>
-                        <MaterialCommunityIcons name="lightning-bolt" size={16} color={b.color} />
-                        <Text style={styles.boosterCost}>{b.cost} PT</Text>
-                      </>
-                    )}
-                  </Pressable>
+                  />
                 );
               })}
             </View>
@@ -1054,9 +1172,14 @@ const styles = StyleSheet.create({
   userName: { fontFamily: 'Inter_700Bold', fontSize: 21, color: Colors.textPrimary, marginTop: 2 },
   balanceBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: 'rgba(244,196,48,0.12)', borderRadius: 20,
+    backgroundColor: 'rgba(244,196,48,0.14)', borderRadius: 20,
     paddingHorizontal: 14, paddingVertical: 7,
-    borderWidth: 1, borderColor: 'rgba(244,196,48,0.25)',
+    borderWidth: 1, borderColor: 'rgba(244,196,48,0.32)',
+    shadowColor: Colors.gold,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.32,
+    shadowRadius: 12,
+    elevation: 6,
   },
   balanceText: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.gold },
   liveBalanceCard: { marginBottom: 12, borderRadius: 14, overflow: 'hidden' },
@@ -1067,11 +1190,23 @@ const styles = StyleSheet.create({
   liveLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, marginBottom: 4 },
   liveValue: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.gold },
   liveBoostLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.neonOrange, marginTop: 4 },
-  miningCore: { alignItems: 'center', justifyContent: 'center', height: 270, marginBottom: 16 },
-  outerGlow: { position: 'absolute', width: 240, height: 240, borderRadius: 120, backgroundColor: Colors.gold, opacity: 0.12 },
-  rotatingRing: { position: 'absolute', width: 220, height: 220, alignItems: 'center', justifyContent: 'center' },
-  ringDot: { position: 'absolute' },
-  coreContainer: { width: 155, height: 155, borderRadius: 78, overflow: 'hidden', borderWidth: 2, borderColor: 'rgba(244,196,48,0.35)' },
+  miningCore: { alignItems: 'center', justifyContent: 'center', height: 295, marginBottom: 16 },
+  ambientGlow: {
+    position: 'absolute', width: 268, height: 268, borderRadius: 134,
+    backgroundColor: Colors.gold,
+  },
+  rotatingRing:  { position: 'absolute', width: 222, height: 222, alignItems: 'center', justifyContent: 'center' },
+  rotatingRing2: { position: 'absolute', width: 158, height: 158, alignItems: 'center', justifyContent: 'center' },
+  ringNode: { position: 'absolute' },
+  coreContainer: {
+    width: 158, height: 158, borderRadius: 79, overflow: 'hidden',
+    borderWidth: 2.5, borderColor: 'rgba(244,196,48,0.42)',
+    shadowColor: Colors.gold,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.45,
+    shadowRadius: 22,
+    elevation: 16,
+  },
   core: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6 },
   timerText: { fontFamily: 'Inter_700Bold', fontSize: 17, color: Colors.gold },
   coreLabel: { fontFamily: 'Inter_700Bold', fontSize: 15 },
@@ -1082,7 +1217,15 @@ const styles = StyleSheet.create({
   progressLabel: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, textAlign: 'center' },
   actionsArea: { alignItems: 'center', marginBottom: 22 },
   actionBtn: { width: '100%' },
-  actionGradient: { height: 56, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
+  actionGradient: {
+    height: 58, borderRadius: 18,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+    shadowColor: Colors.gold,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.45,
+    shadowRadius: 14,
+    elevation: 10,
+  },
   actionText: { fontFamily: 'Inter_700Bold', fontSize: 17, color: '#000' },
   feeTag: { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3, flexDirection: 'row', alignItems: 'center', gap: 2 },
   feeText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#000' },
@@ -1099,7 +1242,15 @@ const styles = StyleSheet.create({
   boostersSection: { marginBottom: 22 },
   sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 1 },
   boostersGrid: { flexDirection: 'row', gap: 10 },
-  boosterCard: { flex: 1, backgroundColor: Colors.darkCard, borderRadius: 14, padding: 12, alignItems: 'center', gap: 4, borderWidth: 1 },
+  boosterCard: {
+    flex: 1, backgroundColor: Colors.darkCard, borderRadius: 14, padding: 12,
+    alignItems: 'center', gap: 4, borderWidth: 1,
+    shadowColor: Colors.gold,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.14,
+    shadowRadius: 10,
+    elevation: 5,
+  },
   boosterLabel: { fontFamily: 'Inter_700Bold', fontSize: 17 },
   boosterCost: { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted },
   boosterTimer: { fontFamily: 'Inter_700Bold', fontSize: 14 },
@@ -1134,7 +1285,15 @@ const styles = StyleSheet.create({
   },
   toastText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textPrimary, flexShrink: 1 },
   statsRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
-  statCard: { flex: 1, backgroundColor: Colors.darkCard, borderRadius: 16, padding: 16, alignItems: 'center', gap: 6, borderWidth: 1, borderColor: Colors.darkBorder },
+  statCard: {
+    flex: 1, backgroundColor: Colors.darkCard, borderRadius: 16, padding: 16,
+    alignItems: 'center', gap: 6, borderWidth: 1, borderColor: Colors.darkBorder,
+    shadowColor: Colors.gold,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
   statValue: { fontFamily: 'Inter_700Bold', fontSize: 18, color: Colors.textPrimary },
   statLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted },
 });
