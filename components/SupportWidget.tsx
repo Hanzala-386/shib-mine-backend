@@ -236,7 +236,7 @@ function SupportWidgetInner() {
         </Pressable>
         {/* Badge lives OUTSIDE the overflow:hidden Pressable so it is never clipped */}
         {hasUnread && (
-          <View style={styles.badge} pointerEvents="none">
+          <View style={[styles.badge, { pointerEvents: 'none' }]}>
             <Text style={styles.badgeText}>i</Text>
           </View>
         )}
