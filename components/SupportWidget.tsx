@@ -233,12 +233,13 @@ function SupportWidgetInner() {
             start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
           />
           <Ionicons name="headset" size={22} color={Colors.gold} />
-          {hasUnread && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>i</Text>
-            </View>
-          )}
         </Pressable>
+        {/* Badge lives OUTSIDE the overflow:hidden Pressable so it is never clipped */}
+        {hasUnread && (
+          <View style={styles.badge} pointerEvents="none">
+            <Text style={styles.badgeText}>i</Text>
+          </View>
+        )}
       </Animated.View>
 
       {/* ── Modal ── */}
