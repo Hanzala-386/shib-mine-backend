@@ -7,6 +7,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import * as ImagePicker from 'expo-image-picker';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useAdmin, type AppSettings } from '@/context/AdminContext';
@@ -53,11 +54,13 @@ export default function AdminScreen() {
     id: '',
     prizePool: '500000',
     winnersCount: '3',
-    bannerUrl: '',
+    existingBannerUrl: '', // URL of already-uploaded banner (for thumbnail preview)
     rank1: '250000',
     rank2: '150000',
     rank3: '100000',
   });
+  const [localBannerUri, setLocalBannerUri]   = useState<string | null>(null);
+  const [localBannerMime, setLocalBannerMime] = useState<string>('image/jpeg');
   const [savingTournament, setSavingTournament] = useState(false);
 
   const fetchSupportTickets = useCallback(async () => {
@@ -130,11 +133,18 @@ export default function AdminScreen() {
           if (!raw) return;
           let rw: Record<string, number> = {};
           try { rw = JSON.parse(raw.reward_structure || '{}'); } catch {}
+          // Build existing banner URL from file field or legacy text field
+          let existingBannerUrl = '';
+          if (raw.banner) {
+            const fname = Array.isArray(raw.banner) ? raw.banner[0] : raw.banner;
+            if (fname) existingBannerUrl = `https://api.webcod.in/api/files/tournament_config/${raw.id}/${fname}`;
+          }
+          if (!existingBannerUrl && raw.banner_url) existingBannerUrl = raw.banner_url;
           setTournament({
             id: raw.id,
             prizePool: String(raw.prize_pool_total || 500000),
             winnersCount: String(raw.winners_count || 3),
-            bannerUrl: raw.banner_url || '',
+            existingBannerUrl,
             rank1: String(rw['1'] || 250000),
             rank2: String(rw['2'] || 150000),
             rank3: String(rw['3'] || 100000),
@@ -165,6 +175,24 @@ export default function AdminScreen() {
     setLocal(prev => prev ? { ...prev, [key]: value } : prev);
   }
 
+  async function pickBannerImage() {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission required', 'Allow photo library access to upload a banner.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.92,
+    });
+    if (!result.canceled && result.assets[0]) {
+      const asset = result.assets[0];
+      setLocalBannerUri(asset.uri);
+      setLocalBannerMime(asset.mimeType || 'image/jpeg');
+    }
+  }
+
   async function handleSaveTournament() {
     setSavingTournament(true);
     try {
@@ -173,20 +201,41 @@ export default function AdminScreen() {
         '2': Number(tournament.rank2) || 0,
         '3': Number(tournament.rank3) || 0,
       });
-      const payload = {
-        prize_pool_total: Number(tournament.prizePool) || 0,
-        winners_count:    Number(tournament.winnersCount) || 3,
-        reward_structure: rewardStructure,
-        banner_url:       tournament.bannerUrl.trim(),
-        week_start:       new Date().toISOString(),
-        is_active:        true,
-      };
+
+      // Use FormData so the banner image file is uploaded as multipart
+      const form = new FormData();
+      form.append('prize_pool_total', String(Number(tournament.prizePool) || 0));
+      form.append('winners_count',    String(Number(tournament.winnersCount) || 3));
+      form.append('reward_structure', rewardStructure);
+      form.append('week_start',       new Date().toISOString());
+      form.append('is_active',        'true');
+
+      if (localBannerUri) {
+        // Append image file — React Native FormData file shape
+        const ext = localBannerMime.includes('png') ? 'png' : localBannerMime.includes('gif') ? 'gif' : 'jpg';
+        form.append('banner', {
+          uri:  localBannerUri,
+          type: localBannerMime,
+          name: `tournament-banner.${ext}`,
+        } as any);
+      }
+
+      let rec: any;
       if (tournament.id) {
-        await pb.collection('tournament_config').update(tournament.id, payload);
+        rec = await pb.collection('tournament_config').update(tournament.id, form);
       } else {
-        const rec = await pb.collection('tournament_config').create(payload);
+        rec = await pb.collection('tournament_config').create(form);
         setTournament(prev => ({ ...prev, id: rec.id }));
       }
+
+      // Update displayed thumbnail with the newly uploaded banner
+      if (rec && rec.banner) {
+        const fname = Array.isArray(rec.banner) ? rec.banner[0] : rec.banner;
+        const newUrl = fname ? `https://api.webcod.in/api/files/tournament_config/${rec.id}/${fname}` : '';
+        setTournament(prev => ({ ...prev, existingBannerUrl: newUrl }));
+        setLocalBannerUri(null);
+      }
+
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert('Tournament Started', 'New weekly tournament is now live for all users!');
     } catch (e: any) {
@@ -576,12 +625,34 @@ export default function AdminScreen() {
 
           {/* ── Weekly Tournament Setup ──────────────────────────────── */}
           <AdminSection title="Weekly Tournament Setup" icon="trophy">
-            <AdminField
-              label="Banner Image URL"
-              value={tournament.bannerUrl}
-              onChangeText={v => setTournament(p => ({ ...p, bannerUrl: v }))}
-              placeholder="https://… (paste a direct image URL)"
-            />
+            {/* ── Banner image picker ── */}
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Tournament Banner Image</Text>
+              {/* Thumbnail preview — local pick takes priority, then existing from PB */}
+              {(localBannerUri || tournament.existingBannerUrl) ? (
+                <Image
+                  source={{ uri: localBannerUri || tournament.existingBannerUrl }}
+                  style={styles.bannerThumb}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={styles.bannerThumbEmpty}>
+                  <MaterialCommunityIcons name="image-outline" size={32} color={Colors.textMuted} />
+                  <Text style={styles.bannerThumbEmptyText}>No banner uploaded yet</Text>
+                </View>
+              )}
+              <Pressable style={styles.pickerBtn} onPress={pickBannerImage}>
+                <MaterialCommunityIcons name="image-plus" size={16} color={Colors.gold} />
+                <Text style={styles.pickerBtnText}>
+                  {localBannerUri ? 'Change Image' : tournament.existingBannerUrl ? 'Replace Banner' : 'Upload Banner'}
+                </Text>
+              </Pressable>
+              {localBannerUri && (
+                <Text style={[styles.emptyText, { color: '#00C853', textAlign: 'left', marginTop: 2 }]}>
+                  ✓ New image selected — will upload on Save
+                </Text>
+              )}
+            </View>
             <AdminField
               label="Total Prize Pool (SHIB)"
               value={tournament.prizePool}
@@ -782,4 +853,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 5, alignSelf: 'flex-start',
   },
   unreadBadgeText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#FF3B30' },
+  // Banner image picker
+  bannerThumb: {
+    width: '100%', height: 140, borderRadius: 10,
+    backgroundColor: Colors.darkCard, marginBottom: 8,
+  },
+  bannerThumbEmpty: {
+    width: '100%', height: 100, borderRadius: 10,
+    backgroundColor: Colors.darkSurface,
+    borderWidth: 1, borderColor: Colors.darkBorder, borderStyle: 'dashed',
+    alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: 8,
+  },
+  bannerThumbEmptyText: {
+    fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted,
+  },
+  pickerBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: Colors.darkSurface,
+    borderWidth: 1, borderColor: Colors.gold + '40',
+    borderRadius: 10, paddingVertical: 11, paddingHorizontal: 14,
+  },
+  pickerBtnText: {
+    fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.gold,
+  },
 });

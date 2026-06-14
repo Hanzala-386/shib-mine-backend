@@ -1,79 +1,82 @@
 /**
- * TournamentBannerPopup — Fullscreen tournament registration modal.
- * Shows the admin-configured banner image with REGISTER (neon green) and
- * REJECT (dark red) action buttons.
+ * TournamentBannerPopup — Premium bottom-sheet tournament registration modal.
+ *
+ * Layout (top → bottom):
+ *   1. Banner image ONLY — no text, no overlays, no icons
+ *   2. Side-by-side horizontal capsule buttons: [REGISTER] [REJECT]
+ *   3. Small disclaimer note
  */
-import React, { useCallback } from 'react';
+import React, { useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, Modal, Pressable, Image,
-  Dimensions, ActivityIndicator,
+  Animated, Dimensions,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import * as Haptics from 'expo-haptics';
-import Animated, {
-  useSharedValue, useAnimatedStyle, withSpring,
-} from 'react-native-reanimated';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
 import { useTournament } from '@/context/TournamentContext';
 import Colors from '@/constants/colors';
 
 const { width: SW } = Dimensions.get('window');
 
-function formatShib(val: number) {
-  if (val >= 1_000_000_000) return `${(val / 1_000_000_000).toFixed(1)}B`;
-  if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1)}M`;
-  if (val >= 1_000) return `${(val / 1_000).toFixed(0)}K`;
-  return val.toLocaleString();
-}
-
-function PressBtn({
-  onPress,
-  colors,
-  borderColor,
-  glowColor,
-  label,
-  icon,
-}: {
-  onPress: () => void;
-  colors: [string, string];
+// ── Pressable capsule button with scale-down tap feedback ─────────────────
+interface CapsuleButtonProps {
+  label: string;
+  bg: string;
   borderColor: string;
   glowColor: string;
-  label: string;
-  icon: string;
-}) {
-  const scale = useSharedValue(1);
-  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  onPress: () => void;
+  disabled?: boolean;
+}
+
+function CapsuleButton({ label, bg, borderColor, glowColor, onPress, disabled }: CapsuleButtonProps) {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  const handlePressIn = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Animated.spring(scale, {
+      toValue: 0.94,
+      useNativeDriver: true,
+      speed: 50,
+      bounciness: 4,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 8,
+    }).start();
+  };
 
   return (
-    <Animated.View style={[styles.btnWrap, animStyle]}>
+    <Animated.View style={[styles.capsuleWrap, { transform: [{ scale }] }]}>
       <Pressable
-        onPressIn={() => {
-          scale.value = withSpring(0.95, { damping: 18, stiffness: 500 });
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        }}
-        onPressOut={() => { scale.value = withSpring(1, { damping: 5, stiffness: 320 }); }}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
         onPress={onPress}
-        style={[styles.btn, { borderColor, shadowColor: glowColor }]}
+        disabled={disabled}
+        style={[
+          styles.capsule,
+          {
+            backgroundColor: bg,
+            borderColor,
+            shadowColor: glowColor,
+          },
+          disabled && { opacity: 0.6 },
+        ]}
       >
-        <LinearGradient
-          colors={colors}
-          style={StyleSheet.absoluteFill}
-          start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-        />
-        <MaterialCommunityIcons name={icon as any} size={20} color="#fff" />
-        <Text style={styles.btnLabel}>{label}</Text>
+        <Text style={[styles.capsuleLabel, { color: '#fff' }]}>{label}</Text>
       </Pressable>
     </Animated.View>
   );
 }
 
+// ── Main popup component ───────────────────────────────────────────────────
 export function TournamentBannerPopup() {
   const insets = useSafeAreaInsets();
-  const {
-    config, showPopup, joinTournament, rejectTournament,
-  } = useTournament();
-
+  const { config, showPopup, joinTournament, rejectTournament } = useTournament();
   const [joining, setJoining] = React.useState(false);
 
   const handleRegister = useCallback(async () => {
@@ -96,111 +99,54 @@ export function TournamentBannerPopup() {
 
   if (!showPopup || !config) return null;
 
-  const top3 = Object.entries(config.reward_structure)
-    .map(([rank, prize]) => ({ rank: Number(rank), prize: Number(prize) }))
-    .sort((a, b) => a.rank - b.rank)
-    .slice(0, 3);
-
-  const medals = ['🥇', '🥈', '🥉'];
-
   return (
-    <Modal visible transparent animationType="fade" statusBarTranslucent>
-      {/* Dark overlay */}
+    <Modal visible transparent animationType="slide" statusBarTranslucent>
+      {/* Dimmed full-screen backdrop */}
       <View style={styles.overlay}>
-        <View style={[styles.card, { paddingBottom: insets.bottom + 20 }]}>
 
-          {/* Glow border */}
-          <LinearGradient
-            colors={['rgba(244,196,48,0.6)', 'rgba(255,107,0,0.4)', 'transparent']}
-            style={styles.cardGlow}
-            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-          />
+        {/* Bottom sheet card */}
+        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 4 }]}>
 
-          {/* Banner image */}
-          <View style={styles.bannerWrap}>
+          {/* ── Banner image — ONLY the image, zero overlays ─────────────── */}
+          <View style={styles.imageContainer}>
             {config.banner_url ? (
               <Image
                 source={{ uri: config.banner_url }}
-                style={styles.bannerImg}
+                style={styles.bannerImage}
                 resizeMode="cover"
               />
             ) : (
-              <LinearGradient
-                colors={['rgba(244,196,48,0.18)', 'rgba(255,107,0,0.14)']}
-                style={styles.bannerPlaceholder}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-              >
-                <MaterialCommunityIcons name="trophy" size={64} color={Colors.gold} />
-                <Text style={styles.bannerPlaceholderText}>WEEKLY TOURNAMENT</Text>
-              </LinearGradient>
+              /* Fallback: dark placeholder so layout doesn't break before admin uploads banner */
+              <View style={styles.bannerPlaceholder} />
             )}
-            {/* Prize pool badge */}
-            <View style={styles.prizePoolBadge}>
-              <LinearGradient
-                colors={[Colors.gold, Colors.neonOrange]}
-                style={StyleSheet.absoluteFill}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-              />
-              <Text style={styles.prizePoolText}>
-                🏆 {formatShib(config.prize_pool_total)} SHIB PRIZE POOL
-              </Text>
-            </View>
           </View>
 
-          {/* Content */}
-          <View style={styles.content}>
-            <Text style={styles.title}>Weekly Mining Tournament</Text>
-            <Text style={styles.sub}>
-              Mine SHIB this week and compete for the top spot. Top {config.winners_count} miners win big!
-            </Text>
+          {/* ── Side-by-side capsule buttons ─────────────────────────────── */}
+          <View style={styles.buttonRow}>
+            {/* LEFT — REGISTER: dark green bg + neon green glow border */}
+            <CapsuleButton
+              label={joining ? 'REGISTERING…' : 'REGISTER'}
+              bg="#071a0c"
+              borderColor="#00E676"
+              glowColor="#00E676"
+              onPress={handleRegister}
+              disabled={joining}
+            />
 
-            {/* Top prizes */}
-            {top3.length > 0 && (
-              <View style={styles.prizesRow}>
-                {top3.map(({ rank, prize }) => (
-                  <View key={rank} style={styles.prizeChip}>
-                    <Text style={styles.prizeEmoji}>{medals[rank - 1] ?? '🏅'}</Text>
-                    <Text style={styles.prizeAmount}>{formatShib(prize)}</Text>
-                    <Text style={styles.prizeSub}>SHIB</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Action buttons */}
-            <View style={styles.btns}>
-              {/* REGISTER — neon green */}
-              <PressBtn
-                onPress={handleRegister}
-                colors={['#0a2e10', '#0d3d14']}
-                borderColor="#00E676"
-                glowColor="#00E676"
-                label={joining ? 'Registering…' : 'REGISTER'}
-                icon="trophy-award"
-              />
-              {joining && (
-                <ActivityIndicator
-                  size="small"
-                  color="#00E676"
-                  style={styles.joiningSpinner}
-                />
-              )}
-
-              {/* REJECT — dark red */}
-              <PressBtn
-                onPress={handleReject}
-                colors={['#2a0a0a', '#3d0d0d']}
-                borderColor="#FF3B30"
-                glowColor="#FF3B30"
-                label="NOT NOW"
-                icon="close-circle-outline"
-              />
-            </View>
-
-            <Text style={styles.note}>
-              Registering is free. Mining rewards go to BOTH your wallet and tournament score.
-            </Text>
+            {/* RIGHT — REJECT: dark crimson bg + neon red glow border */}
+            <CapsuleButton
+              label="REJECT"
+              bg="#1a0707"
+              borderColor="#FF3B30"
+              glowColor="#FF3B30"
+              onPress={handleReject}
+            />
           </View>
+
+          {/* ── Disclaimer note ──────────────────────────────────────────── */}
+          <Text style={styles.note}>
+            Registering is free — your mining rewards also count as tournament points.
+          </Text>
         </View>
       </View>
     </Modal>
@@ -210,138 +156,77 @@ export function TournamentBannerPopup() {
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.88)',
-    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.82)',
     justifyContent: 'flex-end',
   },
-  card: {
-    width: '100%',
+
+  // Bottom sheet
+  sheet: {
     backgroundColor: '#0D0D14',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    borderWidth: 1,
-    borderColor: 'rgba(244,196,48,0.25)',
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.08)',
     overflow: 'hidden',
   },
-  cardGlow: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0,
-    height: 2,
-  },
-  bannerWrap: {
+
+  // Banner image takes full width, 16:9 aspect ratio
+  imageContainer: {
     width: '100%',
-    height: 220,
-    overflow: 'hidden',
+    aspectRatio: 16 / 9,
+    backgroundColor: '#111118',
   },
-  bannerImg: {
+  bannerImage: {
     width: '100%',
     height: '100%',
   },
   bannerPlaceholder: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#111118',
   },
-  bannerPlaceholderText: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 22,
-    color: Colors.gold,
-    letterSpacing: 2,
-  },
-  prizePoolBadge: {
-    position: 'absolute',
-    bottom: 0, left: 0, right: 0,
-    paddingVertical: 7,
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  prizePoolText: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 14,
-    color: '#000',
-    letterSpacing: 0.5,
-  },
-  content: {
-    padding: 20,
-    gap: 12,
-  },
-  title: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 22,
-    color: Colors.textPrimary,
-    textAlign: 'center',
-  },
-  sub: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 13,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  prizesRow: {
+
+  // Side-by-side buttons
+  buttonRow: {
     flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 10,
-    marginVertical: 4,
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 4,
   },
-  prizeChip: {
+
+  capsuleWrap: {
     flex: 1,
-    backgroundColor: 'rgba(244,196,48,0.07)',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(244,196,48,0.2)',
-    alignItems: 'center',
-    paddingVertical: 10,
-    gap: 2,
   },
-  prizeEmoji: { fontSize: 22 },
-  prizeAmount: {
+  capsule: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 17,
+    borderRadius: 50,      // fully rounded capsule shape
+    borderWidth: 2,
+    // Shadow/glow (iOS)
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.75,
+    shadowRadius: 12,
+    // Elevation (Android)
+    elevation: 10,
+  },
+  capsuleLabel: {
     fontFamily: 'Inter_700Bold',
     fontSize: 15,
-    color: Colors.gold,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
   },
-  prizeSub: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 10,
-    color: Colors.textMuted,
-  },
-  btns: {
-    gap: 10,
-    marginTop: 4,
-  },
-  btnWrap: {},
-  btn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    paddingVertical: 16,
-    borderRadius: 16,
-    borderWidth: 2,
-    overflow: 'hidden',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.7,
-    shadowRadius: 14,
-    elevation: 8,
-  },
-  btnLabel: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 16,
-    color: '#fff',
-    letterSpacing: 1,
-  },
-  joiningSpinner: {
-    position: 'absolute',
-    right: 24,
-    top: '50%',
-  },
+
+  // Disclaimer
   note: {
     fontFamily: 'Inter_400Regular',
     fontSize: 11,
     color: Colors.textMuted,
     textAlign: 'center',
     lineHeight: 17,
-    marginTop: 4,
+    paddingHorizontal: 28,
+    paddingTop: 10,
+    paddingBottom: 6,
   },
 });

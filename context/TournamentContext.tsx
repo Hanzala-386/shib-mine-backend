@@ -10,7 +10,7 @@ import React, {
   useCallback, useRef, ReactNode,
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { pb } from '@/lib/pocketbase';
+import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 import { useAuth } from './AuthContext';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -94,12 +94,22 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       let rewardStructure: Record<string, number> = {};
       try { rewardStructure = JSON.parse(raw.reward_structure || '{}'); } catch {}
 
+      // Build banner URL: prefer the uploaded file field, fall back to legacy banner_url text
+      let bannerUrl = '';
+      if (raw.banner) {
+        const filename = Array.isArray(raw.banner) ? raw.banner[0] : raw.banner;
+        if (filename) {
+          bannerUrl = `${POCKETBASE_URL}/api/files/tournament_config/${raw.id}/${filename}`;
+        }
+      }
+      if (!bannerUrl && raw.banner_url) bannerUrl = raw.banner_url;
+
       const cfg: TournamentConfig = {
         id:               raw.id,
         prize_pool_total: Number(raw.prize_pool_total) || 0,
         winners_count:    Number(raw.winners_count)    || 3,
         reward_structure: rewardStructure,
-        banner_url:       raw.banner_url || '',
+        banner_url:       bannerUrl,
         week_start:       raw.week_start || new Date().toISOString(),
         is_active:        !!raw.is_active,
       };

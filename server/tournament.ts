@@ -84,18 +84,29 @@ async function pbPatch(path: string, body: object): Promise<any> {
 
 // ── Schema helpers ─────────────────────────────────────────────────────────
 
-async function ensureUserField(fieldName: string, fieldDef: object): Promise<void> {
+async function ensureCollectionField(
+  collectionName: string,
+  fieldName: string,
+  fieldDef: object,
+): Promise<void> {
   try {
-    const col = await pbGet('/api/collections/users');
+    const col = await pbGet(`/api/collections/${collectionName}`);
     if (!col.id) return;
     const already = (col.schema || []).some((f: any) => f.name === fieldName);
-    if (already) { console.log(`[tournament] users.${fieldName} already exists ✓`); return; }
+    if (already) {
+      console.log(`[tournament] ${collectionName}.${fieldName} already exists ✓`);
+      return;
+    }
     const updated = [...(col.schema || []), { name: fieldName, ...fieldDef }];
-    await pbPatch('/api/collections/users', { schema: updated });
-    console.log(`[tournament] Added users.${fieldName} ✓`);
+    await pbPatch(`/api/collections/${collectionName}`, { schema: updated });
+    console.log(`[tournament] Added ${collectionName}.${fieldName} ✓`);
   } catch (e: any) {
-    console.warn(`[tournament] ensureUserField ${fieldName}:`, e.message);
+    console.warn(`[tournament] ensureCollectionField ${fieldName}:`, e.message);
   }
+}
+
+async function ensureUserField(fieldName: string, fieldDef: object): Promise<void> {
+  return ensureCollectionField('users', fieldName, fieldDef);
 }
 
 // ── Public: schema setup ───────────────────────────────────────────────────
@@ -114,6 +125,18 @@ export async function setupTournamentSchema(): Promise<void> {
     const existing = await pbGet('/api/collections/tournament_config');
     if (existing.id) {
       console.log('[tournament] tournament_config collection already exists ✓');
+      // Ensure the banner file field exists on already-created collections
+      await ensureCollectionField('tournament_config', 'banner', {
+        type: 'file',
+        required: false,
+        options: {
+          maxSelect: 1,
+          maxSize: 10485760, // 10 MB
+          mimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+          thumbs: [],
+          protected: false,
+        },
+      });
       return;
     }
 
@@ -121,12 +144,15 @@ export async function setupTournamentSchema(): Promise<void> {
       name: 'tournament_config',
       type: 'base',
       schema: [
-        { name: 'prize_pool_total',  type: 'number', required: false, options: { min: null, max: null } },
-        { name: 'winners_count',     type: 'number', required: false, options: { min: null, max: null } },
-        { name: 'reward_structure',  type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
-        { name: 'banner_url',        type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
-        { name: 'week_start',        type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
-        { name: 'is_active',         type: 'bool',   required: false, options: {} },
+        { name: 'prize_pool_total', type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'winners_count',    type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'reward_structure', type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
+        {
+          name: 'banner', type: 'file', required: false,
+          options: { maxSelect: 1, maxSize: 10485760, mimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'], thumbs: [], protected: false },
+        },
+        { name: 'week_start',       type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
+        { name: 'is_active',        type: 'bool',   required: false, options: {} },
       ],
       listRule:   '',
       viewRule:   '',
@@ -136,12 +162,11 @@ export async function setupTournamentSchema(): Promise<void> {
     });
     console.log('[tournament] tournament_config collection created ✓');
 
-    // 3. Seed a default config record
+    // 3. Seed a default config record (no banner image yet — admin uploads one)
     await pbPost('/api/collections/tournament_config/records', {
       prize_pool_total: 500000,
       winners_count: 3,
       reward_structure: JSON.stringify({ '1': 250000, '2': 150000, '3': 100000 }),
-      banner_url: '',
       week_start: new Date().toISOString(),
       is_active: true,
     });
