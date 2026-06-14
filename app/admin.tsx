@@ -11,7 +11,8 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useAdmin, type AppSettings } from '@/context/AdminContext';
 import { useAuth } from '@/context/AuthContext';
-import { api, type AdminTask, type AdminTaskSubmission } from '@/lib/api';
+import { api, type AdminTask, type AdminTaskSubmission, type SupportTicketRecord } from '@/lib/api';
+import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 
 // Build a PocketBase file URL for a given collection record and filename
@@ -40,6 +41,56 @@ export default function AdminScreen() {
   });
   const [creatingTask, setCreatingTask]     = useState(false);
 
+  // ── Support ticket state ──
+  const [supportTickets, setSupportTickets] = useState<SupportTicketRecord[]>([]);
+  const [supportLoading, setSupportLoading] = useState(false);
+  const [replyTexts, setReplyTexts]         = useState<Record<string, string>>({});
+  const [replyingId, setReplyingId]         = useState<string | null>(null);
+  const [supportTab, setSupportTab]         = useState<'Pending' | 'Replied'>('Pending');
+
+  const fetchSupportTickets = useCallback(async () => {
+    setSupportLoading(true);
+    try {
+      // Direct PocketBase SDK — works on APK and dev
+      const res = await pb.collection('support_tickets').getFullList({
+        sort: '-created',
+      });
+      setSupportTickets(res.map((r: any) => ({
+        id: r.id,
+        user_pb_id: r.user_pb_id ?? '',
+        user_name: r.user_name ?? '',
+        user_email: r.user_email ?? '',
+        question: r.question ?? '',
+        reply: r.reply ?? '',
+        status: (r.status ?? 'Pending') as 'Pending' | 'Replied',
+        is_read_by_user: !!r.is_read_by_user,
+        created: r.created ?? '',
+      })));
+    } catch { /* ignore */ } finally {
+      setSupportLoading(false);
+    }
+  }, []);
+
+  const handleSendReply = useCallback(async (ticketId: string) => {
+    const reply = replyTexts[ticketId]?.trim();
+    if (!reply) return;
+    setReplyingId(ticketId);
+    try {
+      await pb.collection('support_tickets').update(ticketId, {
+        reply,
+        status: 'Replied',
+        is_read_by_user: false,
+      });
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setReplyTexts(prev => { const n = { ...prev }; delete n[ticketId]; return n; });
+      await fetchSupportTickets();
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to send reply.');
+    } finally {
+      setReplyingId(null);
+    }
+  }, [replyTexts, fetchSupportTickets]);
+
   const fetchTasks = useCallback(() => {
     setTasksLoading(true);
     api.adminGetTasks().then(setTasks).catch(() => {}).finally(() => setTasksLoading(false));
@@ -59,6 +110,7 @@ export default function AdminScreen() {
       api.adminGetStats().then(setStats).catch(() => {});
       fetchTasks();
       fetchSubmissions();
+      fetchSupportTickets();
     }
   }, [isAdmin]);
 
@@ -362,6 +414,106 @@ export default function AdminScreen() {
             )}
           </AdminSection>
 
+          {/* ── Live Support ─────────────────────────────────────────────── */}
+          <AdminSection title={`Live Support (${supportTickets.length})`} icon="headset">
+            {/* Tab selector */}
+            <View style={styles.supportTabRow}>
+              {(['Pending', 'Replied'] as const).map(tab => (
+                <Pressable
+                  key={tab}
+                  style={[styles.supportTab, supportTab === tab && styles.supportTabActive]}
+                  onPress={() => setSupportTab(tab)}
+                >
+                  <Text style={[styles.supportTabText, supportTab === tab && styles.supportTabTextActive]}>
+                    {tab} ({supportTickets.filter(t => t.status === tab).length})
+                  </Text>
+                </Pressable>
+              ))}
+              <Pressable onPress={fetchSupportTickets} style={styles.refreshBtn}>
+                <Ionicons name="refresh" size={15} color={Colors.textMuted} />
+              </Pressable>
+            </View>
+
+            {supportLoading ? (
+              <ActivityIndicator color={Colors.gold} style={{ marginVertical: 12 }} />
+            ) : supportTickets.filter(t => t.status === supportTab).length === 0 ? (
+              <Text style={styles.emptyText}>No {supportTab.toLowerCase()} tickets.</Text>
+            ) : (
+              supportTickets
+                .filter(t => t.status === supportTab)
+                .map(ticket => (
+                  <View key={ticket.id} style={styles.supportCard}>
+                    {/* Header row */}
+                    <View style={styles.supportCardHeader}>
+                      <View style={{ flex: 1, gap: 2 }}>
+                        <Text style={styles.supportUserName}>{ticket.user_name}</Text>
+                        <Text style={styles.supportUserEmail}>{ticket.user_email}</Text>
+                      </View>
+                      <View style={[
+                        styles.supportStatusBadge,
+                        { backgroundColor: ticket.status === 'Pending' ? 'rgba(255,107,0,0.15)' : 'rgba(76,175,80,0.15)' }
+                      ]}>
+                        <Text style={[
+                          styles.supportStatusText,
+                          { color: ticket.status === 'Pending' ? Colors.neonOrange : '#4CAF50' }
+                        ]}>{ticket.status}</Text>
+                      </View>
+                    </View>
+
+                    {/* Question */}
+                    <Text style={styles.supportLabel}>Question</Text>
+                    <Text style={styles.supportQuestion}>{ticket.question}</Text>
+
+                    {/* If already replied — show the reply */}
+                    {ticket.status === 'Replied' && !!ticket.reply && (
+                      <>
+                        <Text style={styles.supportLabel}>Your Reply</Text>
+                        <Text style={styles.supportReplyText}>{ticket.reply}</Text>
+                        {!ticket.is_read_by_user && (
+                          <View style={styles.unreadBadge}>
+                            <Text style={styles.unreadBadgeText}>● Not yet seen by user</Text>
+                          </View>
+                        )}
+                      </>
+                    )}
+
+                    {/* Reply input — always available to update */}
+                    {ticket.status === 'Pending' && (
+                      <>
+                        <Text style={styles.supportLabel}>Reply</Text>
+                        <TextInput
+                          style={styles.supportReplyInput}
+                          value={replyTexts[ticket.id] ?? ''}
+                          onChangeText={v => setReplyTexts(prev => ({ ...prev, [ticket.id]: v }))}
+                          placeholder="Type your reply…"
+                          placeholderTextColor={Colors.textMuted}
+                          multiline
+                          numberOfLines={3}
+                          textAlignVertical="top"
+                        />
+                        <Pressable
+                          style={[styles.replyBtn, (!replyTexts[ticket.id]?.trim() || replyingId === ticket.id) && { opacity: 0.5 }]}
+                          onPress={() => handleSendReply(ticket.id)}
+                          disabled={!replyTexts[ticket.id]?.trim() || replyingId === ticket.id}
+                        >
+                          <LinearGradient colors={[Colors.gold, Colors.neonOrange]} style={styles.replyBtnGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                            {replyingId === ticket.id
+                              ? <ActivityIndicator size="small" color="#000" />
+                              : <Text style={styles.replyBtnText}>Send Reply</Text>}
+                          </LinearGradient>
+                        </Pressable>
+                      </>
+                    )}
+
+                    {/* Timestamp */}
+                    <Text style={styles.supportTimestamp}>
+                      {new Date(ticket.created).toLocaleDateString()} {new Date(ticket.created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </View>
+                ))
+            )}
+          </AdminSection>
+
           <View style={styles.adminNote}>
             <Ionicons name="person" size={14} color={Colors.textMuted} />
             <Text style={styles.adminNoteText}>Logged in as: {user?.email}</Text>
@@ -466,4 +618,50 @@ const styles = StyleSheet.create({
   proofOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center', padding: 16 },
   proofFull: { width: '100%', height: '80%', borderRadius: 12 },
   proofClose: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted, marginTop: 16 },
+  // Live Support
+  supportTabRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  supportTab: {
+    paddingHorizontal: 16, paddingVertical: 7, borderRadius: 10,
+    borderWidth: 1, borderColor: Colors.darkBorder,
+    backgroundColor: Colors.darkSurface,
+  },
+  supportTabActive: { borderColor: Colors.gold, backgroundColor: 'rgba(244,196,48,0.1)' },
+  supportTabText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.textMuted },
+  supportTabTextActive: { color: Colors.gold },
+  supportCard: {
+    backgroundColor: Colors.darkSurface, borderRadius: 14, padding: 14,
+    gap: 8, marginBottom: 12, borderWidth: 1, borderColor: Colors.darkBorder,
+  },
+  supportCardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 4 },
+  supportUserName: { fontFamily: 'Inter_700Bold', fontSize: 14, color: Colors.textPrimary },
+  supportUserEmail: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary },
+  supportStatusBadge: { borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4 },
+  supportStatusText: { fontFamily: 'Inter_700Bold', fontSize: 11 },
+  supportLabel: {
+    fontFamily: 'Inter_500Medium', fontSize: 10,
+    color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8,
+  },
+  supportQuestion: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textPrimary, lineHeight: 20 },
+  supportReplyText: {
+    fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textPrimary,
+    lineHeight: 20, backgroundColor: 'rgba(244,196,48,0.06)',
+    borderRadius: 10, padding: 10,
+  },
+  supportReplyInput: {
+    backgroundColor: Colors.darkCard, borderRadius: 10, padding: 12,
+    fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textPrimary,
+    borderWidth: 1, borderColor: Colors.darkBorder, minHeight: 80,
+  },
+  replyBtn: {},
+  replyBtnGrad: { borderRadius: 10, paddingVertical: 11, alignItems: 'center' },
+  replyBtnText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#000' },
+  supportTimestamp: {
+    fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted,
+    textAlign: 'right', marginTop: 4,
+  },
+  unreadBadge: {
+    backgroundColor: 'rgba(255,59,48,0.12)', borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 5, alignSelf: 'flex-start',
+  },
+  unreadBadgeText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#FF3B30' },
 });

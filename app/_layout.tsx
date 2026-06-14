@@ -25,6 +25,7 @@ import { TermsGateModal } from "@/components/TermsGateModal";
 import { SecurityProvider } from "@/context/SecurityContext";
 import { SecurityModal } from "@/components/SecurityModal";
 import { ForceUpdateModal } from "@/components/ForceUpdateModal";
+import { SupportWidget } from "@/components/SupportWidget";
 import { View, StyleSheet } from "react-native";
 import SpinningCoin from "@/components/SpinningCoin";
 
@@ -88,6 +89,8 @@ function ProvidedApp() {
             <AdminProvider>
               <NotificationsProvider>
                 <RootLayoutNav />
+                {/* SupportWidget — floating above all screens, only when authenticated */}
+                <SupportWidget />
               </NotificationsProvider>
             </AdminProvider>
           </MiningProvider>

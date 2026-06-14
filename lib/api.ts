@@ -394,6 +394,13 @@ export const api = {
 
   confirmDelete: (pbId: string, code: string) =>
     robustPost<{ success: boolean }>('/api/auth/confirm-delete', { pbId, code }),
+
+  // ── Admin: Support Tickets ─────────────────────────────────────────────
+  adminGetSupportTickets: () =>
+    request<SupportTicketRecord[]>('GET', '/api/admin/support-tickets'),
+
+  adminReplySupportTicket: (id: string, reply: string) =>
+    request<{ success: boolean }>('PUT', `/api/admin/support-tickets/${id}/reply`, { reply }),
 };
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -569,5 +576,17 @@ export interface AdminTaskSubmission {
   admin_notes: string;
   reward_amount: number;
   reward_type: string;
+  created: string;
+}
+
+export interface SupportTicketRecord {
+  id: string;
+  user_pb_id: string;
+  user_name: string;
+  user_email: string;
+  question: string;
+  reply: string;
+  status: 'Pending' | 'Replied';
+  is_read_by_user: boolean;
   created: string;
 }
