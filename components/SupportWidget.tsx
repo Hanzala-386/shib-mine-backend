@@ -240,7 +240,11 @@ function SupportWidgetInner() {
             start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
           />
           <Ionicons name="headset" size={22} color={Colors.gold} />
-          {hasUnread && <View style={styles.badge} />}
+          {hasUnread && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>i</Text>
+            </View>
+          )}
         </Pressable>
       </Animated.View>
 
@@ -282,7 +286,7 @@ function SupportWidgetInner() {
                 <Text style={styles.qLabel}>Your question</Text>
                 <Text style={styles.qText}>{ticket.question}</Text>
                 <View style={styles.replyBox}>
-                  <Text style={styles.replyLabel}>Admin reply</Text>
+                  <Text style={styles.replyLabel}>SUPPORT TEAM REPLY</Text>
                   <Text style={styles.replyText}>{ticket.reply}</Text>
                 </View>
                 <Pressable
@@ -384,14 +388,23 @@ const styles = StyleSheet.create({
   },
   badge: {
     position: 'absolute',
-    top: 6,
-    right: 6,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    top: 4,
+    right: 4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
     backgroundColor: '#FF3B30',
     borderWidth: 1.5,
     borderColor: Colors.darkBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  badgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#fff',
+    lineHeight: 11,
   },
   // Modal / bottom sheet
   backdrop: {
