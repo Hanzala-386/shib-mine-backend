@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Platform, Animated, Easing, Pressable,
-  ActivityIndicator,
+  ActivityIndicator, Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -300,8 +300,24 @@ function avatarColor(id: string): string {
 }
 
 // Circular initials avatar with deterministic neon ring
-function TAvatar({ name, id, size = 52 }: { name: string; id: string; size?: number }) {
+function TAvatar({ name, id, size = 52, uri }: { name: string; id: string; size?: number; uri?: string }) {
   const color = avatarColor(id);
+  if (uri) {
+    return (
+      <View style={{
+        width: size, height: size, borderRadius: size / 2,
+        overflow: 'hidden',
+        backgroundColor: color + '22',
+        borderWidth: 2, borderColor: color,
+      }}>
+        <Image
+          source={{ uri }}
+          style={{ width: size, height: size }}
+          resizeMode="cover"
+        />
+      </View>
+    );
+  }
   return (
     <View style={{
       width: size, height: size, borderRadius: size / 2,
@@ -341,7 +357,7 @@ function TournamentPodium({ top3, pbId }: { top3: TournamentEntry[]; pbId: strin
               isMe && podStyles.ringMe,
             ]}>
               {entry
-                ? <TAvatar name={entry.displayName} id={entry.id} size={size} />
+                ? <TAvatar name={entry.displayName} id={entry.id} size={size} uri={entry.avatarUrl} />
                 : <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ringColor + '12' }} />
               }
             </View>
@@ -360,6 +376,15 @@ function TournamentPodium({ top3, pbId }: { top3: TournamentEntry[]; pbId: strin
             <Text style={[podStyles.podPts, { color: labelColor }]}>
               {entry ? `${formatShib(entry.points)} pts` : '—'}
             </Text>
+
+            {/* Expected prize for this rank — configured by admin in reward_structure */}
+            {entry && entry.prize > 0 ? (
+              <Text style={[podStyles.podPrize, { color: labelColor }]}>
+                🏆 {formatShib(entry.prize)} SHIB
+              </Text>
+            ) : (
+              <Text style={podStyles.podPrizeDash}>—</Text>
+            )}
 
           </View>
         );
@@ -383,8 +408,10 @@ const podStyles = StyleSheet.create({
   ringMe:    { borderColor: Colors.gold, borderWidth: 3 },
   pill:      { borderRadius: 20, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 2 },
   pillText:  { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 0.5 },
-  podName:   { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.textPrimary, textAlign: 'center', maxWidth: 96 },
-  podPts:    { fontFamily: 'Inter_700Bold', fontSize: 11, textAlign: 'center' },
+  podName:      { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.textPrimary, textAlign: 'center', maxWidth: 96 },
+  podPts:       { fontFamily: 'Inter_700Bold', fontSize: 11, textAlign: 'center' },
+  podPrize:     { fontFamily: 'Inter_600SemiBold', fontSize: 10, textAlign: 'center', opacity: 0.9 },
+  podPrizeDash: { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted, textAlign: 'center' },
 });
 
 /* ── Rank card for positions 4 and below ────────────────────────────────── */
@@ -394,23 +421,28 @@ function TCard({ entry, isMe }: { entry: TournamentEntry; isMe: boolean }) {
       {/* Rank number */}
       <Text style={[tcardStyles.rank, isMe && { color: Colors.gold }]}>#{entry.rank}</Text>
 
-      {/* Initials avatar */}
-      <TAvatar name={entry.displayName} id={entry.id} size={40} />
+      {/* Avatar — real image if PB avatar exists, else initials */}
+      <TAvatar name={entry.displayName} id={entry.id} size={40} uri={entry.avatarUrl} />
 
-      {/* Username + optional prize tag */}
+      {/* Username */}
       <View style={tcardStyles.nameCol}>
         <Text style={[tcardStyles.name, isMe && { color: Colors.gold }]} numberOfLines={1}>
           {entry.displayName}{isMe ? ' (You)' : ''}
         </Text>
-        {entry.prize > 0 && (
-          <Text style={tcardStyles.prizeTag}>🏆 {formatShib(entry.prize)} SHIB</Text>
-        )}
       </View>
 
       {/* Points */}
       <View style={tcardStyles.ptsCol}>
         <Text style={[tcardStyles.pts, isMe && { color: Colors.gold }]}>{formatShib(entry.points)}</Text>
         <Text style={tcardStyles.ptsUnit}>pts</Text>
+      </View>
+
+      {/* Expected winning coins — dynamic from admin reward_structure */}
+      <View style={tcardStyles.prizeCol}>
+        <Text style={[tcardStyles.prizeAmt, entry.prize > 0 && { color: Colors.gold }]}>
+          {entry.prize > 0 ? formatShib(entry.prize) : '—'}
+        </Text>
+        {entry.prize > 0 && <Text style={tcardStyles.prizeUnit}>SHIB</Text>}
       </View>
     </View>
   );
@@ -440,6 +472,9 @@ const tcardStyles = StyleSheet.create({
   ptsCol:   { alignItems: 'flex-end' },
   pts:      { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#00C853' },
   ptsUnit:  { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted },
+  prizeCol: { alignItems: 'flex-end', minWidth: 58 },
+  prizeAmt: { fontFamily: 'Inter_700Bold', fontSize: 12, color: Colors.textMuted },
+  prizeUnit:{ fontFamily: 'Inter_500Medium', fontSize: 9, color: Colors.gold + 'aa', marginTop: 1 },
 });
 
 const rowStyles = StyleSheet.create({
@@ -659,6 +694,14 @@ export default function LeaderboardScreen() {
       {/* Tournament: live countdown — at the very top of the weekly section */}
       {activeTab === 'tournament' && config?.is_active && !!config.week_start && (
         <TournamentCountdown weekStart={config.week_start} />
+      )}
+
+      {/* Tournament: total prize pool — shown directly below countdown */}
+      {activeTab === 'tournament' && config?.is_active && (config?.prize_pool_total ?? 0) > 0 && (
+        <View style={styles.prizePoolBar}>
+          <Text style={styles.prizePoolLabel}>Total Prize Pool</Text>
+          <Text style={styles.prizePoolValue}>{formatShib(config!.prize_pool_total)} SHIB</Text>
+        </View>
       )}
 
       {/* All-time: your rank card */}
@@ -893,6 +936,16 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.textSecondary,
     textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8,
   },
+
+  prizePoolBar: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: 'rgba(244,196,48,0.07)',
+    borderRadius: 12, borderWidth: 1, borderColor: 'rgba(244,196,48,0.22)',
+    paddingVertical: 10, paddingHorizontal: 16,
+    marginBottom: 14,
+  },
+  prizePoolLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textSecondary },
+  prizePoolValue: { fontFamily: 'Inter_700Bold', fontSize: 15, color: Colors.gold },
 
   emptyState: { alignItems: 'center', paddingVertical: 60, gap: 12, paddingHorizontal: 40 },
   emptyTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 17, color: Colors.textSecondary },

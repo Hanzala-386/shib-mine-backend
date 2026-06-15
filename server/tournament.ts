@@ -142,12 +142,25 @@ async function ensureTournamentParticipantsCollection(): Promise<void> {
 
 export async function setupTournamentSchema(): Promise<void> {
   try {
-    // 1. Add tournament fields to users collection
+    // 1. Add tournament + profile fields to users collection
     await ensureUserField('tournament_joined', {
       type: 'bool', required: false, options: {},
     });
     await ensureUserField('weekly_tournament_points', {
       type: 'number', required: false, options: { min: null, max: null },
+    });
+    // avatar file field — used for profile image that persists across devices and
+    // is shown on the tournament leaderboard podium and rank cards
+    await ensureUserField('avatar', {
+      type: 'file',
+      required: false,
+      options: {
+        maxSelect: 1,
+        maxSize: 5242880,
+        mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+        thumbs: ['100x100'],
+        protected: false,
+      },
     });
 
     // 2. Create / ensure tournament_config collection

@@ -30,6 +30,7 @@ export interface TournamentEntry {
   displayName: string;
   points: number;
   prize: number;
+  avatarUrl?: string;   // PocketBase file URL — undefined when user has no uploaded avatar
 }
 
 interface TournamentContextValue {
@@ -174,21 +175,31 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       const res = await pb.collection('users').getList(1, 100, {
         sort: '-weekly_tournament_points',
         filter: 'tournament_joined = true && weekly_tournament_points > 0',
-        fields: 'id,display_name,weekly_tournament_points',
+        fields: 'id,display_name,weekly_tournament_points,avatar',
       });
       if (!mounted.current) return;
 
+      const PB_URL = 'https://api.webcod.in';
       const rewardMap = config?.reward_structure ?? {};
       const entries: TournamentEntry[] = res.items.map((u: any, i: number) => {
         let name: string = u.display_name || 'Miner';
         if (name.includes('@')) name = name.split('@')[0];
         const rank = i + 1;
+
+        // Build avatar URL from PocketBase file field
+        let avatarUrl: string | undefined;
+        if (u.avatar) {
+          const filename = Array.isArray(u.avatar) ? u.avatar[0] : u.avatar;
+          if (filename) avatarUrl = `${PB_URL}/api/files/users/${u.id}/${filename}`;
+        }
+
         return {
           rank,
           id: u.id,
           displayName: name,
           points: Number(u.weekly_tournament_points) || 0,
           prize: Number(rewardMap[String(rank)]) || 0,
+          avatarUrl,
         };
       });
       if (mounted.current) setLeaderboard(entries);

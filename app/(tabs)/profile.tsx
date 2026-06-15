@@ -23,7 +23,7 @@ import {
 import { auth } from '@/lib/firebase';
 import SpinningCoin from '@/components/SpinningCoin';
 import { useAuth } from '@/context/AuthContext';
-import { pb, processPendingReferralEarnings } from '@/lib/pocketbase';
+import { pb, POCKETBASE_URL, processPendingReferralEarnings } from '@/lib/pocketbase';
 import { useWallet } from '@/context/WalletContext';
 import { useAds } from '@/context/AdContext';
 import { InlineBannerAd, BANNER_HEIGHT } from '@/components/StickyBannerAd';
@@ -223,13 +223,26 @@ export default function ProfileScreen() {
     }
   }
 
-  /* Load saved avatar */
+  /* Load saved avatar — prefer AsyncStorage (fast), fall back to PocketBase (cross-device) */
   useEffect(() => {
-    AsyncStorage.getItem(AVATAR_KEY).then((uri) => {
-      if (uri) setAvatarUri(uri);
+    AsyncStorage.getItem(AVATAR_KEY).then(async (cached) => {
+      if (cached) {
+        setAvatarUri(cached);
+      } else if (user?.pbId) {
+        // Recover avatar from PocketBase (e.g., fresh install on a new device)
+        try {
+          const u = await pb.collection('users').getOne(user.pbId, { fields: 'id,avatar' });
+          const filename = Array.isArray(u.avatar) ? u.avatar[0] : u.avatar;
+          if (filename) {
+            const pbUri = `${POCKETBASE_URL}/api/files/users/${u.id}/${filename}`;
+            setAvatarUri(pbUri);
+            await AsyncStorage.setItem(AVATAR_KEY, pbUri);
+          }
+        } catch {}
+      }
     });
     refreshBalance();
-  }, []);
+  }, [user?.pbId]);
 
   async function handlePickAvatar() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -244,9 +257,29 @@ export default function ProfileScreen() {
       quality: 0.7,
     });
     if (!result.canceled && result.assets[0]) {
-      const uri = result.assets[0].uri;
-      setAvatarUri(uri);
-      await AsyncStorage.setItem(AVATAR_KEY, uri);
+      const asset = result.assets[0];
+      const localUri = asset.uri;
+      const mimeType = asset.mimeType || 'image/jpeg';
+      const ext = mimeType.split('/')[1] || 'jpg';
+
+      // Update UI and local cache immediately
+      setAvatarUri(localUri);
+      await AsyncStorage.setItem(AVATAR_KEY, localUri);
+
+      // Persist to PocketBase so the image appears on the leaderboard and survives device changes
+      if (user?.pbId) {
+        try {
+          const formData = new FormData();
+          formData.append('avatar', {
+            uri: localUri,
+            name: `avatar_${Date.now()}.${ext}`,
+            type: mimeType,
+          } as any);
+          await pb.collection('users').update(user.pbId, formData);
+        } catch (e) {
+          console.log('[Avatar] PB upload skipped (non-critical):', e);
+        }
+      }
     }
   }
 
