@@ -270,45 +270,53 @@ export default function ProfileScreen() {
       const mimeType = asset.mimeType || 'image/jpeg';
       const ext = mimeType.split('/')[1] || 'jpg';
 
-      // Update UI and local cache immediately
+      // Show the picked image immediately — snappy UX before network round-trip
       setAvatarUri(localUri);
-      await AsyncStorage.setItem(AVATAR_KEY, localUri);
 
-      // Persist to PocketBase using raw fetch — the PB JS SDK does not relay
-      // React Native's multipart FormData correctly for file fields
-      if (user?.pbId) {
-        try {
-          const formData = new FormData();
-          formData.append('avatar', {
-            uri: localUri,
+      if (user?.pbId && pb.authStore.isValid) {
+        const targetId = user.pbId;
+        const token    = pb.authStore.token ?? '';
+
+        // XMLHttpRequest is used here instead of fetch because React Native's fetch
+        // does NOT correctly serialize {uri, name, type} FormData file objects over
+        // the wire — the file bytes are dropped and PocketBase receives an empty field.
+        // XHR has native RN support for this exact file-object format.
+        const savedFilename = await new Promise<string | null>((resolve) => {
+          const xhr = new XMLHttpRequest();
+          const fd  = new FormData();
+          fd.append('avatar', {
+            uri:  localUri,
             name: `avatar_${Date.now()}.${ext}`,
             type: mimeType,
           } as any);
 
-          const token = pb.authStore.token;
-          const res = await fetch(
-            `${POCKETBASE_URL}/api/collections/users/records/${user.pbId}`,
-            {
-              method: 'PATCH',
-              headers: { Authorization: token },
-              body: formData,
-            }
-          );
+          xhr.open('PATCH', `${POCKETBASE_URL}/api/collections/users/records/${targetId}`);
+          xhr.setRequestHeader('Authorization', token);
 
-          if (res.ok) {
-            // Replace local URI with the permanent PocketBase URL so it survives app restarts
-            const updated = await res.json();
-            const savedFile = Array.isArray(updated.avatar) ? updated.avatar[0] : updated.avatar;
-            if (savedFile) {
-              const pbUri = `${POCKETBASE_URL}/api/files/users/${updated.id}/${savedFile}`;
-              setAvatarUri(pbUri);
-              await AsyncStorage.setItem(AVATAR_KEY, pbUri);
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const data = JSON.parse(xhr.responseText);
+                const fn = Array.isArray(data.avatar) ? data.avatar[0] : data.avatar;
+                resolve(fn || null);
+              } catch { resolve(null); }
+            } else {
+              console.log('[Avatar] PB upload failed', xhr.status, xhr.responseText);
+              resolve(null);
             }
-          } else {
-            console.log('[Avatar] PB upload failed:', res.status, await res.text());
-          }
-        } catch (e) {
-          console.log('[Avatar] PB upload error:', e);
+          };
+          xhr.onerror = () => { console.log('[Avatar] XHR error'); resolve(null); };
+          xhr.send(fd);
+        });
+
+        if (savedFilename) {
+          // Swap the temporary local URI for the permanent PocketBase file URL
+          const pbUri = `${POCKETBASE_URL}/api/files/users/${targetId}/${savedFilename}`;
+          setAvatarUri(pbUri);
+          await AsyncStorage.setItem(AVATAR_KEY, pbUri);
+        } else {
+          // Upload failed — do NOT cache the local file:// URI; it won't survive restarts
+          await AsyncStorage.removeItem(AVATAR_KEY);
         }
       }
     }
