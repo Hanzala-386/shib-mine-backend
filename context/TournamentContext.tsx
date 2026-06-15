@@ -153,6 +153,17 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     }
   }, [user?.pbId]);
 
+  // ── Reset all user-specific state immediately when the logged-in user changes ─
+  // Without this, stale state from the previous user session (e.g. userJoined=true)
+  // suppresses the popup for the new user during the async gap while refreshUserStats
+  // is in flight. Resetting synchronously ensures a clean slate before the fetch.
+  useEffect(() => {
+    setUserJoined(false);
+    setUserPoints(0);
+    setHasRejected(false);
+    setUserStatsChecked(false);
+  }, [user?.pbId]);
+
   useEffect(() => { loadConfig(); }, []);
   useEffect(() => { if (user?.pbId) refreshUserStats(); }, [user?.pbId]);
 

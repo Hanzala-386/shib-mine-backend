@@ -9,7 +9,7 @@
  */
 import React, { useCallback, useRef, useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Modal, Pressable, Image, Animated,
+  View, Text, StyleSheet, Modal, Pressable, Image, Animated, ScrollView, Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -45,6 +45,39 @@ function useCountdown(weekStart: string) {
 
 // ── Zero-padded helper ─────────────────────────────────────────────────────
 const pad = (n: number) => String(n).padStart(2, '0');
+
+// ── Dynamic banner image — respects uploaded image's true aspect ratio ──────
+const SCREEN_W = Dimensions.get('window').width;
+
+function BannerImage({ uri }: { uri: string }) {
+  // Default to 16:9 while loading; replaced once Image.getSize resolves
+  const [imgH, setImgH] = useState(Math.round(SCREEN_W * (9 / 16)));
+
+  useEffect(() => {
+    if (!uri) return;
+    Image.getSize(
+      uri,
+      (w, h) => {
+        const ratio = h / w;
+        // Display the full image at natural aspect ratio.
+        // Cap at 1.4× screen width equivalent height so buttons remain visible.
+        const naturalH = Math.round(SCREEN_W * ratio);
+        setImgH(Math.min(naturalH, Math.round(SCREEN_W * 1.4)));
+      },
+      () => {
+        // On error keep the 16:9 default
+      }
+    );
+  }, [uri]);
+
+  return (
+    <Image
+      source={{ uri }}
+      style={{ width: SCREEN_W, height: imgH }}
+      resizeMode="contain"
+    />
+  );
+}
 
 // ── Capsule button with spring scale feedback ──────────────────────────────
 interface CapsuleButtonProps {
@@ -120,7 +153,7 @@ export function TournamentBannerPopup() {
 
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 4 }]}>
 
-          {/* ── 1. Live countdown timer ─────────────────────────────────── */}
+          {/* ── 1. Live countdown timer — always visible at the top ──────── */}
           <View style={styles.timerRow}>
             <View style={styles.timerBlock}>
               <Text style={styles.timerDigit}>{countdown.days}</Text>
@@ -143,18 +176,19 @@ export function TournamentBannerPopup() {
             </View>
           </View>
 
-          {/* ── 2. Banner image — ONLY the image, no overlays ──────────── */}
-          <View style={styles.imageContainer}>
+          {/* ── 2. Banner image — scrollable so tall images don't overflow ─ */}
+          <ScrollView
+            style={styles.imageScroll}
+            contentContainerStyle={styles.imageScrollContent}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
             {config.banner_url ? (
-              <Image
-                source={{ uri: config.banner_url }}
-                style={styles.bannerImage}
-                resizeMode="cover"
-              />
+              <BannerImage uri={config.banner_url} />
             ) : (
               <View style={styles.bannerPlaceholder} />
             )}
-          </View>
+          </ScrollView>
 
           {/* ── 3. Side-by-side capsule buttons ────────────────────────── */}
           <View style={styles.buttonRow}>
@@ -240,19 +274,19 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
 
-  // ── Banner image ──
-  imageContainer: {
-    width: '100%',
-    aspectRatio: 16 / 9,
+  // ── Banner image — scrollable, full aspect ratio ──
+  imageScroll: {
+    // Cap scroll area so the sheet never fills more than ~60% of screen height.
+    // BannerImage inside calculates its own natural height.
+    maxHeight: Math.round(Dimensions.get('window').height * 0.60),
     backgroundColor: '#111118',
   },
-  bannerImage: {
-    width: '100%',
-    height: '100%',
+  imageScrollContent: {
+    // Let the BannerImage size itself; no flex needed
   },
   bannerPlaceholder: {
-    width: '100%',
-    height: '100%',
+    width: SCREEN_W,
+    height: Math.round(SCREEN_W * (9 / 16)),
     backgroundColor: '#111118',
   },
 
