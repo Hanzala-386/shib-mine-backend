@@ -109,6 +109,35 @@ async function ensureUserField(fieldName: string, fieldDef: object): Promise<voi
   return ensureCollectionField('users', fieldName, fieldDef);
 }
 
+async function ensureTournamentParticipantsCollection(): Promise<void> {
+  try {
+    const existing = await pbGet('/api/collections/tournament_participants');
+    if (existing.id) {
+      console.log('[tournament] tournament_participants collection already exists ✓');
+      return;
+    }
+    await pbPost('/api/collections', {
+      name: 'tournament_participants',
+      type: 'base',
+      schema: [
+        { name: 'user_id',      type: 'text',   required: true,  options: { min: null, max: null, pattern: '' } },
+        { name: 'display_name', type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
+        { name: 'week_start',   type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
+        { name: 'joined_at',    type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
+        { name: 'points',       type: 'number', required: false, options: { min: null, max: null } },
+      ],
+      listRule:   '',        // public read — admin can see all registrants
+      viewRule:   '',
+      createRule: '@request.auth.id != ""',  // any authenticated user can register
+      updateRule: null,
+      deleteRule: null,
+    });
+    console.log('[tournament] tournament_participants collection created ✓');
+  } catch (e: any) {
+    console.warn('[tournament] ensureTournamentParticipantsCollection:', e.message);
+  }
+}
+
 // ── Public: schema setup ───────────────────────────────────────────────────
 
 export async function setupTournamentSchema(): Promise<void> {
@@ -121,22 +150,23 @@ export async function setupTournamentSchema(): Promise<void> {
       type: 'number', required: false, options: { min: null, max: null },
     });
 
-    // 2. Create tournament_config collection if it doesn't exist
+    // 2. Create / ensure tournament_config collection
     const existing = await pbGet('/api/collections/tournament_config');
     if (existing.id) {
       console.log('[tournament] tournament_config collection already exists ✓');
-      // Ensure the banner file field exists on already-created collections
       await ensureCollectionField('tournament_config', 'banner', {
         type: 'file',
         required: false,
         options: {
           maxSelect: 1,
-          maxSize: 10485760, // 10 MB
+          maxSize: 10485760,
           mimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
           thumbs: [],
           protected: false,
         },
       });
+      // Also ensure tournament_participants exists before returning
+      await ensureTournamentParticipantsCollection();
       return;
     }
 
@@ -171,6 +201,9 @@ export async function setupTournamentSchema(): Promise<void> {
       is_active: true,
     });
     console.log('[tournament] Default tournament config seeded ✓');
+
+    // 4. Create tournament_participants collection for fresh installs too
+    await ensureTournamentParticipantsCollection();
   } catch (e: any) {
     console.warn('[tournament] setupTournamentSchema error:', e.message);
   }
@@ -243,6 +276,30 @@ export async function runWeeklyDistribution(): Promise<void> {
     await pbPatch(`/api/collections/tournament_config/records/${cfg.id}`, {
       week_start: new Date().toISOString(),
     });
+
+    // 6. Wipe tournament_participants — delete all records for the completed week
+    //    This resets the registrant list so the new week starts clean.
+    try {
+      const delToken = await getAdminToken();
+      let pPage = 1;
+      while (true) {
+        const pBatch = await pbGet(
+          `/api/collections/tournament_participants/records?perPage=100&page=${pPage}&fields=id`,
+        );
+        const pItems: any[] = pBatch.items || [];
+        if (!pItems.length) break;
+        await Promise.allSettled(
+          pItems.map((r: any) =>
+            pbHttp('DELETE', `/api/collections/tournament_participants/records/${r.id}`, null, delToken),
+          ),
+        );
+        if (pItems.length < 100) break;
+        pPage++;
+      }
+      console.log('[tournament] tournament_participants wiped for new week ✓');
+    } catch (e: any) {
+      console.warn('[tournament] participants wipe error (non-fatal):', e.message);
+    }
 
     console.log(
       `[tournament] Distribution complete — ${topUsers.length} winners rewarded, all points reset.`,

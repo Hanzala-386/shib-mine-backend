@@ -216,17 +216,23 @@ async function pbClaimMining(
     is_verified: true,
   });
 
-  // Add to tournament score simultaneously if user is registered this week
-  const tournamentUpdate = user.tournament_joined
-    ? { weekly_tournament_points: (Number(user.weekly_tournament_points) || 0) + reward }
-    : {};
-
+  // ── CRITICAL: credit balance in its own standalone update ────────────────
+  // NEVER bundle shib_balance with tournament_points in the same PB call.
+  // If PocketBase rejects any field (e.g. tournament_points validation fails),
+  // the entire update would fail and the user's balance would not be credited.
   await pb.collection('users').update(pbId, {
-    shib_balance: (Number(user.shib_balance) || 0) + reward,
-    total_claims: (Number(user.total_claims) || 0) + 1,
-    current_mining_session: null,
-    ...tournamentUpdate,
+    shib_balance:            (Number(user.shib_balance) || 0) + reward,
+    total_claims:            (Number(user.total_claims) || 0) + 1,
+    current_mining_session:  null,
   });
+
+  // ── NON-CRITICAL: tournament points — separate fire-and-forget call ───────
+  // Wrapped in .catch() so a tournament write failure NEVER blocks balance credit.
+  if (user.tournament_joined) {
+    pb.collection('users').update(pbId, {
+      weekly_tournament_points: (Number(user.weekly_tournament_points) || 0) + reward,
+    }).catch(() => {});
+  }
 
   // Referral commission (10%) — written to referral_earnings_log for secure deferred crediting.
   //

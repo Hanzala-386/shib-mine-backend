@@ -1,24 +1,52 @@
 /**
- * TournamentBannerPopup — Premium bottom-sheet tournament registration modal.
+ * TournamentBannerPopup — Weekly Tournament registration bottom sheet.
  *
- * Layout (top → bottom):
- *   1. Banner image ONLY — no text, no overlays, no icons
- *   2. Side-by-side horizontal capsule buttons: [REGISTER] [REJECT]
- *   3. Small disclaimer note
+ * Layout (top → bottom inside the sheet):
+ *   1. Live countdown timer  "X Days : XX Hours : XX Minutes : XX Seconds"
+ *   2. Banner image ONLY — no overlays, no text, no icons
+ *   3. Side-by-side capsule buttons [REGISTER] [REJECT]
+ *   4. Small disclaimer note
  */
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useRef, useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Modal, Pressable, Image,
-  Animated, Dimensions,
+  View, Text, StyleSheet, Modal, Pressable, Image, Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useTournament } from '@/context/TournamentContext';
 import Colors from '@/constants/colors';
 
-const { width: SW } = Dimensions.get('window');
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
-// ── Pressable capsule button with scale-down tap feedback ─────────────────
+// ── Countdown hook ─────────────────────────────────────────────────────────
+function useCountdown(weekStart: string) {
+  const endMs = new Date(weekStart).getTime() + WEEK_MS;
+
+  const calc = () => {
+    const diff = Math.max(0, endMs - Date.now());
+    return {
+      days:    Math.floor(diff / 86_400_000),
+      hours:   Math.floor((diff % 86_400_000) / 3_600_000),
+      minutes: Math.floor((diff % 3_600_000) / 60_000),
+      seconds: Math.floor((diff % 60_000) / 1_000),
+    };
+  };
+
+  const [time, setTime] = useState(calc);
+
+  useEffect(() => {
+    setTime(calc());
+    const id = setInterval(() => setTime(calc()), 1000);
+    return () => clearInterval(id);
+  }, [endMs]);
+
+  return time;
+}
+
+// ── Zero-padded helper ─────────────────────────────────────────────────────
+const pad = (n: number) => String(n).padStart(2, '0');
+
+// ── Capsule button with spring scale feedback ──────────────────────────────
 interface CapsuleButtonProps {
   label: string;
   bg: string;
@@ -31,53 +59,40 @@ interface CapsuleButtonProps {
 function CapsuleButton({ label, bg, borderColor, glowColor, onPress, disabled }: CapsuleButtonProps) {
   const scale = useRef(new Animated.Value(1)).current;
 
-  const handlePressIn = () => {
+  const onPressIn = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Animated.spring(scale, {
-      toValue: 0.94,
-      useNativeDriver: true,
-      speed: 50,
-      bounciness: 4,
-    }).start();
+    Animated.spring(scale, { toValue: 0.93, useNativeDriver: true, speed: 60, bounciness: 4 }).start();
   };
-
-  const handlePressOut = () => {
-    Animated.spring(scale, {
-      toValue: 1,
-      useNativeDriver: true,
-      speed: 20,
-      bounciness: 8,
-    }).start();
+  const onPressOut = () => {
+    Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 10 }).start();
   };
 
   return (
     <Animated.View style={[styles.capsuleWrap, { transform: [{ scale }] }]}>
       <Pressable
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
+        onPressIn={onPressIn}
+        onPressOut={onPressOut}
         onPress={onPress}
         disabled={disabled}
         style={[
           styles.capsule,
-          {
-            backgroundColor: bg,
-            borderColor,
-            shadowColor: glowColor,
-          },
-          disabled && { opacity: 0.6 },
+          { backgroundColor: bg, borderColor, shadowColor: glowColor },
+          disabled && { opacity: 0.55 },
         ]}
       >
-        <Text style={[styles.capsuleLabel, { color: '#fff' }]}>{label}</Text>
+        <Text style={styles.capsuleLabel}>{label}</Text>
       </Pressable>
     </Animated.View>
   );
 }
 
-// ── Main popup component ───────────────────────────────────────────────────
+// ── Main popup ─────────────────────────────────────────────────────────────
 export function TournamentBannerPopup() {
   const insets = useSafeAreaInsets();
   const { config, showPopup, joinTournament, rejectTournament } = useTournament();
-  const [joining, setJoining] = React.useState(false);
+  const [joining, setJoining] = useState(false);
+
+  const countdown = useCountdown(config?.week_start ?? new Date().toISOString());
 
   const handleRegister = useCallback(async () => {
     if (joining) return;
@@ -101,13 +116,34 @@ export function TournamentBannerPopup() {
 
   return (
     <Modal visible transparent animationType="slide" statusBarTranslucent>
-      {/* Dimmed full-screen backdrop */}
       <View style={styles.overlay}>
 
-        {/* Bottom sheet card */}
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 4 }]}>
 
-          {/* ── Banner image — ONLY the image, zero overlays ─────────────── */}
+          {/* ── 1. Live countdown timer ─────────────────────────────────── */}
+          <View style={styles.timerRow}>
+            <View style={styles.timerBlock}>
+              <Text style={styles.timerDigit}>{countdown.days}</Text>
+              <Text style={styles.timerUnit}>Days</Text>
+            </View>
+            <Text style={styles.timerColon}>:</Text>
+            <View style={styles.timerBlock}>
+              <Text style={styles.timerDigit}>{pad(countdown.hours)}</Text>
+              <Text style={styles.timerUnit}>Hours</Text>
+            </View>
+            <Text style={styles.timerColon}>:</Text>
+            <View style={styles.timerBlock}>
+              <Text style={styles.timerDigit}>{pad(countdown.minutes)}</Text>
+              <Text style={styles.timerUnit}>Minutes</Text>
+            </View>
+            <Text style={styles.timerColon}>:</Text>
+            <View style={styles.timerBlock}>
+              <Text style={styles.timerDigit}>{pad(countdown.seconds)}</Text>
+              <Text style={styles.timerUnit}>Seconds</Text>
+            </View>
+          </View>
+
+          {/* ── 2. Banner image — ONLY the image, no overlays ──────────── */}
           <View style={styles.imageContainer}>
             {config.banner_url ? (
               <Image
@@ -116,14 +152,12 @@ export function TournamentBannerPopup() {
                 resizeMode="cover"
               />
             ) : (
-              /* Fallback: dark placeholder so layout doesn't break before admin uploads banner */
               <View style={styles.bannerPlaceholder} />
             )}
           </View>
 
-          {/* ── Side-by-side capsule buttons ─────────────────────────────── */}
+          {/* ── 3. Side-by-side capsule buttons ────────────────────────── */}
           <View style={styles.buttonRow}>
-            {/* LEFT — REGISTER: dark green bg + neon green glow border */}
             <CapsuleButton
               label={joining ? 'REGISTERING…' : 'REGISTER'}
               bg="#071a0c"
@@ -132,8 +166,6 @@ export function TournamentBannerPopup() {
               onPress={handleRegister}
               disabled={joining}
             />
-
-            {/* RIGHT — REJECT: dark crimson bg + neon red glow border */}
             <CapsuleButton
               label="REJECT"
               bg="#1a0707"
@@ -143,9 +175,9 @@ export function TournamentBannerPopup() {
             />
           </View>
 
-          {/* ── Disclaimer note ──────────────────────────────────────────── */}
+          {/* ── 4. Disclaimer ───────────────────────────────────────────── */}
           <Text style={styles.note}>
-            Registering is free — your mining rewards also count as tournament points.
+            Registering is free — your mining rewards count as tournament points.
           </Text>
         </View>
       </View>
@@ -156,11 +188,9 @@ export function TournamentBannerPopup() {
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.82)',
+    backgroundColor: 'rgba(0,0,0,0.84)',
     justifyContent: 'flex-end',
   },
-
-  // Bottom sheet
   sheet: {
     backgroundColor: '#0D0D14',
     borderTopLeftRadius: 26,
@@ -170,7 +200,47 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
 
-  // Banner image takes full width, 16:9 aspect ratio
+  // ── Countdown timer ──
+  timerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 22,
+    paddingBottom: 16,
+    paddingHorizontal: 20,
+    gap: 6,
+    backgroundColor: 'rgba(244,196,48,0.04)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(244,196,48,0.1)',
+  },
+  timerBlock: {
+    alignItems: 'center',
+    minWidth: 52,
+  },
+  timerDigit: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 28,
+    color: Colors.gold,
+    letterSpacing: 1,
+    lineHeight: 32,
+  },
+  timerUnit: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 9,
+    color: Colors.textMuted,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginTop: 2,
+  },
+  timerColon: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 24,
+    color: Colors.gold,
+    opacity: 0.6,
+    marginBottom: 10,
+  },
+
+  // ── Banner image ──
   imageContainer: {
     width: '100%',
     aspectRatio: 16 / 9,
@@ -186,15 +256,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#111118',
   },
 
-  // Side-by-side buttons
+  // ── Side-by-side buttons ──
   buttonRow: {
     flexDirection: 'row',
     gap: 12,
     paddingHorizontal: 20,
-    paddingTop: 20,
+    paddingTop: 18,
     paddingBottom: 4,
   },
-
   capsuleWrap: {
     flex: 1,
   },
@@ -202,23 +271,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 17,
-    borderRadius: 50,      // fully rounded capsule shape
+    borderRadius: 50,
     borderWidth: 2,
-    // Shadow/glow (iOS)
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.75,
+    shadowOpacity: 0.8,
     shadowRadius: 12,
-    // Elevation (Android)
     elevation: 10,
   },
   capsuleLabel: {
     fontFamily: 'Inter_700Bold',
-    fontSize: 15,
-    letterSpacing: 1.2,
+    fontSize: 14,
+    letterSpacing: 1.4,
     textTransform: 'uppercase',
+    color: '#ffffff',
   },
 
-  // Disclaimer
+  // ── Disclaimer ──
   note: {
     fontFamily: 'Inter_400Regular',
     fontSize: 11,

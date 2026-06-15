@@ -76,6 +76,10 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   const [leaderboard, setLeaderboard]           = useState<TournamentEntry[]>([]);
   const [leaderboardLoading, setLbLoading]      = useState(false);
   const [loadingConfig, setLoadingConfig]       = useState(true);
+  // userStatsChecked: true only AFTER refreshUserStats() has confirmed join status.
+  // Without this guard, the popup can fire during the async gap between config load
+  // and user-stats load — showing for users who have already joined.
+  const [userStatsChecked, setUserStatsChecked] = useState(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -138,7 +142,15 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         setUserJoined(!!u.tournament_joined);
         setUserPoints(Number(u.weekly_tournament_points) || 0);
       }
-    } catch {}
+    } catch {
+      // Network error — treat as "not joined" so popup can show
+      if (mounted.current) setUserJoined(false);
+    } finally {
+      // Signal that join-status has been confirmed (or best-effort attempted).
+      // showPopup gates on this to avoid the race where popup fires
+      // before we know if the user already joined.
+      if (mounted.current) setUserStatsChecked(true);
+    }
   }, [user?.pbId]);
 
   useEffect(() => { loadConfig(); }, []);
@@ -179,7 +191,17 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     if (!user?.pbId) return;
     await pb.collection('users').update(user.pbId, { tournament_joined: true });
     if (mounted.current) setUserJoined(true);
-  }, [user?.pbId]);
+
+    // Track participation — non-critical, best-effort
+    const displayName = (user as any).displayName || (user as any).email || 'Miner';
+    pb.collection('tournament_participants').create({
+      user_id:      user.pbId,
+      display_name: typeof displayName === 'string' ? displayName.split('@')[0] : 'Miner',
+      week_start:   config?.week_start || new Date().toISOString(),
+      joined_at:    new Date().toISOString(),
+      points:       0,
+    }).catch(() => {});
+  }, [user?.pbId, config?.week_start]);
 
   // ── Reject tournament for this week ─────────────────────────────────────
   const rejectTournament = useCallback(async () => {
@@ -189,12 +211,15 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     if (mounted.current) setHasRejected(true);
   }, [config]);
 
-  // Derived: show popup only when all conditions met
+  // Derived: show popup only once ALL async checks have settled.
+  // userStatsChecked guards against the race condition where the popup
+  // briefly fires before we confirm the user hasn't already joined.
   const showPopup = !!(
     config?.is_active &&
     !userJoined &&
     !hasRejected &&
     !loadingConfig &&
+    userStatsChecked &&
     !!user?.pbId
   );
 
