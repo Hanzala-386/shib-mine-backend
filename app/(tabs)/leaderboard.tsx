@@ -285,47 +285,161 @@ function RankRow({ entry }: { entry: LeaderEntry }) {
   );
 }
 
-/* ── Tournament row ── */
-const MEDAL = ['🥇', '🥈', '🥉'];
-function TournamentRow({ entry, isMe }: { entry: TournamentEntry; isMe: boolean }) {
-  const isPodium  = entry.rank <= 3;
-  const rankColor = entry.rank === 1 ? Colors.gold : entry.rank === 2 ? '#C0C0C0' : entry.rank === 3 ? '#CD7F32' : Colors.textMuted;
-  const cardBg    = isMe ? 'rgba(244,196,48,0.12)' : isPodium ? 'rgba(255,107,0,0.07)' : 'transparent';
-  const borderCol = isMe ? 'rgba(244,196,48,0.45)' : isPodium ? 'rgba(255,107,0,0.25)' : Colors.darkBorder;
+/* ══ TOURNAMENT GAMING UI ════════════════════════════════════════════════ */
 
+// Deterministic avatar color from user ID — consistent per user, no server call needed
+const AV_COLORS = [
+  '#FF6B00', '#F4C430', '#00C853', '#2979FF',
+  '#E040FB', '#FF3B30', '#00BCD4', '#FF8F00',
+  '#76FF03', '#FFEA00',
+];
+function avatarColor(id: string): string {
+  let h = 5381;
+  for (let i = 0; i < id.length; i++) h = (((h << 5) + h) ^ id.charCodeAt(i)) >>> 0;
+  return AV_COLORS[h % AV_COLORS.length];
+}
+
+// Circular initials avatar with deterministic neon ring
+function TAvatar({ name, id, size = 52 }: { name: string; id: string; size?: number }) {
+  const color = avatarColor(id);
   return (
-    <View style={[rowStyles.row, { backgroundColor: cardBg, borderColor: borderCol }]}>
-      <View style={[rowStyles.rankWrap]}>
-        {isPodium
-          ? <Text style={{ fontSize: 20 }}>{MEDAL[entry.rank - 1]}</Text>
-          : <Text style={[rowStyles.rankNum, { color: rankColor }]}>#{entry.rank}</Text>
-        }
-      </View>
-      <View style={[rowStyles.avatar, isPodium && { borderColor: rankColor + '60', borderWidth: 2 }]}>
-        <Text style={rowStyles.avatarText}>{entry.displayName.slice(0, 2).toUpperCase()}</Text>
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={[rowStyles.name, isMe && { color: Colors.gold }]} numberOfLines={1}>
+    <View style={{
+      width: size, height: size, borderRadius: size / 2,
+      backgroundColor: color + '22', borderWidth: 2, borderColor: color,
+      alignItems: 'center', justifyContent: 'center',
+    }}>
+      <Text style={{ fontFamily: 'Inter_700Bold', fontSize: Math.round(size * 0.30), color }}>
+        {name.slice(0, 2).toUpperCase()}
+      </Text>
+    </View>
+  );
+}
+
+// Podium meta: rendered left→right as [2nd, 1st, 3rd]
+const POD = [
+  { rank: 2, size: 58, ringColor: '#A8A8A8', labelColor: '#C8C8C8', label: '🥈', center: false },
+  { rank: 1, size: 76, ringColor: Colors.gold,  labelColor: Colors.gold,  label: '👑', center: true  },
+  { rank: 3, size: 58, ringColor: '#B87333',     labelColor: '#CD7F32',    label: '🥉', center: false },
+] as const;
+
+function TournamentPodium({ top3, pbId }: { top3: TournamentEntry[]; pbId: string }) {
+  return (
+    <View style={podStyles.row}>
+      {POD.map(({ rank, size, ringColor, labelColor, label, center }) => {
+        const entry = top3.find(e => e.rank === rank);
+        const isMe  = !!entry && entry.id === pbId;
+        return (
+          <View key={rank} style={[podStyles.col, center && podStyles.colCenter]}>
+
+            {/* Crown above #1, medal emoji for #2 #3 */}
+            <Text style={[podStyles.medal, { fontSize: center ? 26 : 20 }]}>{label}</Text>
+
+            {/* Glowing avatar ring */}
+            <View style={[
+              podStyles.ring,
+              { width: size + 8, height: size + 8, borderRadius: (size + 8) / 2, borderColor: ringColor },
+              isMe && podStyles.ringMe,
+            ]}>
+              {entry
+                ? <TAvatar name={entry.displayName} id={entry.id} size={size} />
+                : <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ringColor + '12' }} />
+              }
+            </View>
+
+            {/* Rank pill */}
+            <View style={[podStyles.pill, { backgroundColor: labelColor + '18', borderColor: labelColor + '50' }]}>
+              <Text style={[podStyles.pillText, { color: labelColor }]}>#{rank}</Text>
+            </View>
+
+            {/* Username */}
+            <Text style={podStyles.podName} numberOfLines={1}>
+              {entry?.displayName ?? `${rank === 1 ? '1st' : rank === 2 ? '2nd' : '3rd'} Place`}
+            </Text>
+
+            {/* Points */}
+            <Text style={[podStyles.podPts, { color: labelColor }]}>
+              {entry ? `${formatShib(entry.points)} pts` : '—'}
+            </Text>
+
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+const podStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'center',
+    paddingTop: 8, paddingBottom: 24, paddingHorizontal: 8, gap: 6,
+    borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)',
+    marginBottom: 12,
+  },
+  col:       { flex: 1, alignItems: 'center', gap: 5 },
+  // colCenter raises #1 above #2 and #3 — row uses alignItems:'flex-end' baseline
+  colCenter: { marginBottom: 28 },
+  medal:     { lineHeight: 30 },
+  ring:      { borderWidth: 2.5, alignItems: 'center', justifyContent: 'center' },
+  ringMe:    { borderColor: Colors.gold, borderWidth: 3 },
+  pill:      { borderRadius: 20, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 2 },
+  pillText:  { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 0.5 },
+  podName:   { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.textPrimary, textAlign: 'center', maxWidth: 96 },
+  podPts:    { fontFamily: 'Inter_700Bold', fontSize: 11, textAlign: 'center' },
+});
+
+/* ── Rank card for positions 4 and below ────────────────────────────────── */
+function TCard({ entry, isMe }: { entry: TournamentEntry; isMe: boolean }) {
+  return (
+    <View style={[tcardStyles.card, isMe && tcardStyles.cardMe]}>
+      {/* Rank number */}
+      <Text style={[tcardStyles.rank, isMe && { color: Colors.gold }]}>#{entry.rank}</Text>
+
+      {/* Initials avatar */}
+      <TAvatar name={entry.displayName} id={entry.id} size={40} />
+
+      {/* Username + optional prize tag */}
+      <View style={tcardStyles.nameCol}>
+        <Text style={[tcardStyles.name, isMe && { color: Colors.gold }]} numberOfLines={1}>
           {entry.displayName}{isMe ? ' (You)' : ''}
         </Text>
         {entry.prize > 0 && (
-          <Text style={tStyles.prizeTag}>🏆 {formatShib(entry.prize)} SHIB prize</Text>
+          <Text style={tcardStyles.prizeTag}>🏆 {formatShib(entry.prize)} SHIB</Text>
         )}
       </View>
-      <View style={rowStyles.balanceWrap}>
-        <Text style={[rowStyles.balance, { color: rankColor, fontSize: 13 }]}>
-          {formatShib(entry.points)}
-        </Text>
-        <Text style={rowStyles.balanceSub}>pts</Text>
+
+      {/* Points */}
+      <View style={tcardStyles.ptsCol}>
+        <Text style={[tcardStyles.pts, isMe && { color: Colors.gold }]}>{formatShib(entry.points)}</Text>
+        <Text style={tcardStyles.ptsUnit}>pts</Text>
       </View>
     </View>
   );
 }
 
-const tStyles = StyleSheet.create({
-  prizeTag: {
-    fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.neonOrange, marginTop: 1,
+const tcardStyles = StyleSheet.create({
+  card: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    marginHorizontal: 14, marginBottom: 6,
+    paddingVertical: 11, paddingHorizontal: 14,
+    backgroundColor: 'rgba(255,255,255,0.035)',
+    borderRadius: 16, borderWidth: 1, borderColor: Colors.darkBorder,
   },
+  cardMe: {
+    backgroundColor: 'rgba(244,196,48,0.08)',
+    borderColor: 'rgba(244,196,48,0.45)',
+    shadowColor: Colors.gold,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  rank:     { fontFamily: 'Inter_700Bold', fontSize: 15, color: Colors.textMuted, minWidth: 38, textAlign: 'center' },
+  nameCol:  { flex: 1 },
+  name:     { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: Colors.textPrimary },
+  prizeTag: { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.neonOrange, marginTop: 2 },
+  ptsCol:   { alignItems: 'flex-end' },
+  pts:      { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#00C853' },
+  ptsUnit:  { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted },
 });
 
 const rowStyles = StyleSheet.create({
@@ -572,15 +686,20 @@ export default function LeaderboardScreen() {
       {/* Tournament: your stats card */}
       {activeTab === 'tournament' && myTournamentCard}
 
+      {/* Tournament: Top 3 Podium — renders below stats card, above rank-4+ list */}
+      {activeTab === 'tournament' && userJoined && leaderboard.length > 0 && (
+        <TournamentPodium top3={leaderboard.slice(0, 3)} pbId={pbId} />
+      )}
+
       {/* Section label */}
       {activeTab === 'alltime' && (
         <Text style={styles.sectionTitle}>
           {boardLoading ? 'Loading…' : `${board.length} Players Ranked`}
         </Text>
       )}
-      {activeTab === 'tournament' && userJoined && (
-        <Text style={[styles.sectionTitle, { color: '#00C853' + 'aa' }]}>
-          {leaderboardLoading ? 'Loading…' : `${leaderboard.length} Registered Miners`}
+      {activeTab === 'tournament' && userJoined && leaderboard.length > 3 && (
+        <Text style={[styles.sectionTitle, { color: '#00C853' + 'aa', marginTop: 4 }]}>
+          {leaderboardLoading ? 'Loading…' : `Rankings #4 – #${leaderboard.length}`}
         </Text>
       )}
     </View>
@@ -652,8 +771,9 @@ export default function LeaderboardScreen() {
     );
   }
 
-  // Tournament leaderboard (joined)
+  // Tournament leaderboard (joined) — podium shows top 3 in ListHeader; FlatList shows rank 4+
   if (activeTab === 'tournament') {
+    const rank4Plus = leaderboard.slice(3);
     return (
       <View style={styles.container}>
         <LinearGradient
@@ -662,17 +782,18 @@ export default function LeaderboardScreen() {
           start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.45 }}
         />
         <FlatList
-          data={leaderboard}
+          data={rank4Plus}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <TournamentRow entry={item} isMe={item.id === pbId} />
-          )}
+          renderItem={({ item }) => <TCard entry={item} isMe={item.id === pbId} />}
           ListHeaderComponent={ListHeader}
           ListEmptyComponent={
             leaderboardLoading ? (
               <View style={styles.emptyState}>
                 <ActivityIndicator color="#00C853" size="large" />
               </View>
+            ) : leaderboard.length > 0 ? (
+              // Top 3 exist but no rank 4+ — podium already shown, no empty state needed
+              <View style={{ height: 16 }} />
             ) : (
               <View style={styles.emptyState}>
                 <Text style={styles.emptyTitle}>No competitors yet</Text>
