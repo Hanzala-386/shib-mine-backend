@@ -175,7 +175,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       const res = await pb.collection('users').getList(1, 100, {
         sort: '-weekly_tournament_points',
         filter: 'tournament_joined = true && weekly_tournament_points > 0',
-        fields: 'id,display_name,weekly_tournament_points,avatar',
+        fields: 'id,display_name,weekly_tournament_points,avatar2',
       });
       if (!mounted.current) return;
 
@@ -186,10 +186,11 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         if (name.includes('@')) name = name.split('@')[0];
         const rank = i + 1;
 
-        // Build avatar URL from PocketBase file field
+        // Build avatar URL from the avatar2 field ("Avatar 2.0")
         let avatarUrl: string | undefined;
-        if (u.avatar) {
-          const filename = Array.isArray(u.avatar) ? u.avatar[0] : u.avatar;
+        const av2 = u.avatar2;
+        if (av2) {
+          const filename = Array.isArray(av2) ? av2[0] : av2;
           if (filename) avatarUrl = `${PB_URL}/api/files/users/${u.id}/${filename}`;
         }
 

@@ -149,9 +149,20 @@ export async function setupTournamentSchema(): Promise<void> {
     await ensureUserField('weekly_tournament_points', {
       type: 'number', required: false, options: { min: null, max: null },
     });
-    // avatar file field — used for profile image that persists across devices and
-    // is shown on the tournament leaderboard podium and rank cards
+    // avatar file field — kept for backwards compatibility
     await ensureUserField('avatar', {
+      type: 'file',
+      required: false,
+      options: {
+        maxSelect: 1,
+        maxSize: 5242880,
+        mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+        thumbs: ['100x100'],
+        protected: false,
+      },
+    });
+    // avatar2 — fresh file field ("Avatar 2.0"), used by all in-app upload/display logic
+    await ensureUserField('avatar2', {
       type: 'file',
       required: false,
       options: {

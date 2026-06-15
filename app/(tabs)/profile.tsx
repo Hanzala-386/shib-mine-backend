@@ -30,7 +30,7 @@ import { InlineBannerAd, BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 
-const AVATAR_KEY = 'profile_avatar_uri';
+const AVATAR_KEY = 'profile_avatar2_uri'; // "Avatar 2.0" — fresh key, no stale data
 const APP_VERSION = '1.0.1';
 const APP_NAME    = 'Shiba Hit';
 
@@ -227,15 +227,15 @@ export default function ProfileScreen() {
   useEffect(() => {
     if (!user?.pbId) return;
     (async () => {
-      // Always query PocketBase first so we get the real DB avatar, not a stale local file URI
+      // Always query PocketBase first — avatar2 ("Avatar 2.0") is source of truth
       try {
-        const u = await pb.collection('users').getOne(user.pbId, { fields: 'id,avatar' });
-        const filename = Array.isArray(u.avatar) ? u.avatar[0] : u.avatar;
+        const u = await pb.collection('users').getOne(user.pbId, { fields: 'id,avatar2' });
+        const filename = Array.isArray(u.avatar2) ? u.avatar2[0] : u.avatar2;
         if (filename) {
           const pbUri = `${POCKETBASE_URL}/api/files/users/${u.id}/${filename}`;
           setAvatarUri(pbUri);
           await AsyncStorage.setItem(AVATAR_KEY, pbUri);
-          return; // PB avatar loaded — done
+          return;
         }
       } catch {}
 
@@ -281,34 +281,52 @@ export default function ProfileScreen() {
       }
 
       try {
-        // Convert base64 → Uint8Array → Blob.
-        // This is the only approach that works reliably in React Native for multipart
-        // file uploads: {uri,name,type} objects are silently dropped by fetch, and XHR's
-        // native file-path support is broken for ph:// PhotoKit URIs on iOS.
-        // A proper Blob is handled correctly by both fetch and the PocketBase SDK on all platforms.
+        // base64 → Uint8Array → Blob, then upload via XHR.
+        // XHR + Blob is the most reliable multipart upload path in React Native:
+        // • fetch + {uri,name,type} object: bytes silently dropped
+        // • XHR + {uri,name,type} object: fails for ph:// PhotoKit URIs on iOS
+        // • XHR + proper Blob: works on all platforms — same as a browser upload
         const chars = atob(b64);
         const bytes = new Uint8Array(chars.length);
         for (let i = 0; i < chars.length; i++) bytes[i] = chars.charCodeAt(i);
         const blob = new Blob([bytes], { type: mimeType });
 
-        const fd = new FormData();
-        fd.append('avatar', blob, `avatar_${Date.now()}.${ext}`);
+        const filename = await new Promise<string | null>((resolve) => {
+          const xhr = new XMLHttpRequest();
+          const fd  = new FormData();
+          fd.append('avatar2', blob, `av2_${Date.now()}.${ext}`);
 
-        const updated    = await pb.collection('users').update(user.pbId, fd);
-        const savedFile  = Array.isArray(updated.avatar) ? updated.avatar[0] : updated.avatar;
+          xhr.open('PATCH', `${POCKETBASE_URL}/api/collections/users/records/${user.pbId}`);
+          xhr.setRequestHeader('Authorization', pb.authStore.token ?? '');
 
-        if (savedFile) {
-          const pbUri = `${POCKETBASE_URL}/api/files/users/${user.pbId}/${savedFile}`;
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const data = JSON.parse(xhr.responseText);
+                const fn = Array.isArray(data.avatar2) ? data.avatar2[0] : data.avatar2;
+                resolve(fn || null);
+              } catch { resolve(null); }
+            } else {
+              console.log('[Avatar2] upload failed', xhr.status, xhr.responseText);
+              resolve(null);
+            }
+          };
+          xhr.onerror = () => { console.log('[Avatar2] XHR error'); resolve(null); };
+          xhr.send(fd);
+        });
+
+        if (filename) {
+          const pbUri = `${POCKETBASE_URL}/api/files/users/${user.pbId}/${filename}`;
           setAvatarUri(pbUri);
           await AsyncStorage.setItem(AVATAR_KEY, pbUri);
         } else {
           await AsyncStorage.removeItem(AVATAR_KEY);
-          Alert.alert('Upload incomplete', 'Image was sent but the server did not confirm the save. Please try again.');
+          Alert.alert('Upload incomplete', 'Image was not saved to the database. Please try again.');
         }
       } catch (e: any) {
         await AsyncStorage.removeItem(AVATAR_KEY);
-        Alert.alert('Upload failed', e?.message ?? 'Could not save profile image. Please try again.');
-        console.log('[Avatar] upload error:', e);
+        Alert.alert('Upload error', e?.message ?? 'Could not save profile image. Please try again.');
+        console.log('[Avatar2] error:', e);
       }
     }
   }
