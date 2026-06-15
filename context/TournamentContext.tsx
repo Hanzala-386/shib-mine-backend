@@ -9,7 +9,6 @@ import React, {
   createContext, useContext, useState, useEffect,
   useCallback, useRef, ReactNode,
 } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 import { useAuth } from './AuthContext';
 
@@ -120,10 +119,11 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
 
       if (mounted.current) setConfig(cfg);
 
-      // Check local rejection flag for THIS week
-      const key = `tournament_rejected_${cfg.week_start}`;
-      const rejected = await AsyncStorage.getItem(key);
-      if (mounted.current) setHasRejected(rejected === 'true');
+      // NOTE: hasRejected is intentionally NOT read from AsyncStorage here.
+      // Per spec: the popup must appear every time the user opens the app until
+      // they either REGISTER (permanent) or REJECT (session-only dismiss).
+      // Persisting the rejection across sessions prevented the popup from ever
+      // reappearing after the first rejection — fixed by keeping it in memory only.
     } catch {
       // tournament_config collection may not exist yet — fail silently
     } finally {
@@ -203,13 +203,14 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     }).catch(() => {});
   }, [user?.pbId, config?.week_start]);
 
-  // ── Reject tournament for this week ─────────────────────────────────────
+  // ── Reject tournament (session-only dismiss) ─────────────────────────────
+  // Rejection is stored in-memory only — NOT in AsyncStorage — so the popup
+  // re-appears the next time the user opens the app. This matches the spec:
+  // "every time the user opens the app, this banner must keep showing up
+  //  until they click REGISTER or REJECT."
   const rejectTournament = useCallback(async () => {
-    if (!config) return;
-    const key = `tournament_rejected_${config.week_start}`;
-    await AsyncStorage.setItem(key, 'true').catch(() => {});
     if (mounted.current) setHasRejected(true);
-  }, [config]);
+  }, []);
 
   // Derived: show popup only once ALL async checks have settled.
   // userStatsChecked guards against the race condition where the popup

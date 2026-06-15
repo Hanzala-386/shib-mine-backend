@@ -43,6 +43,81 @@ function formatShib(val: number) {
   return val.toLocaleString();
 }
 
+/* ── Tournament countdown component ────────────────────────────────────── */
+const WEEK_MS   = 7 * 24 * 60 * 60 * 1000;
+const pad2      = (n: number) => String(n).padStart(2, '0');
+
+function TournamentCountdown({ weekStart }: { weekStart: string }) {
+  const endMs = new Date(weekStart).getTime() + WEEK_MS;
+
+  const calc = () => {
+    const diff = Math.max(0, endMs - Date.now());
+    return {
+      days:    Math.floor(diff / 86_400_000),
+      hours:   Math.floor((diff % 86_400_000) / 3_600_000),
+      minutes: Math.floor((diff % 3_600_000) / 60_000),
+      seconds: Math.floor((diff % 60_000) / 1_000),
+    };
+  };
+
+  const [time, setTime] = useState(calc);
+
+  useEffect(() => {
+    setTime(calc());
+    const id = setInterval(() => setTime(calc()), 1000);
+    return () => clearInterval(id);
+  }, [weekStart]);
+
+  return (
+    <View style={cdStyles.wrap}>
+      <View style={cdStyles.labelRow}>
+        <MaterialCommunityIcons name="timer-outline" size={13} color={Colors.gold} />
+        <Text style={cdStyles.labelText}>RESETS IN</Text>
+      </View>
+      <View style={cdStyles.digitRow}>
+        <View style={cdStyles.block}>
+          <Text style={cdStyles.digit}>{time.days}</Text>
+          <Text style={cdStyles.unit}>Days</Text>
+        </View>
+        <Text style={cdStyles.colon}>:</Text>
+        <View style={cdStyles.block}>
+          <Text style={cdStyles.digit}>{pad2(time.hours)}</Text>
+          <Text style={cdStyles.unit}>Hours</Text>
+        </View>
+        <Text style={cdStyles.colon}>:</Text>
+        <View style={cdStyles.block}>
+          <Text style={cdStyles.digit}>{pad2(time.minutes)}</Text>
+          <Text style={cdStyles.unit}>Mins</Text>
+        </View>
+        <Text style={cdStyles.colon}>:</Text>
+        <View style={cdStyles.block}>
+          <Text style={cdStyles.digit}>{pad2(time.seconds)}</Text>
+          <Text style={cdStyles.unit}>Secs</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const cdStyles = StyleSheet.create({
+  wrap: {
+    marginBottom: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(244,196,48,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.18)',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+  },
+  labelRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 8 },
+  labelText: { fontFamily: 'Inter_700Bold', fontSize: 9, color: Colors.gold, letterSpacing: 1.5, textTransform: 'uppercase' },
+  digitRow:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  block:     { alignItems: 'center', minWidth: 56 },
+  digit:     { fontFamily: 'Inter_700Bold', fontSize: 30, color: Colors.gold, lineHeight: 34 },
+  colon:     { fontFamily: 'Inter_700Bold', fontSize: 26, color: Colors.gold, opacity: 0.5, marginBottom: 14 },
+  unit:      { fontFamily: 'Inter_400Regular', fontSize: 9, color: Colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase', marginTop: 2 },
+});
+
 async function fetchJson(path: string) {
   const url = new URL(path, getApiUrl());
   const r = await globalThis.fetch(url.toString());
@@ -466,6 +541,11 @@ export default function LeaderboardScreen() {
           )}
         </Pressable>
       </View>
+
+      {/* Tournament: live countdown — at the very top of the weekly section */}
+      {activeTab === 'tournament' && config?.is_active && !!config.week_start && (
+        <TournamentCountdown weekStart={config.week_start} />
+      )}
 
       {/* All-time: your rank card */}
       {activeTab === 'alltime' && myRank && (
