@@ -28,6 +28,7 @@ import { ForceUpdateModal } from "@/components/ForceUpdateModal";
 import { SupportWidget } from "@/components/SupportWidget";
 import { TournamentProvider } from "@/context/TournamentContext";
 import { TournamentBannerPopup } from "@/components/TournamentBannerPopup";
+import { DailyRewardWidget } from "@/components/DailyRewardWidget";
 import { View, StyleSheet } from "react-native";
 import SpinningCoin from "@/components/SpinningCoin";
 
@@ -94,6 +95,8 @@ function ProvidedApp() {
                   <RootLayoutNav />
                   {/* SupportWidget — floating above all screens, only when authenticated */}
                   <SupportWidget />
+                  {/* Daily Reward Widget — draggable floating gift button + auto-popup */}
+                  <DailyRewardWidget />
                   {/* Tournament banner popup — shown once per week until registered or rejected */}
                   <TournamentBannerPopup />
                 </TournamentProvider>

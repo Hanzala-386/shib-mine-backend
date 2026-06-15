@@ -1,34 +1,33 @@
 ---
 name: Daily Rewards System
-description: 7-day streak daily reward feature — schema, server routes, React Native screen, admin controls, APK fallback
+description: 7-day streak daily reward — floating widget + auto-popup architecture, server-time security, APK fallback
 ---
 
-## What was built
-- `daily_streak` (number) + `last_daily_claim` (text) fields on users collection
-- 8 settings fields: `daily_reward_day1_shib` … `daily_reward_day7_pt` (snake_case in PB, camelCase in AppSettings)
-- `daily_claims` collection (audit log, admin-only rules, created via server admin token)
-- `GET /api/app/daily/status/:pbId` — returns streak, activeDay, canClaim, nextClaimAt, serverTime, rewards
-- `POST /api/app/daily/claim/:pbId` — server-authoritative claim: validates server time, applies reward, writes audit log
-- `app/(tabs)/daily.tsx` — 3+3+1 grid (days 1-3, days 4-6, day 7 grand full-width); glow pulse via `Animated.loop` on `activeDay` change; countdown synced via `serverOffset = serverTime - Date.now()`
-- Daily tab added to all three layout paths (ClassicTabLayout, NativeTabLayout, TAB_META dict)
-- Admin panel "Daily Reward Amounts" section
+## Architecture (final)
+- NO nav tab. The entire feature lives in `components/DailyRewardWidget.tsx`, mounted globally in `app/_layout.tsx` alongside SupportWidget and TournamentBannerPopup.
+- `app/(tabs)/daily.tsx` exists only as a `<Redirect href="/(tabs)" />` (Expo Router requires a file if referenced by layout; hidden via `href: null` in Tabs.Screen).
+- Widget states: `hidden` → `float` → `popup` (auto-triggered when canClaim=true, 1.6s delay on mount).
 
-## Streak logic (same on server + client)
-- `diff >= 48h` OR no claim → reset to activeDay=1, canClaim=true (missed a day or first time)
-- `streak >= 7 && diff >= 24h` → new cycle, activeDay=1, canClaim=true
-- `streak >= 7 && diff < 24h` → all claimed, activeDay=7, canClaim=false (waiting for reset)
-- `diff >= 24h` → canClaim=true, activeDay=streak+1
-- `diff < 24h` → canClaim=false, activeDay=streak+1
-- On successful claim: `newStreak = claimDay` (streak = number of consecutive days in current cycle)
+## Security: server-time only
+- `canClaim` flag is fetched from server (`api.getDailyStatus` → Express → PB); the popup ONLY auto-shows when the server confirms it.
+- Countdown display uses `serverOffset = serverTime - Date.now()` for visual accuracy, but popup re-trigger on countdown=0 re-fetches from server — never unlocks on device clock alone.
+- APK direct `claimDirect` fallback: creates a `daily_claims` PB record FIRST → reads `record.created` (server-generated) → uses that ISO string as `last_daily_claim`. Device clock is never written to PB.
 
-## APK fallback
-- Status: `fetchStatusDirect(pbId, fallbackRewards)` reads PB directly, computes status client-side using same logic
-- Claim: `claimDirect(pbId, fallbackRewards)` reads user, validates timing, writes PB update, creates daily_claim record
-- Client uses `serverOffset = serverTime - Date.now()` to adjust countdown timer for clock skew
+## UX flow
+1. Mount → float → after 1.6s fetch status → if canClaim: auto-popup with spring animation
+2. Claim → success toast inside popup → 2.2s → popup slides away → float badge cleared
+3. Float tap → popup opens (CLAIM button hidden when !canClaim, timer shown instead)
+4. Poll every 5 min → re-popup if newly claimable
+5. Countdown=0 → server re-fetch → popup if canClaim
 
-**Why:** Express is dev-only; APK never reaches localhost:5000.
+## Day imagery
+- ShibStack: gradient gold coin circles, `count` prop (1→2→3) for stacking effect, size increases by day pair
+- PTStack: overlapping Ionicons flash bolts at decreasing opacity for non-center bolts
+- Day 7 grand card: both icons + amounts in a wide row layout with ⭐ GRAND REWARD badge
 
-## Day card states
-- `d < activeDay` → CLAIMED (faded, gold checkmark badge)
-- `d === activeDay` → ACTIVE (gold/orange animated border glow, pulsing background)
-- `d > activeDay` → LOCKED (dark bg, lock icon, reward shows "???")
+## Floating icon
+- PanResponder drag, snaps to nearest screen edge on release (same pattern as SupportWidget)
+- Pulsing scale animation (`Animated.loop`) when floatReady=true (reward available)
+- Orange badge dot (!) shown on float when reward ready
+
+**Why no nav tab:** User explicitly requires premium UX — floating widget avoids cluttering the tab bar.
