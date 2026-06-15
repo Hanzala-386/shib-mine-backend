@@ -105,7 +105,8 @@ export default function ProfileScreen() {
   const { showInterstitial, showMiningInterstitial } = useAds();
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [avatarUri,    setAvatarUri]    = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<'idle'|'uploading'|'saved'|'failed'>('idle');
   const [showVersion, setShowVersion] = useState(false);
   const [showClaimModal, setShowClaimModal] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
@@ -276,55 +277,84 @@ export default function ProfileScreen() {
       setAvatarUri(localUri);
 
       if (!b64 || !user?.pbId) {
+        setUploadStatus('idle');
         await AsyncStorage.removeItem(AVATAR_KEY);
         return;
       }
 
-      try {
-        // base64 → Uint8Array → Blob, then upload via XHR.
-        // XHR + Blob is the most reliable multipart upload path in React Native:
-        // • fetch + {uri,name,type} object: bytes silently dropped
-        // • XHR + {uri,name,type} object: fails for ph:// PhotoKit URIs on iOS
-        // • XHR + proper Blob: works on all platforms — same as a browser upload
-        const chars = atob(b64);
-        const bytes = new Uint8Array(chars.length);
-        for (let i = 0; i < chars.length; i++) bytes[i] = chars.charCodeAt(i);
-        const blob = new Blob([bytes], { type: mimeType });
+      setUploadStatus('uploading');
 
+      try {
+        // ── Step 1: Ensure PB auth token is valid ──────────────────────────
+        // Token expires after ~5 days; refresh silently before the upload.
+        if (!pb.authStore.isValid && user.email && user.firebaseUid) {
+          try {
+            await pb.collection('users').authWithPassword(
+              user.email,
+              `SHIB_${user.firebaseUid}_SECURE`,
+            );
+          } catch (authErr) {
+            console.log('[Avatar2] re-auth failed:', authErr);
+          }
+        }
+        const token = pb.authStore.token;
+        console.log('[Avatar2] token valid:', pb.authStore.isValid, 'token len:', token?.length ?? 0);
+
+        // ── Step 2: Convert base64 → Blob via fetch(data URI) ──────────────
+        // new Blob([Uint8Array]) creates a ZERO-BYTE blob in React Native's
+        // NativeBlobModule — bytes are silently dropped. Using fetch() on a
+        // data: URI forces the platform's own network layer to decode the
+        // base64 and produce a proper typed Blob, exactly like a browser does.
+        const dataUri  = `data:${mimeType};base64,${b64}`;
+        const blobResp = await fetch(dataUri);
+        const blob     = await blobResp.blob();
+        console.log('[Avatar2] blob size:', blob.size, 'type:', blob.type);
+
+        if (blob.size === 0) {
+          throw new Error('Blob is 0 bytes — base64 data may be empty');
+        }
+
+        // ── Step 3: Upload via XHR multipart PATCH ─────────────────────────
         const filename = await new Promise<string | null>((resolve) => {
           const xhr = new XMLHttpRequest();
           const fd  = new FormData();
           fd.append('avatar2', blob, `av2_${Date.now()}.${ext}`);
 
           xhr.open('PATCH', `${POCKETBASE_URL}/api/collections/users/records/${user.pbId}`);
-          xhr.setRequestHeader('Authorization', pb.authStore.token ?? '');
+          if (token) xhr.setRequestHeader('Authorization', token);
 
           xhr.onload = () => {
+            console.log('[Avatar2] XHR status:', xhr.status, xhr.responseText.substring(0, 200));
             if (xhr.status >= 200 && xhr.status < 300) {
               try {
                 const data = JSON.parse(xhr.responseText);
-                const fn = Array.isArray(data.avatar2) ? data.avatar2[0] : data.avatar2;
+                const fn   = Array.isArray(data.avatar2) ? data.avatar2[0] : data.avatar2;
                 resolve(fn || null);
               } catch { resolve(null); }
             } else {
-              console.log('[Avatar2] upload failed', xhr.status, xhr.responseText);
               resolve(null);
             }
           };
-          xhr.onerror = () => { console.log('[Avatar2] XHR error'); resolve(null); };
+          xhr.onerror = () => { console.log('[Avatar2] XHR network error'); resolve(null); };
           xhr.send(fd);
         });
 
         if (filename) {
           const pbUri = `${POCKETBASE_URL}/api/files/users/${user.pbId}/${filename}`;
           setAvatarUri(pbUri);
+          setUploadStatus('saved');
           await AsyncStorage.setItem(AVATAR_KEY, pbUri);
+          setTimeout(() => setUploadStatus('idle'), 3000);
         } else {
+          setUploadStatus('failed');
           await AsyncStorage.removeItem(AVATAR_KEY);
-          Alert.alert('Upload incomplete', 'Image was not saved to the database. Please try again.');
+          setTimeout(() => setUploadStatus('idle'), 4000);
+          Alert.alert('Upload failed', 'Photo was not saved. Please try again.');
         }
       } catch (e: any) {
+        setUploadStatus('failed');
         await AsyncStorage.removeItem(AVATAR_KEY);
+        setTimeout(() => setUploadStatus('idle'), 4000);
         Alert.alert('Upload error', e?.message ?? 'Could not save profile image. Please try again.');
         console.log('[Avatar2] error:', e);
       }
@@ -483,6 +513,15 @@ export default function ProfileScreen() {
               <Ionicons name="camera" size={12} color="#fff" />
             </View>
           </Pressable>
+          {uploadStatus === 'uploading' && (
+            <Text style={{ color: Colors.gold, fontSize: 12, marginTop: 6 }}>Saving photo…</Text>
+          )}
+          {uploadStatus === 'saved' && (
+            <Text style={{ color: '#4CAF50', fontSize: 12, marginTop: 6 }}>✓ Photo saved!</Text>
+          )}
+          {uploadStatus === 'failed' && (
+            <Text style={{ color: '#F44336', fontSize: 12, marginTop: 6 }}>✗ Save failed — try again</Text>
+          )}
           <Text style={styles.displayName}>{user?.displayName}</Text>
           <Text style={styles.emailText}>{user?.email}</Text>
           {user?.createdAt && (
