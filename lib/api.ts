@@ -104,6 +104,12 @@ export const api = {
   // ── Settings ───────────────────────────────────────────────────────────
   getSettings: () => request<AppSettings>('GET', '/api/app/settings'),
 
+  // ── Daily Rewards ─────────────────────────────────────────────────────
+  getDailyStatus: (pbId: string) =>
+    request<DailyStatus>('GET', `/api/app/daily/status/${encodeURIComponent(pbId)}`),
+  claimDailyReward: (pbId: string) =>
+    request<DailyClaimResult>('POST', `/api/app/daily/claim/${encodeURIComponent(pbId)}`, {}),
+
   // ── Server time — anti-clock-manipulation ──────────────────────────────
   getServerTime: () => request<{ serverTime: number }>('GET', '/api/app/server-time'),
 
@@ -454,6 +460,46 @@ export interface AppSettings {
   playStoreUrl: string;
   ratePopupFrequency: number;
   minimumVersion: string;
+  dailyRewardDay1Shib: number;
+  dailyRewardDay2Pt:   number;
+  dailyRewardDay3Shib: number;
+  dailyRewardDay4Pt:   number;
+  dailyRewardDay5Shib: number;
+  dailyRewardDay6Pt:   number;
+  dailyRewardDay7Shib: number;
+  dailyRewardDay7Pt:   number;
+}
+
+export interface DailyRewards {
+  day1Shib: number;
+  day2Pt:   number;
+  day3Shib: number;
+  day4Pt:   number;
+  day5Shib: number;
+  day6Pt:   number;
+  day7Shib: number;
+  day7Pt:   number;
+}
+
+export interface DailyStatus {
+  streak: number;
+  activeDay: number;
+  canClaim: boolean;
+  nextClaimAt: string | null;
+  serverTime: string;
+  rewards: DailyRewards;
+}
+
+export interface DailyClaimResult {
+  success: boolean;
+  claimDay: number;
+  newStreak: number;
+  rewardShib: number;
+  rewardPt: number;
+  newShibBalance: number;
+  newPt: number;
+  nextClaimAt: string;
+  serverTime: string;
 }
 
 export interface MiningSessionResponse {

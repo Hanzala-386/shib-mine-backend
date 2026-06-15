@@ -138,6 +138,35 @@ async function ensureTournamentParticipantsCollection(): Promise<void> {
   }
 }
 
+// ── daily_claims collection setup ──────────────────────────────────────────
+async function ensureDailyClaimsCollection(): Promise<void> {
+  try {
+    const existing = await pbGet('/api/collections/daily_claims');
+    if (existing.id) {
+      console.log('[daily] daily_claims collection already exists ✓');
+      return;
+    }
+    await pbPost('/api/collections', {
+      name: 'daily_claims',
+      type: 'base',
+      schema: [
+        { name: 'user_id',    type: 'text',   required: true,  options: { min: null, max: null, pattern: '' } },
+        { name: 'day_number', type: 'number', required: true,  options: { min: 1, max: 7 } },
+        { name: 'reward_shib',type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'reward_pt',  type: 'number', required: false, options: { min: null, max: null } },
+      ],
+      listRule:   null,
+      viewRule:   null,
+      createRule: null,
+      updateRule: null,
+      deleteRule: null,
+    });
+    console.log('[daily] daily_claims collection created ✓');
+  } catch (e: any) {
+    console.warn('[daily] ensureDailyClaimsCollection:', e.message);
+  }
+}
+
 // ── Public: schema setup ───────────────────────────────────────────────────
 
 export async function setupTournamentSchema(): Promise<void> {
@@ -173,6 +202,34 @@ export async function setupTournamentSchema(): Promise<void> {
         protected: false,
       },
     });
+
+    // ── Daily reward: users fields ─────────────────────────────────────────
+    await ensureUserField('daily_streak', {
+      type: 'number', required: false, options: { min: null, max: null },
+    });
+    await ensureUserField('last_daily_claim', {
+      type: 'text', required: false, options: { min: null, max: null, pattern: '' },
+    });
+
+    // ── Daily reward: settings fields ──────────────────────────────────────
+    const dailySettingsFields = [
+      'daily_reward_day1_shib',
+      'daily_reward_day2_pt',
+      'daily_reward_day3_shib',
+      'daily_reward_day4_pt',
+      'daily_reward_day5_shib',
+      'daily_reward_day6_pt',
+      'daily_reward_day7_shib',
+      'daily_reward_day7_pt',
+    ];
+    for (const fname of dailySettingsFields) {
+      await ensureCollectionField('settings', fname, {
+        type: 'number', required: false, options: { min: null, max: null },
+      });
+    }
+
+    // ── daily_claims collection (audit log) ────────────────────────────────
+    await ensureDailyClaimsCollection();
 
     // 2. Create / ensure tournament_config collection
     const existing = await pbGet('/api/collections/tournament_config');

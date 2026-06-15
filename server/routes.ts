@@ -1480,6 +1480,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         playStoreUrl: s.play_store_url || s.app_store_link || '',
         ratePopupFrequency: s.rate_popup_frequency || 5,
         minimumVersion: s.minimum_version || '',
+        dailyRewardDay1Shib: s.daily_reward_day1_shib ?? 1000,
+        dailyRewardDay2Pt:   s.daily_reward_day2_pt   ?? 50,
+        dailyRewardDay3Shib: s.daily_reward_day3_shib ?? 3000,
+        dailyRewardDay4Pt:   s.daily_reward_day4_pt   ?? 100,
+        dailyRewardDay5Shib: s.daily_reward_day5_shib ?? 5000,
+        dailyRewardDay6Pt:   s.daily_reward_day6_pt   ?? 200,
+        dailyRewardDay7Shib: s.daily_reward_day7_shib ?? 10000,
+        dailyRewardDay7Pt:   s.daily_reward_day7_pt   ?? 500,
       });
     } catch (e: any) {
       console.error("[/api/app/settings]", e.message);
@@ -3004,6 +3012,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           pbUpdate.rate_popup_frequency = body.ratePopupFrequency;
         if (body.minimumVersion !== undefined)
           pbUpdate.minimum_version = body.minimumVersion;
+        if (body.dailyRewardDay1Shib !== undefined)
+          pbUpdate.daily_reward_day1_shib = body.dailyRewardDay1Shib;
+        if (body.dailyRewardDay2Pt !== undefined)
+          pbUpdate.daily_reward_day2_pt = body.dailyRewardDay2Pt;
+        if (body.dailyRewardDay3Shib !== undefined)
+          pbUpdate.daily_reward_day3_shib = body.dailyRewardDay3Shib;
+        if (body.dailyRewardDay4Pt !== undefined)
+          pbUpdate.daily_reward_day4_pt = body.dailyRewardDay4Pt;
+        if (body.dailyRewardDay5Shib !== undefined)
+          pbUpdate.daily_reward_day5_shib = body.dailyRewardDay5Shib;
+        if (body.dailyRewardDay6Pt !== undefined)
+          pbUpdate.daily_reward_day6_pt = body.dailyRewardDay6Pt;
+        if (body.dailyRewardDay7Shib !== undefined)
+          pbUpdate.daily_reward_day7_shib = body.dailyRewardDay7Shib;
+        if (body.dailyRewardDay7Pt !== undefined)
+          pbUpdate.daily_reward_day7_pt = body.dailyRewardDay7Pt;
 
         const updated = await pbPatch(
           `/api/collections/settings/records/${id}`,
@@ -3617,6 +3641,150 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   const httpServer = createServer(app);
+  // ── Daily Rewards: Status ────────────────────────────────────────────────
+  app.get("/api/app/daily/status/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+
+      const u = await pbGet(`/api/collections/users/records/${pbId}?fields=id,daily_streak,last_daily_claim`);
+      if (u.code) return res.status(404).json({ error: "User not found" });
+
+      const s = await fetchSettings();
+      const streak = Number(u.daily_streak) || 0;
+      const lastClaimMs = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
+      const serverNowMs = Date.now();
+      const diffMs = lastClaimMs ? serverNowMs - lastClaimMs : Infinity;
+      const H24 = 24 * 3600_000;
+      const H48 = 48 * 3600_000;
+
+      let canClaim = false;
+      let activeDay = 1;
+      let nextClaimAt: string | null = null;
+
+      if (!lastClaimMs || diffMs >= H48) {
+        canClaim = true; activeDay = 1;
+      } else if (streak >= 7 && diffMs >= H24) {
+        canClaim = true; activeDay = 1;
+      } else if (streak >= 7) {
+        canClaim = false; activeDay = 7;
+        nextClaimAt = new Date(lastClaimMs + H24).toISOString();
+      } else if (diffMs >= H24) {
+        canClaim = true; activeDay = streak + 1;
+      } else {
+        canClaim = false; activeDay = streak + 1;
+        nextClaimAt = new Date(lastClaimMs + H24).toISOString();
+      }
+
+      res.json({
+        streak,
+        activeDay,
+        canClaim,
+        nextClaimAt,
+        serverTime: new Date(serverNowMs).toISOString(),
+        rewards: {
+          day1Shib: s?.daily_reward_day1_shib ?? 1000,
+          day2Pt:   s?.daily_reward_day2_pt   ?? 50,
+          day3Shib: s?.daily_reward_day3_shib ?? 3000,
+          day4Pt:   s?.daily_reward_day4_pt   ?? 100,
+          day5Shib: s?.daily_reward_day5_shib ?? 5000,
+          day6Pt:   s?.daily_reward_day6_pt   ?? 200,
+          day7Shib: s?.daily_reward_day7_shib ?? 10000,
+          day7Pt:   s?.daily_reward_day7_pt   ?? 500,
+        },
+      });
+    } catch (e: any) {
+      console.error("[/api/app/daily/status]", e.message);
+      res.status(500).json({ error: "Failed to fetch daily status" });
+    }
+  });
+
+  // ── Daily Rewards: Claim ─────────────────────────────────────────────────
+  app.post("/api/app/daily/claim/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+
+      const u = await pbGet(`/api/collections/users/records/${pbId}?fields=id,daily_streak,last_daily_claim,shib_balance,power_tokens`);
+      if (u.code) return res.status(404).json({ error: "User not found" });
+
+      const s = await fetchSettings();
+      const streak = Number(u.daily_streak) || 0;
+      const lastClaimMs = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
+      const serverNowMs = Date.now();
+      const diffMs = lastClaimMs ? serverNowMs - lastClaimMs : Infinity;
+      const H24 = 24 * 3600_000;
+      const H48 = 48 * 3600_000;
+
+      let canClaim = false;
+      let claimDay = 1;
+
+      if (!lastClaimMs || diffMs >= H48) {
+        canClaim = true; claimDay = 1;
+      } else if (streak >= 7 && diffMs >= H24) {
+        canClaim = true; claimDay = 1;
+      } else if (streak >= 7) {
+        canClaim = false;
+      } else if (diffMs >= H24) {
+        canClaim = true; claimDay = streak + 1;
+      }
+
+      if (!canClaim) {
+        const nextMs = lastClaimMs + H24;
+        const remainingSec = Math.ceil((nextMs - serverNowMs) / 1000);
+        return res.status(429).json({ error: "Not yet eligible", nextClaimAt: new Date(nextMs).toISOString(), remainingSec });
+      }
+
+      // Compute reward for this day
+      const rewardMap: Record<number, { shib: number; pt: number }> = {
+        1: { shib: s?.daily_reward_day1_shib ?? 1000,  pt: 0 },
+        2: { shib: 0,                                   pt: s?.daily_reward_day2_pt ?? 50 },
+        3: { shib: s?.daily_reward_day3_shib ?? 3000,  pt: 0 },
+        4: { shib: 0,                                   pt: s?.daily_reward_day4_pt ?? 100 },
+        5: { shib: s?.daily_reward_day5_shib ?? 5000,  pt: 0 },
+        6: { shib: 0,                                   pt: s?.daily_reward_day6_pt ?? 200 },
+        7: { shib: s?.daily_reward_day7_shib ?? 10000, pt: s?.daily_reward_day7_pt ?? 500 },
+      };
+      const reward = rewardMap[claimDay] ?? { shib: 0, pt: 0 };
+      const newStreak = claimDay; // streak = how many consecutive days in current cycle
+      const newShibBalance = (Number(u.shib_balance) || 0) + reward.shib;
+      const newPt = (Number(u.power_tokens) || 0) + reward.pt;
+      const nowIso = new Date(serverNowMs).toISOString();
+
+      const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
+        daily_streak: newStreak,
+        last_daily_claim: nowIso,
+        shib_balance: newShibBalance,
+        power_tokens: newPt,
+      });
+      if (updated.code) return res.status(500).json({ error: "Failed to update user record" });
+
+      // Audit log (best-effort)
+      pbPost("/api/collections/daily_claims/records", {
+        user_id: pbId,
+        day_number: claimDay,
+        reward_shib: reward.shib,
+        reward_pt: reward.pt,
+      }).catch(() => {});
+
+      const nextClaimAt = new Date(serverNowMs + H24).toISOString();
+      res.json({
+        success: true,
+        claimDay,
+        newStreak,
+        rewardShib: reward.shib,
+        rewardPt: reward.pt,
+        newShibBalance,
+        newPt,
+        nextClaimAt,
+        serverTime: nowIso,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/daily/claim]", e.message);
+      res.status(500).json({ error: "Claim failed" });
+    }
+  });
+
   return httpServer;
 }
 

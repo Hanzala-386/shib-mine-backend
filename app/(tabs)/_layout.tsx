@@ -16,8 +16,9 @@ type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 const TAB_META: Record<string, { label: string; icon: IoniconName; iconFocused: IoniconName }> = {
   index:       { label: "Home",       icon: "home-outline",                  iconFocused: "home" },
   games:       { label: "Games",      icon: "game-controller-outline",        iconFocused: "game-controller" },
-  leaderboard: { label: "Top Players", icon: "trophy-outline",                iconFocused: "trophy" },
+  daily:       { label: "Daily",      icon: "gift-outline",                   iconFocused: "gift" },
   tasks:       { label: "Tasks",      icon: "checkmark-done-circle-outline",  iconFocused: "checkmark-done-circle" },
+  leaderboard: { label: "Top",        icon: "trophy-outline",                 iconFocused: "trophy" },
   wallet:      { label: "Wallet",     icon: "wallet-outline",                 iconFocused: "wallet" },
   profile:     { label: "Profile",    icon: "person-circle-outline",          iconFocused: "person-circle" },
 };
@@ -105,8 +106,9 @@ function ClassicTabLayout() {
       >
         <Tabs.Screen name="index"       options={{ title: "Home",    tabBarIcon: ({ color, size }) => <Ionicons name="home" size={size} color={color} /> }} />
         <Tabs.Screen name="games"       options={{ title: "Games",   tabBarIcon: ({ color, size }) => <Ionicons name="game-controller" size={size} color={color} /> }} />
+        <Tabs.Screen name="daily"       options={{ title: "Daily",   tabBarIcon: ({ color, size }) => <Ionicons name="gift" size={size} color={color} /> }} />
         <Tabs.Screen name="tasks"       options={{ title: "Tasks",   tabBarIcon: ({ color, size }) => <Ionicons name="checkmark-done-circle" size={size} color={color} /> }} />
-        <Tabs.Screen name="leaderboard" options={{ title: "Top Players", tabBarIcon: ({ color, size }) => <Ionicons name="trophy" size={size} color={color} /> }} />
+        <Tabs.Screen name="leaderboard" options={{ title: "Top",     tabBarIcon: ({ color, size }) => <Ionicons name="trophy" size={size} color={color} /> }} />
         <Tabs.Screen name="invite"      options={{ href: null }} />
         <Tabs.Screen name="wallet"      options={{ title: "Wallet",  tabBarIcon: ({ color, size }) => <Ionicons name="wallet" size={size} color={color} /> }} />
         <Tabs.Screen name="profile"     options={{ title: "Profile", tabBarIcon: ({ color, size }) => <Ionicons name="person-circle" size={size} color={color} /> }} />
@@ -134,9 +136,9 @@ function NativeTabLayout() {
         <Icon sf={{ default: "gamecontroller", selected: "gamecontroller.fill" }} />
         <Label>Games</Label>
       </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="leaderboard">
-        <Icon sf={{ default: "trophy", selected: "trophy.fill" }} />
-        <Label>Top Players</Label>
+      <NativeTabs.Trigger name="daily">
+        <Icon sf={{ default: "gift", selected: "gift.fill" }} />
+        <Label>Daily</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="tasks">
         <Icon sf={{ default: "checkmark.circle", selected: "checkmark.circle.fill" }} />

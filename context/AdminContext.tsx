@@ -38,6 +38,14 @@ function formatPbSettings(s: any): AppSettings {
     playStoreUrl:            s.play_store_url ?? s.app_store_link ?? '',
     ratePopupFrequency:      s.rate_popup_frequency      ?? 5,
     minimumVersion:          s.minimum_version           ?? '',
+    dailyRewardDay1Shib:     s.daily_reward_day1_shib    ?? 1000,
+    dailyRewardDay2Pt:       s.daily_reward_day2_pt      ?? 50,
+    dailyRewardDay3Shib:     s.daily_reward_day3_shib    ?? 3000,
+    dailyRewardDay4Pt:       s.daily_reward_day4_pt      ?? 100,
+    dailyRewardDay5Shib:     s.daily_reward_day5_shib    ?? 5000,
+    dailyRewardDay6Pt:       s.daily_reward_day6_pt      ?? 200,
+    dailyRewardDay7Shib:     s.daily_reward_day7_shib    ?? 10000,
+    dailyRewardDay7Pt:       s.daily_reward_day7_pt      ?? 500,
   };
 }
 
@@ -82,6 +90,14 @@ const DEFAULT_SETTINGS: AppSettings = {
   playStoreUrl: '',
   ratePopupFrequency: 5,
   minimumVersion: '',
+  dailyRewardDay1Shib: 1000,
+  dailyRewardDay2Pt:   50,
+  dailyRewardDay3Shib: 3000,
+  dailyRewardDay4Pt:   100,
+  dailyRewardDay5Shib: 5000,
+  dailyRewardDay6Pt:   200,
+  dailyRewardDay7Shib: 10000,
+  dailyRewardDay7Pt:   500,
 };
 
 const CACHE_KEY = 'shib_settings_cache_v2';

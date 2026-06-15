@@ -347,6 +347,17 @@ export default function AdminScreen() {
             ))}
           </AdminSection>
 
+          <AdminSection title="Daily Reward Amounts" icon="gift">
+            <AdminField label="Day 1 (SHIB)" value={String(local.dailyRewardDay1Shib ?? 1000)} onChangeText={(v) => setField('dailyRewardDay1Shib', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 1000" />
+            <AdminField label="Day 2 (Power Tokens)" value={String(local.dailyRewardDay2Pt ?? 50)} onChangeText={(v) => setField('dailyRewardDay2Pt', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 50" />
+            <AdminField label="Day 3 (SHIB)" value={String(local.dailyRewardDay3Shib ?? 3000)} onChangeText={(v) => setField('dailyRewardDay3Shib', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 3000" />
+            <AdminField label="Day 4 (Power Tokens)" value={String(local.dailyRewardDay4Pt ?? 100)} onChangeText={(v) => setField('dailyRewardDay4Pt', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 100" />
+            <AdminField label="Day 5 (SHIB)" value={String(local.dailyRewardDay5Shib ?? 5000)} onChangeText={(v) => setField('dailyRewardDay5Shib', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 5000" />
+            <AdminField label="Day 6 (Power Tokens)" value={String(local.dailyRewardDay6Pt ?? 200)} onChangeText={(v) => setField('dailyRewardDay6Pt', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 200" />
+            <AdminField label="Day 7 Grand — SHIB" value={String(local.dailyRewardDay7Shib ?? 10000)} onChangeText={(v) => setField('dailyRewardDay7Shib', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 10000" />
+            <AdminField label="Day 7 Grand — Power Tokens" value={String(local.dailyRewardDay7Pt ?? 500)} onChangeText={(v) => setField('dailyRewardDay7Pt', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 500" />
+          </AdminSection>
+
           <AdminSection title="Withdrawal Thresholds (SHIB)" icon="wallet">
             <AdminField label="Tier 1 Min (1st withdrawal)" value={String(local.minWithdrawal1)} onChangeText={(v) => setField('minWithdrawal1', Number(v) || 0)} keyboardType="numeric" />
             <AdminField label="Tier 2 Min (2nd withdrawal)" value={String(local.minWithdrawal2)} onChangeText={(v) => setField('minWithdrawal2', Number(v) || 0)} keyboardType="numeric" />
