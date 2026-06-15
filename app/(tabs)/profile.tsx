@@ -262,62 +262,53 @@ export default function ProfileScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.7,
+      quality: 0.6,
+      base64: true,   // request raw bytes — avoids all file:// / ph:// URI serialization issues
     });
     if (!result.canceled && result.assets[0]) {
-      const asset = result.assets[0];
+      const asset    = result.assets[0];
       const localUri = asset.uri;
       const mimeType = asset.mimeType || 'image/jpeg';
-      const ext = mimeType.split('/')[1] || 'jpg';
+      const ext      = mimeType.split('/')[1] || 'jpg';
+      const b64      = asset.base64;
 
-      // Show the picked image immediately — snappy UX before network round-trip
+      // Show the picked image immediately
       setAvatarUri(localUri);
 
-      if (user?.pbId && pb.authStore.isValid) {
-        const targetId = user.pbId;
-        const token    = pb.authStore.token ?? '';
+      if (!b64 || !user?.pbId) {
+        await AsyncStorage.removeItem(AVATAR_KEY);
+        return;
+      }
 
-        // XMLHttpRequest is used here instead of fetch because React Native's fetch
-        // does NOT correctly serialize {uri, name, type} FormData file objects over
-        // the wire — the file bytes are dropped and PocketBase receives an empty field.
-        // XHR has native RN support for this exact file-object format.
-        const savedFilename = await new Promise<string | null>((resolve) => {
-          const xhr = new XMLHttpRequest();
-          const fd  = new FormData();
-          fd.append('avatar', {
-            uri:  localUri,
-            name: `avatar_${Date.now()}.${ext}`,
-            type: mimeType,
-          } as any);
+      try {
+        // Convert base64 → Uint8Array → Blob.
+        // This is the only approach that works reliably in React Native for multipart
+        // file uploads: {uri,name,type} objects are silently dropped by fetch, and XHR's
+        // native file-path support is broken for ph:// PhotoKit URIs on iOS.
+        // A proper Blob is handled correctly by both fetch and the PocketBase SDK on all platforms.
+        const chars = atob(b64);
+        const bytes = new Uint8Array(chars.length);
+        for (let i = 0; i < chars.length; i++) bytes[i] = chars.charCodeAt(i);
+        const blob = new Blob([bytes], { type: mimeType });
 
-          xhr.open('PATCH', `${POCKETBASE_URL}/api/collections/users/records/${targetId}`);
-          xhr.setRequestHeader('Authorization', token);
+        const fd = new FormData();
+        fd.append('avatar', blob, `avatar_${Date.now()}.${ext}`);
 
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              try {
-                const data = JSON.parse(xhr.responseText);
-                const fn = Array.isArray(data.avatar) ? data.avatar[0] : data.avatar;
-                resolve(fn || null);
-              } catch { resolve(null); }
-            } else {
-              console.log('[Avatar] PB upload failed', xhr.status, xhr.responseText);
-              resolve(null);
-            }
-          };
-          xhr.onerror = () => { console.log('[Avatar] XHR error'); resolve(null); };
-          xhr.send(fd);
-        });
+        const updated    = await pb.collection('users').update(user.pbId, fd);
+        const savedFile  = Array.isArray(updated.avatar) ? updated.avatar[0] : updated.avatar;
 
-        if (savedFilename) {
-          // Swap the temporary local URI for the permanent PocketBase file URL
-          const pbUri = `${POCKETBASE_URL}/api/files/users/${targetId}/${savedFilename}`;
+        if (savedFile) {
+          const pbUri = `${POCKETBASE_URL}/api/files/users/${user.pbId}/${savedFile}`;
           setAvatarUri(pbUri);
           await AsyncStorage.setItem(AVATAR_KEY, pbUri);
         } else {
-          // Upload failed — do NOT cache the local file:// URI; it won't survive restarts
           await AsyncStorage.removeItem(AVATAR_KEY);
+          Alert.alert('Upload incomplete', 'Image was sent but the server did not confirm the save. Please try again.');
         }
+      } catch (e: any) {
+        await AsyncStorage.removeItem(AVATAR_KEY);
+        Alert.alert('Upload failed', e?.message ?? 'Could not save profile image. Please try again.');
+        console.log('[Avatar] upload error:', e);
       }
     }
   }
