@@ -223,24 +223,32 @@ export default function ProfileScreen() {
     }
   }
 
-  /* Load saved avatar — prefer AsyncStorage (fast), fall back to PocketBase (cross-device) */
+  /* Load avatar — PocketBase is source of truth; AsyncStorage caches the PB URL locally */
   useEffect(() => {
-    AsyncStorage.getItem(AVATAR_KEY).then(async (cached) => {
-      if (cached) {
+    if (!user?.pbId) return;
+    (async () => {
+      // Always query PocketBase first so we get the real DB avatar, not a stale local file URI
+      try {
+        const u = await pb.collection('users').getOne(user.pbId, { fields: 'id,avatar' });
+        const filename = Array.isArray(u.avatar) ? u.avatar[0] : u.avatar;
+        if (filename) {
+          const pbUri = `${POCKETBASE_URL}/api/files/users/${u.id}/${filename}`;
+          setAvatarUri(pbUri);
+          await AsyncStorage.setItem(AVATAR_KEY, pbUri);
+          return; // PB avatar loaded — done
+        }
+      } catch {}
+
+      // PB has no avatar (or request failed) — try cached value only if it's a remote URL
+      const cached = await AsyncStorage.getItem(AVATAR_KEY);
+      if (cached && cached.startsWith('http')) {
         setAvatarUri(cached);
-      } else if (user?.pbId) {
-        // Recover avatar from PocketBase (e.g., fresh install on a new device)
-        try {
-          const u = await pb.collection('users').getOne(user.pbId, { fields: 'id,avatar' });
-          const filename = Array.isArray(u.avatar) ? u.avatar[0] : u.avatar;
-          if (filename) {
-            const pbUri = `${POCKETBASE_URL}/api/files/users/${u.id}/${filename}`;
-            setAvatarUri(pbUri);
-            await AsyncStorage.setItem(AVATAR_KEY, pbUri);
-          }
-        } catch {}
+      } else {
+        // Local file:// URIs don't survive app restarts — clear stale cache and show initials
+        if (cached) await AsyncStorage.removeItem(AVATAR_KEY);
+        setAvatarUri(null);
       }
-    });
+    })();
     refreshBalance();
   }, [user?.pbId]);
 
@@ -266,7 +274,8 @@ export default function ProfileScreen() {
       setAvatarUri(localUri);
       await AsyncStorage.setItem(AVATAR_KEY, localUri);
 
-      // Persist to PocketBase so the image appears on the leaderboard and survives device changes
+      // Persist to PocketBase using raw fetch — the PB JS SDK does not relay
+      // React Native's multipart FormData correctly for file fields
       if (user?.pbId) {
         try {
           const formData = new FormData();
@@ -275,9 +284,31 @@ export default function ProfileScreen() {
             name: `avatar_${Date.now()}.${ext}`,
             type: mimeType,
           } as any);
-          await pb.collection('users').update(user.pbId, formData);
+
+          const token = pb.authStore.token;
+          const res = await fetch(
+            `${POCKETBASE_URL}/api/collections/users/records/${user.pbId}`,
+            {
+              method: 'PATCH',
+              headers: { Authorization: token },
+              body: formData,
+            }
+          );
+
+          if (res.ok) {
+            // Replace local URI with the permanent PocketBase URL so it survives app restarts
+            const updated = await res.json();
+            const savedFile = Array.isArray(updated.avatar) ? updated.avatar[0] : updated.avatar;
+            if (savedFile) {
+              const pbUri = `${POCKETBASE_URL}/api/files/users/${updated.id}/${savedFile}`;
+              setAvatarUri(pbUri);
+              await AsyncStorage.setItem(AVATAR_KEY, pbUri);
+            }
+          } else {
+            console.log('[Avatar] PB upload failed:', res.status, await res.text());
+          }
         } catch (e) {
-          console.log('[Avatar] PB upload skipped (non-critical):', e);
+          console.log('[Avatar] PB upload error:', e);
         }
       }
     }
