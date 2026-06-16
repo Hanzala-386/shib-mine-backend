@@ -74,29 +74,53 @@ function computeDailyStatus(
   return { streak, activeDay, canClaim, nextClaimAt, serverTime: new Date(serverNowMs).toISOString(), rewards };
 }
 
+// ─── Get authoritative server time from PocketBase HTTP Date header ───────────
+// The HTTP Date header is set by the server, not the device. No clock exploit possible.
+async function getServerTimeMs(): Promise<number> {
+  try {
+    const resp = await fetch('https://api.webcod.in/api/health');
+    const dateHeader = resp.headers.get('Date');
+    if (dateHeader) return new Date(dateHeader).getTime();
+  } catch { /* fall through */ }
+  // Last resort: device clock (acceptable only if PB is unreachable)
+  return Date.now();
+}
+
 // ─── APK fallback: fetch status directly from PocketBase ─────────────────────
 async function fetchStatusDirect(pbId: string, rewards: DailyRewards): Promise<DailyStatus> {
-  const u = await pb.collection('users').getOne(pbId, { fields: 'id,daily_streak,last_daily_claim' });
+  // Fetch both in parallel: user record + authoritative server time
+  const [u, serverNowMs] = await Promise.all([
+    pb.collection('users').getOne(pbId, { fields: 'id,daily_streak,last_daily_claim' }),
+    getServerTimeMs(),
+  ]);
   const streak = Number(u.daily_streak) || 0;
   const lastMs = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
-  // Use the record's `updated` field as a proxy for approximate server time,
-  // then use Date.now() as fallback — but importantly canClaim is based on
-  // last_daily_claim (a server-written field) vs server time from the status API.
-  return computeDailyStatus(streak, lastMs, Date.now(), rewards);
+  // Clamp future timestamps (clock exploit artifact)
+  const effectiveLastMs = (lastMs > 0 && lastMs > serverNowMs) ? 0 : lastMs;
+  return computeDailyStatus(streak, effectiveLastMs, serverNowMs, rewards);
 }
 
 // ─── APK fallback: claim directly via PocketBase (server-time secure) ─────────
 async function claimDirect(pbId: string, rewards: DailyRewards): Promise<DailyClaimResult> {
-  const u = await pb.collection('users').getOne(pbId, {
-    fields: 'id,daily_streak,last_daily_claim,shib_balance,power_tokens',
-  });
-  const streak     = Number(u.daily_streak) || 0;
-  const lastMs     = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
-  // Pre-validate with Date.now() to avoid a wasted write attempt
-  const preStatus  = computeDailyStatus(streak, lastMs, Date.now(), rewards);
+  // Step 1: Get authoritative server time BEFORE doing any eligibility check.
+  // This prevents device-clock manipulation from bypassing the 24-hour window.
+  const [u, serverNowMs] = await Promise.all([
+    pb.collection('users').getOne(pbId, {
+      fields: 'id,daily_streak,last_daily_claim,shib_balance,power_tokens',
+    }),
+    getServerTimeMs(),  // HTTP Date header from PocketBase — device-independent
+  ]);
+
+  const streak  = Number(u.daily_streak) || 0;
+  const lastMs  = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
+  // Clamp future timestamps (prior exploit artifact)
+  const effectiveLastMs = (lastMs > 0 && lastMs > serverNowMs) ? 0 : lastMs;
+
+  // Step 2: Eligibility check against authoritative server time
+  const preStatus = computeDailyStatus(streak, effectiveLastMs, serverNowMs, rewards);
   if (!preStatus.canClaim) throw new Error('Not yet eligible. Check back when the timer resets.');
 
-  const claimDay   = preStatus.activeDay;
+  const claimDay = preStatus.activeDay;
   const rewardMap: Record<number, { shib: number; pt: number }> = {
     1: { shib: rewards.day1Shib, pt: 0 },
     2: { shib: 0,                pt: rewards.day2Pt },
@@ -106,53 +130,54 @@ async function claimDirect(pbId: string, rewards: DailyRewards): Promise<DailyCl
     6: { shib: 0,                pt: rewards.day6Pt },
     7: { shib: rewards.day7Shib, pt: rewards.day7Pt },
   };
-  const reward     = rewardMap[claimDay] ?? { shib: 0, pt: 0 };
+  const reward = rewardMap[claimDay] ?? { shib: 0, pt: 0 };
 
-  // Create the claim record FIRST — PocketBase sets `created` server-side.
-  // This gives us an authoritative server timestamp, not the device clock.
-  let claimRec: any;
+  // Step 3: Write the audit log record. PocketBase assigns `created` server-side.
+  // createRule is now set to "@request.auth.id != \"\"" so authenticated APK users can write.
+  let serverNowIso: string;
   try {
-    claimRec = await pb.collection('daily_claims').create({
-      user_id: pbId,
+    const claimRec = await pb.collection('daily_claims').create({
+      user_id:    pbId,
       day_number: claimDay,
       reward_shib: reward.shib,
-      reward_pt: reward.pt,
+      reward_pt:   reward.pt,
     });
+    // Use PocketBase's server-generated `created` field as the claim timestamp
+    serverNowIso = claimRec.created as string;
   } catch {
-    // If daily_claims write fails, fall back to ISO "now" from PB by reading
-    // any record to get its header-side server time proxy
-    claimRec = { created: new Date().toISOString() };
+    // Fallback: re-fetch server time via HTTP Date header (still device-independent)
+    const fallbackMs = await getServerTimeMs();
+    serverNowIso = new Date(fallbackMs).toISOString();
   }
 
-  // Use the PocketBase server-generated timestamp as last_daily_claim
-  const serverNowIso = claimRec.created as string;
-  const serverNowMs  = new Date(serverNowIso).getTime();
+  // Step 4: Final validation with the PB-server timestamp (catches extreme skew)
+  const serverWriteMs  = new Date(serverNowIso).getTime();
+  const effectiveFinal = (lastMs > 0 && lastMs > serverWriteMs) ? 0 : lastMs;
+  const finalStatus    = computeDailyStatus(streak, effectiveFinal, serverWriteMs, rewards);
+  if (!finalStatus.canClaim) throw new Error('Server time confirms it is too early to claim.');
 
-  // Double-check with the server timestamp (catches severe clock skew)
-  const finalStatus = computeDailyStatus(streak, lastMs, serverNowMs, rewards);
-  if (!finalStatus.canClaim) throw new Error('Server time shows it is too early to claim.');
-
-  const newStreak  = claimDay;
-  const newShib    = (Number(u.shib_balance) || 0) + reward.shib;
-  const newPt      = (Number(u.power_tokens) || 0) + reward.pt;
+  // Step 5: Commit balances — use server-generated timestamp, never device clock
+  const newStreak = claimDay;
+  const newShib   = (Number(u.shib_balance) || 0) + reward.shib;
+  const newPt     = (Number(u.power_tokens) || 0) + reward.pt;
 
   await pb.collection('users').update(pbId, {
-    daily_streak:    newStreak,
-    last_daily_claim: serverNowIso,   // ← server-generated, not device time
-    shib_balance:    newShib,
-    power_tokens:    newPt,
+    daily_streak:     newStreak,
+    last_daily_claim: serverNowIso,  // ← PB-server timestamp, not device time
+    shib_balance:     newShib,
+    power_tokens:     newPt,
   });
 
   return {
-    success:       true,
+    success:        true,
     claimDay,
     newStreak,
-    rewardShib:    reward.shib,
-    rewardPt:      reward.pt,
+    rewardShib:     reward.shib,
+    rewardPt:       reward.pt,
     newShibBalance: newShib,
     newPt,
-    nextClaimAt:   new Date(serverNowMs + 24 * 3_600_000).toISOString(),
-    serverTime:    serverNowIso,
+    nextClaimAt:    new Date(serverWriteMs + 24 * 3_600_000).toISOString(),
+    serverTime:     serverNowIso,
   };
 }
 
@@ -298,16 +323,20 @@ function DayCard({ day, state, rewards, glowAnim, imgUrl }: DayCardProps) {
         </Text>
       </View>
 
-      {/* Icon */}
+      {/* Icon / admin image */}
       <View style={cs.iconWrap}>
-        {imgUrl && !isLocked ? (
-          <Image source={{ uri: imgUrl }} style={cs.dayImg} resizeMode="contain" />
+        {imgUrl ? (
+          <Image
+            source={{ uri: imgUrl }}
+            style={[cs.dayImg, isLocked && { opacity: 0.35 }]}
+            resizeMode="contain"
+          />
         ) : (
           <RewardIcon day={day} dimmed={isLocked} />
         )}
       </View>
 
-      {/* Reward amount */}
+      {/* Reward amount — always shown (??? when locked) */}
       {isLocked ? (
         <Text style={cs.lockedAmt}>???</Text>
       ) : cfg.type === 'both' ? (

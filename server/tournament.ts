@@ -197,6 +197,13 @@ async function ensureDailyClaimsCollection(): Promise<void> {
     const existing = await pbGet('/api/collections/daily_claims');
     if (existing.id) {
       console.log('[daily] daily_claims collection already exists ✓');
+      // Patch createRule — was null (admin-only), must allow authenticated APK writes
+      try {
+        await pbPatch(`/api/collections/${existing.id}`, {
+          createRule: '@request.auth.id != ""',
+        });
+        console.log('[daily] daily_claims createRule patched → authenticated-create ✓');
+      } catch { /* already correct */ }
       return;
     }
     await pbPost('/api/collections', {
@@ -210,7 +217,7 @@ async function ensureDailyClaimsCollection(): Promise<void> {
       ],
       listRule:   null,
       viewRule:   null,
-      createRule: null,
+      createRule: '@request.auth.id != ""',  // authenticated APK users can write audit records
       updateRule: null,
       deleteRule: null,
     });

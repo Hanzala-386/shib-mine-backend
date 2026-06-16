@@ -3654,7 +3654,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const streak = Number(u.daily_streak) || 0;
       const lastClaimMs = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
       const serverNowMs = Date.now();
-      const diffMs = lastClaimMs ? serverNowMs - lastClaimMs : Infinity;
+      // Anti-cheat: if last_daily_claim is in the future (device-clock exploit artifact),
+      // treat it as 0 so the user can claim immediately (resets corrupted state cleanly).
+      const effectiveLastMs = (lastClaimMs > 0 && lastClaimMs > serverNowMs) ? 0 : lastClaimMs;
+      const diffMs = effectiveLastMs ? serverNowMs - effectiveLastMs : Infinity;
       const H24 = 24 * 3600_000;
       const H48 = 48 * 3600_000;
 
@@ -3662,18 +3665,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let activeDay = 1;
       let nextClaimAt: string | null = null;
 
-      if (!lastClaimMs || diffMs >= H48) {
+      if (!effectiveLastMs || diffMs >= H48) {
         canClaim = true; activeDay = 1;
       } else if (streak >= 7 && diffMs >= H24) {
         canClaim = true; activeDay = 1;
       } else if (streak >= 7) {
         canClaim = false; activeDay = 7;
-        nextClaimAt = new Date(lastClaimMs + H24).toISOString();
+        nextClaimAt = new Date(effectiveLastMs + H24).toISOString();
       } else if (diffMs >= H24) {
         canClaim = true; activeDay = streak + 1;
       } else {
         canClaim = false; activeDay = streak + 1;
-        nextClaimAt = new Date(lastClaimMs + H24).toISOString();
+        nextClaimAt = new Date(effectiveLastMs + H24).toISOString();
       }
 
       res.json({
@@ -3748,14 +3751,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const streak = Number(u.daily_streak) || 0;
       const lastClaimMs = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
       const serverNowMs = Date.now();
-      const diffMs = lastClaimMs ? serverNowMs - lastClaimMs : Infinity;
+      // Anti-cheat: if last_daily_claim is in the future (device-clock exploit artifact),
+      // treat it as 0 — this resets the corrupted state and allows an immediate claim.
+      const effectiveLastMs = (lastClaimMs > 0 && lastClaimMs > serverNowMs) ? 0 : lastClaimMs;
+      const diffMs = effectiveLastMs ? serverNowMs - effectiveLastMs : Infinity;
       const H24 = 24 * 3600_000;
       const H48 = 48 * 3600_000;
 
       let canClaim = false;
       let claimDay = 1;
 
-      if (!lastClaimMs || diffMs >= H48) {
+      if (!effectiveLastMs || diffMs >= H48) {
         canClaim = true; claimDay = 1;
       } else if (streak >= 7 && diffMs >= H24) {
         canClaim = true; claimDay = 1;
@@ -3766,7 +3772,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       if (!canClaim) {
-        const nextMs = lastClaimMs + H24;
+        const nextMs = effectiveLastMs + H24;
         const remainingSec = Math.ceil((nextMs - serverNowMs) / 1000);
         return res.status(429).json({ error: "Not yet eligible", nextClaimAt: new Date(nextMs).toISOString(), remainingSec });
       }
