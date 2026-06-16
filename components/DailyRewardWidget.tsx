@@ -369,18 +369,22 @@ function DaySlot({ day, state, rewards, glowAnim, imgUrl }: DayCardProps & { rew
       {/* ── Clean image box ── */}
       <DayCard day={day} state={state} glowAnim={glowAnim} imgUrl={imgUrl} />
 
-      {/* ── Reward amount — BELOW the box ── */}
+      {/* ── Reward amount — gold badge + bold red text BELOW the box ── */}
       {isLocked ? (
-        <Text style={cs.daySlotLockedAmt}>???</Text>
+        <View style={cs.amtBadge}>
+          <Text style={cs.amtBadgeLockedTxt}>???</Text>
+        </View>
       ) : cfg.type === 'both' ? (
-        <View style={{ alignItems: 'center', gap: 1 }}>
-          <Text style={[cs.daySlotAmt, { color: Colors.gold }]}>{fmtNum(reward.shib)} SHIB</Text>
-          <Text style={[cs.daySlotAmt, { color: Colors.neonOrange }]}>{fmtNum(reward.pt)} PT</Text>
+        <View style={cs.amtBadge}>
+          <Text style={cs.amtBadgeTxt}>{fmtNum(reward.shib)} SHIB</Text>
+          <Text style={cs.amtBadgeTxt}>{fmtNum(reward.pt)} PT</Text>
         </View>
       ) : (
-        <Text style={[cs.daySlotAmt, { color: amtColor }, isClaimed && { color: Colors.textMuted }]}>
-          {cfg.type === 'shib' ? `${fmtNum(reward.shib)} SHIB` : `${fmtNum(reward.pt)} PT`}
-        </Text>
+        <View style={[cs.amtBadge, isClaimed && cs.amtBadgeClaimed]}>
+          <Text style={[cs.amtBadgeTxt, isClaimed && cs.amtBadgeTxtClaimed]}>
+            {cfg.type === 'shib' ? `${fmtNum(reward.shib)} SHIB` : `${fmtNum(reward.pt)} PT`}
+          </Text>
+        </View>
       )}
     </View>
   );
@@ -418,22 +422,20 @@ function GrandCard({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
         />
       )}
 
-      {/* Two image slots side by side — clean, no text */}
+      {/* Full-width banner — single image spans the entire card */}
       {isLocked ? (
-        <View style={cs.grandRight}>
+        <View style={[cs.grandBannerLocked]}>
           <View style={cs.lockCircle}>
-            <Ionicons name="lock-closed" size={18} color="#2a2a2a" />
+            <Ionicons name="lock-closed" size={22} color="#2a2a2a" />
           </View>
         </View>
+      ) : shibaImgUrl ? (
+        <Image source={{ uri: shibaImgUrl }} style={cs.grandBannerImg} resizeMode="cover" />
       ) : (
         <View style={cs.grandRight}>
-          {shibaImgUrl
-            ? <Image source={{ uri: shibaImgUrl }} style={cs.grandImg} resizeMode="contain" />
-            : <ShibStack size={44} count={2} />}
+          <ShibStack size={44} count={2} />
           <Text style={{ color: Colors.gold, fontWeight: '900', fontSize: 20 }}>+</Text>
-          {powerImgUrl
-            ? <Image source={{ uri: powerImgUrl }} style={cs.grandImg} resizeMode="contain" />
-            : <Ionicons name="flash" size={44} color={Colors.neonOrange} />}
+          <Ionicons name="flash" size={44} color={Colors.neonOrange} />
         </View>
       )}
 
@@ -483,13 +485,14 @@ function GrandSlot({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
       <GrandCard state={state} rewards={rewards} glowAnim={glowAnim}
         shibaImgUrl={shibaImgUrl} powerImgUrl={powerImgUrl} />
 
-      {/* ── Amounts — BELOW the card ── */}
+      {/* ── Amounts — gold badge + red bold text below card ── */}
       {isLocked ? (
-        <Text style={[cs.daySlotLockedAmt, { fontSize: 13 }]}>???</Text>
+        <View style={cs.amtBadge}>
+          <Text style={cs.amtBadgeLockedTxt}>???</Text>
+        </View>
       ) : (
-        <View style={cs.grandSlotAmts}>
-          <Text style={[cs.grandSlotAmt, { color: Colors.gold }]}>{fmtNum(reward.shib)} SHIB</Text>
-          <Text style={[cs.grandSlotAmt, { color: Colors.neonOrange }]}>+ {fmtNum(reward.pt)} PT</Text>
+        <View style={cs.amtBadge}>
+          <Text style={cs.amtBadgeTxt}>{fmtNum(reward.shib)} SHIB  +  {fmtNum(reward.pt)} PT</Text>
         </View>
       )}
     </View>
@@ -1127,6 +1130,36 @@ const cs = StyleSheet.create({
   },
   daySlotLabelActive: { color: Colors.gold },
   daySlotLabelClaimed: { color: Colors.gold + 'aa' },
+  // ── Amount badge (gold bg + red bold text) ──────────────────────────────
+  amtBadge: {
+    backgroundColor: Colors.gold,
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    alignItems: 'center',
+    minWidth: 54,
+  },
+  amtBadgeClaimed: {
+    backgroundColor: 'rgba(244,196,48,0.30)',
+  },
+  amtBadgeTxt: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 11,
+    color: '#C0000A',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+  },
+  amtBadgeTxtClaimed: {
+    color: '#7a5e00',
+  },
+  amtBadgeLockedTxt: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 11,
+    color: '#666',
+    textAlign: 'center',
+  },
+
+  // legacy — kept for compatibility
   daySlotAmt: {
     fontFamily: 'Inter_700Bold',
     fontSize: 10,
@@ -1208,26 +1241,38 @@ const cs = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // ── Grand Day 7 card (clean image-only box) ──
+  // ── Grand Day 7 card (full-width banner box — no padding, image fills it) ──
   grandCard: {
     width: '100%',
     backgroundColor: '#100e1e',
     borderRadius: 16,
     borderWidth: 1.5,
-    paddingVertical: 20,
-    paddingHorizontal: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
     overflow: 'hidden',
     position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 90,
+  },
+  // Full-width 4:1 banner image
+  grandBannerImg: {
+    width: '100%',
+    aspectRatio: 4,
+    borderRadius: 14,
+  },
+  // Lock placeholder for Day 7 when still locked
+  grandBannerLocked: {
+    width: '100%',
+    aspectRatio: 4,
+    backgroundColor: '#0a0a12',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   grandBadge: {
     borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4,
     alignSelf: 'center',
   },
   grandBadgeTxt: { fontFamily: 'Inter_700Bold', fontSize: 9.5, color: '#0A0A0F', letterSpacing: 1.2 },
-  grandRight: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  grandRight: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 20, paddingHorizontal: 18 },
 
   // Claim button
   claimBtn: {
