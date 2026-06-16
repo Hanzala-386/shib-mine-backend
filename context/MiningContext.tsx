@@ -6,6 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
+import { getApiUrl } from '@/lib/query-client';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 
 // ── PocketBase direct mining (fallback when Express is unreachable) ──────────
@@ -226,12 +227,22 @@ async function pbClaimMining(
     current_mining_session:  null,
   });
 
-  // ── NON-CRITICAL: tournament points — separate fire-and-forget call ───────
-  // Wrapped in .catch() so a tournament write failure NEVER blocks balance credit.
-  if (user.tournament_joined) {
-    pb.collection('users').update(pbId, {
-      weekly_tournament_points: (Number(user.weekly_tournament_points) || 0) + reward,
-    }).catch(() => {});
+  // ── NON-CRITICAL: tournament points — server-side sync (ANTI-CHEAT) ────────
+  // The server reads mining_sessions directly and computes the canonical point
+  // total. The client NEVER pushes a point value. Fire-and-forget — any failure
+  // here must NEVER block balance credit.
+  if (user.tournament_joined && pbId) {
+    (async () => {
+      try {
+        const apiUrl = getApiUrl();
+        const url = new URL(`/api/app/tournament/sync-points/${pbId}`, apiUrl).href;
+        await fetch(url, { method: 'POST' });
+      } catch {
+        // Express unreachable (APK production) — the next app open will sync via
+        // refreshUserStats() which reads weekly_tournament_points directly from PB.
+        // No client-side write: points remain accurate from the last server sync.
+      }
+    })();
   }
 
   // Referral commission (10%) — written to referral_earnings_log for secure deferred crediting.

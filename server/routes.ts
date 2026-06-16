@@ -3841,6 +3841,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Tournament: server-time + config ──────────────────────────────────────
+  // Returns the current tournament config enriched with server-authoritative time
+  // and an explicit `isIntermission` flag (is_active=false window between
+  // Sunday 18:00 UTC and Monday 00:00 UTC).
+  app.get('/api/app/tournament/config', async (req: Request, res: Response) => {
+    try {
+      const serverTime = Date.now();
+      try {
+        const cfgRes = await pbGet(
+          '/api/collections/tournament_config/records?sort=-created&perPage=1',
+        );
+        const raw = cfgRes?.items?.[0];
+        if (!raw) return res.json({ config: null, serverTime, isIntermission: false });
+
+        let rewardStructure: Record<string, number> = {};
+        try { rewardStructure = JSON.parse(raw.reward_structure || '{}'); } catch {}
+
+        // isIntermission: tournament is paused (is_active=false) but a new week
+        // hasn't started yet — the 6h window between Sunday 18:00 and Monday 00:00 UTC.
+        const isIntermission = !raw.is_active;
+
+        return res.json({
+          config: {
+            id:               raw.id,
+            prize_pool_total: Number(raw.prize_pool_total) || 0,
+            winners_count:    Number(raw.winners_count)    || 3,
+            reward_structure: rewardStructure,
+            banner_url:       raw.banner_url || '',
+            week_start:       raw.week_start || '',
+            start_time:       raw.start_time || raw.week_start || '',
+            end_time:         raw.end_time   || '',
+            is_active:        !!raw.is_active,
+          },
+          serverTime,
+          isIntermission,
+        });
+      } catch (innerErr: any) {
+        return res.json({ config: null, serverTime, isIntermission: false });
+      }
+    } catch (e: any) {
+      console.error('[/api/app/tournament/config]', e.message);
+      res.status(500).json({ error: 'Failed to load tournament config' });
+    }
+  });
+
+  // ── Tournament: server-side points sync (ANTI-CHEAT) ──────────────────────
+  // Called by the APK after each mining claim.
+  // Reads mining_sessions directly — the client NEVER pushes point values.
+  app.post('/api/app/tournament/sync-points/:pbId', async (req: Request, res: Response) => {
+    const { pbId } = req.params;
+    if (!pbId) return res.status(400).json({ error: 'pbId required' });
+    try {
+      const { syncUserTournamentPoints } = await import('./tournament');
+      const points = await syncUserTournamentPoints(pbId);
+      return res.json({ success: true, points });
+    } catch (e: any) {
+      console.error('[/api/app/tournament/sync-points]', e.message);
+      res.status(500).json({ error: 'Sync failed' });
+    }
+  });
+
   return httpServer;
 }
 

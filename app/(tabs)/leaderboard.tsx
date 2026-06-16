@@ -44,14 +44,23 @@ function formatShib(val: number) {
 }
 
 /* ── Tournament countdown component ────────────────────────────────────── */
-const WEEK_MS   = 7 * 24 * 60 * 60 * 1000;
-const pad2      = (n: number) => String(n).padStart(2, '0');
+const pad2 = (n: number) => String(n).padStart(2, '0');
 
-function TournamentCountdown({ weekStart }: { weekStart: string }) {
-  const endMs = new Date(weekStart).getTime() + WEEK_MS;
+/**
+ * Server-corrected countdown.
+ * `endTimeIso`   — ISO string for the target deadline (end_time from server).
+ * `serverOffset` — ms offset computed as serverTime - Date.now() when config loaded.
+ * `label`        — e.g. "ENDS IN" or "NEW WEEK IN"
+ * `accentColor`  — e.g. Colors.gold or '#7B68EE'
+ */
+function TournamentCountdown({
+  endTimeIso, serverOffset, label = 'ENDS IN', accentColor = Colors.gold,
+}: { endTimeIso: string; serverOffset: number; label?: string; accentColor?: string }) {
+  const endMs = endTimeIso ? new Date(endTimeIso).getTime() : 0;
 
   const calc = () => {
-    const diff = Math.max(0, endMs - Date.now());
+    const serverNow = Date.now() + serverOffset;
+    const diff = Math.max(0, endMs - serverNow);
     return {
       days:    Math.floor(diff / 86_400_000),
       hours:   Math.floor((diff % 86_400_000) / 3_600_000),
@@ -63,35 +72,36 @@ function TournamentCountdown({ weekStart }: { weekStart: string }) {
   const [time, setTime] = useState(calc);
 
   useEffect(() => {
+    if (!endMs) return;
     setTime(calc());
     const id = setInterval(() => setTime(calc()), 1000);
     return () => clearInterval(id);
-  }, [weekStart]);
+  }, [endMs, serverOffset]);
 
   return (
-    <View style={cdStyles.wrap}>
+    <View style={[cdStyles.wrap, { borderColor: accentColor + '30', backgroundColor: accentColor + '08' }]}>
       <View style={cdStyles.labelRow}>
-        <MaterialCommunityIcons name="timer-outline" size={13} color={Colors.gold} />
-        <Text style={cdStyles.labelText}>RESETS IN</Text>
+        <MaterialCommunityIcons name="timer-outline" size={13} color={accentColor} />
+        <Text style={[cdStyles.labelText, { color: accentColor }]}>{label}</Text>
       </View>
       <View style={cdStyles.digitRow}>
         <View style={cdStyles.block}>
-          <Text style={cdStyles.digit}>{time.days}</Text>
+          <Text style={[cdStyles.digit, { color: accentColor }]}>{time.days}</Text>
           <Text style={cdStyles.unit}>Days</Text>
         </View>
-        <Text style={cdStyles.colon}>:</Text>
+        <Text style={[cdStyles.colon, { color: accentColor }]}>:</Text>
         <View style={cdStyles.block}>
-          <Text style={cdStyles.digit}>{pad2(time.hours)}</Text>
+          <Text style={[cdStyles.digit, { color: accentColor }]}>{pad2(time.hours)}</Text>
           <Text style={cdStyles.unit}>Hours</Text>
         </View>
-        <Text style={cdStyles.colon}>:</Text>
+        <Text style={[cdStyles.colon, { color: accentColor }]}>:</Text>
         <View style={cdStyles.block}>
-          <Text style={cdStyles.digit}>{pad2(time.minutes)}</Text>
+          <Text style={[cdStyles.digit, { color: accentColor }]}>{pad2(time.minutes)}</Text>
           <Text style={cdStyles.unit}>Mins</Text>
         </View>
-        <Text style={cdStyles.colon}>:</Text>
+        <Text style={[cdStyles.colon, { color: accentColor }]}>:</Text>
         <View style={cdStyles.block}>
-          <Text style={cdStyles.digit}>{pad2(time.seconds)}</Text>
+          <Text style={[cdStyles.digit, { color: accentColor }]}>{pad2(time.seconds)}</Text>
           <Text style={cdStyles.unit}>Secs</Text>
         </View>
       </View>
@@ -103,20 +113,33 @@ const cdStyles = StyleSheet.create({
   wrap: {
     marginBottom: 14,
     borderRadius: 14,
-    backgroundColor: 'rgba(244,196,48,0.05)',
     borderWidth: 1,
-    borderColor: 'rgba(244,196,48,0.18)',
     paddingVertical: 14,
     paddingHorizontal: 20,
   },
   labelRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 8 },
-  labelText: { fontFamily: 'Inter_700Bold', fontSize: 9, color: Colors.gold, letterSpacing: 1.5, textTransform: 'uppercase' },
+  labelText: { fontFamily: 'Inter_700Bold', fontSize: 9, letterSpacing: 1.5, textTransform: 'uppercase' },
   digitRow:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   block:     { alignItems: 'center', minWidth: 56 },
-  digit:     { fontFamily: 'Inter_700Bold', fontSize: 30, color: Colors.gold, lineHeight: 34 },
-  colon:     { fontFamily: 'Inter_700Bold', fontSize: 26, color: Colors.gold, opacity: 0.5, marginBottom: 14 },
+  digit:     { fontFamily: 'Inter_700Bold', fontSize: 30, lineHeight: 34 },
+  colon:     { fontFamily: 'Inter_700Bold', fontSize: 26, opacity: 0.5, marginBottom: 14 },
   unit:      { fontFamily: 'Inter_400Regular', fontSize: 9, color: Colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase', marginTop: 2 },
 });
+
+/** Returns the next UTC Monday at 00:00:00 (new week start) */
+function nextMonday12AM_UTC(): Date {
+  const now  = new Date();
+  const day  = now.getUTCDay(); // 1=Monday
+  const daysUntil = day === 1 ? 0 : (8 - day) % 7;
+  const candidate = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntil,
+    0, 0, 0, 0,
+  ));
+  if (candidate.getTime() <= now.getTime()) {
+    candidate.setUTCDate(candidate.getUTCDate() + 7);
+  }
+  return candidate;
+}
 
 async function fetchJson(path: string) {
   const url = new URL(path, getApiUrl());
@@ -554,6 +577,7 @@ export default function LeaderboardScreen() {
 
   const {
     config, userJoined, userPoints, leaderboard, leaderboardLoading,
+    isIntermission, serverOffset,
     joinTournament, refreshLeaderboard,
   } = useTournament();
 
@@ -685,15 +709,32 @@ export default function LeaderboardScreen() {
           ]}>
             Weekly
           </Text>
-          {config?.is_active && (
+          {config?.is_active && !isIntermission && (
             <View style={styles.liveDot} />
+          )}
+          {isIntermission && (
+            <View style={[styles.liveDot, { backgroundColor: '#7B68EE' }]} />
           )}
         </Pressable>
       </View>
 
-      {/* Tournament: live countdown — at the very top of the weekly section */}
-      {activeTab === 'tournament' && config?.is_active && !!config.week_start && (
-        <TournamentCountdown weekStart={config.week_start} />
+      {/* Tournament: server-corrected countdown */}
+      {activeTab === 'tournament' && config?.is_active && !!config.end_time && (
+        <TournamentCountdown
+          endTimeIso={config.end_time}
+          serverOffset={serverOffset}
+          label="ENDS IN"
+          accentColor={Colors.gold}
+        />
+      )}
+      {/* Intermission: countdown to next week start */}
+      {activeTab === 'tournament' && isIntermission && (
+        <TournamentCountdown
+          endTimeIso={nextMonday12AM_UTC().toISOString()}
+          serverOffset={serverOffset}
+          label="NEW WEEK STARTS IN"
+          accentColor="#7B68EE"
+        />
       )}
 
       {/* Tournament: total prize pool — shown directly below countdown */}
@@ -750,6 +791,63 @@ export default function LeaderboardScreen() {
 
   // ── Render ───────────────────────────────────────────────────────────────
 
+  // ── Intermission view — Sunday 18:00 → Monday 00:00 UTC ────────────────
+  // Show frozen last-week leaderboard (if available) + "next week starts soon" banner.
+  if (activeTab === 'tournament' && isIntermission) {
+    const frozenList = leaderboard; // last snapshot from before freeze
+    const rank4Plus  = frozenList.slice(3);
+    return (
+      <View style={styles.container}>
+        <LinearGradient
+          colors={['rgba(123,104,238,0.12)', 'rgba(60,40,140,0.06)', 'transparent']}
+          style={StyleSheet.absoluteFill}
+          start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.5 }}
+        />
+        <FlatList
+          data={rank4Plus}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => <TCard entry={item} isMe={item.id === pbId} />}
+          ListHeaderComponent={
+            <View>
+              {ListHeader}
+              {/* Intermission banner */}
+              <View style={[styles.intermissionBanner]}>
+                <MaterialCommunityIcons name="snowflake" size={20} color="#7B68EE" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.intermissionTitle}>TOURNAMENT FROZEN</Text>
+                  <Text style={styles.intermissionDesc}>
+                    Last week's results are final. The new week begins Monday 12:00 AM UTC.
+                  </Text>
+                </View>
+              </View>
+              {frozenList.length > 0 && leaderboard.length > 0 && (
+                <TournamentPodium top3={frozenList.slice(0, 3)} pbId={pbId} />
+              )}
+              {frozenList.length > 3 && (
+                <Text style={[styles.sectionTitle, { color: '#7B68EE' + 'aa', marginTop: 4 }]}>
+                  {`Last Week Rankings #4 – #${frozenList.length}`}
+                </Text>
+              )}
+              {frozenList.length === 0 && (
+                <View style={styles.emptyState}>
+                  <MaterialCommunityIcons name="trophy-outline" size={44} color={Colors.textMuted} />
+                  <Text style={styles.emptyTitle}>Results incoming</Text>
+                  <Text style={styles.emptyDesc}>Last week's final standings will appear here.</Text>
+                </View>
+              )}
+            </View>
+          }
+          ListFooterComponent={<View style={{ height: 24 }} />}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
+        />
+        <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
+          <WithdrawalTicker items={ticker} />
+        </View>
+      </View>
+    );
+  }
+
   // Tournament tab when NOT joined — show CTA only (no FlatList rows)
   if (activeTab === 'tournament' && !userJoined && config?.is_active) {
     return (
@@ -786,8 +884,8 @@ export default function LeaderboardScreen() {
     );
   }
 
-  // Tournament tab — no active tournament
-  if (activeTab === 'tournament' && !config?.is_active) {
+  // Tournament tab — !is_active and not intermission: genuinely no active tournament
+  if (activeTab === 'tournament' && !config?.is_active && !isIntermission) {
     return (
       <View style={styles.container}>
         <FlatList
@@ -956,5 +1054,20 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.darkBg,
     zIndex: 25,
     elevation: 25,
+  },
+
+  // ── Intermission ──
+  intermissionBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 12,
+    backgroundColor: 'rgba(123,104,238,0.10)',
+    borderWidth: 1, borderColor: 'rgba(123,104,238,0.30)',
+    borderRadius: 14, padding: 14, marginBottom: 16,
+  },
+  intermissionTitle: {
+    fontFamily: 'Inter_700Bold', fontSize: 11, color: '#7B68EE',
+    letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 4,
+  },
+  intermissionDesc: {
+    fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, lineHeight: 18,
   },
 });

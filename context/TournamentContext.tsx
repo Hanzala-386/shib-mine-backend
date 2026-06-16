@@ -1,15 +1,23 @@
 /**
- * TournamentContext — Weekly Tournament state management
+ * TournamentContext — Zero-Trust Weekly Tournament state management
  *
- * Fetches tournament_config from PocketBase, tracks user join/reject status,
- * and provides the tournament leaderboard. All operations use PB SDK directly
- * (APK-compatible, no Express dependency).
+ * Security additions over v1:
+ *  - Server time offset: fetches `GET /api/app/server-time` on init; all
+ *    countdown math uses `Date.now() + serverOffset` so device-clock
+ *    manipulation doesn't affect the displayed deadline.
+ *  - isIntermission: derived from server-authoritative is_active flag.
+ *    True during the Sunday 18:00 → Monday 00:00 UTC gap.
+ *  - end_time: populated by the server (next Sunday 18:00 UTC);
+ *    the popup and leaderboard countdown to this instead of week_start + 7d.
+ *
+ * All write operations still use PB SDK directly (APK-compatible).
  */
 import React, {
   createContext, useContext, useState, useEffect,
   useCallback, useRef, ReactNode,
 } from 'react';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
+import { getApiUrl } from '@/lib/query-client';
 import { useAuth } from './AuthContext';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -21,6 +29,8 @@ export interface TournamentConfig {
   reward_structure: Record<string, number>;
   banner_url: string;
   week_start: string;
+  start_time: string;
+  end_time: string;        // server-set: next Sunday 18:00 UTC
   is_active: boolean;
 }
 
@@ -30,7 +40,7 @@ export interface TournamentEntry {
   displayName: string;
   points: number;
   prize: number;
-  avatarUrl?: string;   // PocketBase file URL — undefined when user has no uploaded avatar
+  avatarUrl?: string;
 }
 
 interface TournamentContextValue {
@@ -39,10 +49,12 @@ interface TournamentContextValue {
   userPoints: number;
   hasRejected: boolean;
   showPopup: boolean;
+  isIntermission: boolean;       // true during Sunday 6PM – Monday 12AM UTC gap
+  serverOffset: number;          // ms offset: serverTime - Date.now() at load
   leaderboard: TournamentEntry[];
   leaderboardLoading: boolean;
   loadingConfig: boolean;
-  joinTournament: () => Promise<void>;
+  joinTournament: (duringIntermission?: boolean) => Promise<void>;
   rejectTournament: () => Promise<void>;
   refreshLeaderboard: () => Promise<void>;
   refreshUserStats: () => Promise<void>;
@@ -54,6 +66,8 @@ const TournamentContext = createContext<TournamentContextValue>({
   userPoints: 0,
   hasRejected: false,
   showPopup: false,
+  isIntermission: false,
+  serverOffset: 0,
   leaderboard: [],
   leaderboardLoading: false,
   loadingConfig: true,
@@ -67,7 +81,7 @@ const TournamentContext = createContext<TournamentContextValue>({
 
 export function TournamentProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const mounted = useRef(true);
+  const mounted  = useRef(true);
 
   const [config, setConfig]                     = useState<TournamentConfig | null>(null);
   const [userJoined, setUserJoined]             = useState(false);
@@ -76,9 +90,11 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   const [leaderboard, setLeaderboard]           = useState<TournamentEntry[]>([]);
   const [leaderboardLoading, setLbLoading]      = useState(false);
   const [loadingConfig, setLoadingConfig]       = useState(true);
-  // userStatsChecked: true only AFTER refreshUserStats() has confirmed join status.
-  // Without this guard, the popup can fire during the async gap between config load
-  // and user-stats load — showing for users who have already joined.
+  const [isIntermission, setIsIntermission]     = useState(false);
+  const [serverOffset, setServerOffset]         = useState(0);
+
+  // userStatsChecked guards popup race: don't show popup until we know
+  // whether the user has already joined this week.
   const [userStatsChecked, setUserStatsChecked] = useState(false);
 
   useEffect(() => {
@@ -86,25 +102,59 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     return () => { mounted.current = false; };
   }, []);
 
-  // ── Load tournament config ───────────────────────────────────────────────
+  // ── Load tournament config + server time ─────────────────────────────────
   const loadConfig = useCallback(async () => {
     try {
-      const res = await pb.collection('tournament_config').getList(1, 1, {
-        sort: '-created',
-      });
-      const raw = res.items[0];
-      if (!raw || !mounted.current) return;
+      // 1. Try the Express route first — it returns config + serverTime atomically
+      let raw: any = null;
+      let serverTime = Date.now();
+      let intermission = false;
+
+      try {
+        const apiUrl = getApiUrl();
+        const url    = new URL('/api/app/tournament/config', apiUrl).href;
+        const r      = await fetch(url, { signal: AbortSignal.timeout?.(5000) });
+        if (r.ok) {
+          const j = await r.json();
+          raw          = j.config;
+          serverTime   = j.serverTime ?? Date.now();
+          intermission = !!j.isIntermission;
+        }
+      } catch {}
+
+      // 2. PocketBase SDK fallback (APK / Express down)
+      if (!raw) {
+        try {
+          const res = await pb.collection('tournament_config').getList(1, 1, { sort: '-created' });
+          raw          = res.items[0] ?? null;
+          intermission = raw ? !raw.is_active : false;
+        } catch {}
+
+        // Also fetch server time from dedicated endpoint as fallback
+        try {
+          const apiUrl = getApiUrl();
+          const stUrl  = new URL('/api/app/server-time', apiUrl).href;
+          const sr     = await fetch(stUrl, { signal: AbortSignal.timeout?.(3000) });
+          if (sr.ok) { const sj = await sr.json(); serverTime = sj.serverTime ?? serverTime; }
+        } catch {}
+      }
+
+      if (!mounted.current) return;
+
+      // Compute monotonic offset: how far ahead/behind server clock is from device clock
+      const offset = serverTime - Date.now();
+      if (mounted.current) setServerOffset(offset);
+
+      if (!raw) return;
 
       let rewardStructure: Record<string, number> = {};
       try { rewardStructure = JSON.parse(raw.reward_structure || '{}'); } catch {}
 
-      // Build banner URL: prefer the uploaded file field, fall back to legacy banner_url text
+      // Build banner URL from file field OR legacy banner_url text
       let bannerUrl = '';
       if (raw.banner) {
         const filename = Array.isArray(raw.banner) ? raw.banner[0] : raw.banner;
-        if (filename) {
-          bannerUrl = `${POCKETBASE_URL}/api/files/tournament_config/${raw.id}/${filename}`;
-        }
+        if (filename) bannerUrl = `${POCKETBASE_URL}/api/files/tournament_config/${raw.id}/${filename}`;
       }
       if (!bannerUrl && raw.banner_url) bannerUrl = raw.banner_url;
 
@@ -114,17 +164,16 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         winners_count:    Number(raw.winners_count)    || 3,
         reward_structure: rewardStructure,
         banner_url:       bannerUrl,
-        week_start:       raw.week_start || new Date().toISOString(),
+        week_start:       raw.week_start   || new Date().toISOString(),
+        start_time:       raw.start_time   || raw.week_start || new Date().toISOString(),
+        end_time:         raw.end_time     || '',
         is_active:        !!raw.is_active,
       };
 
-      if (mounted.current) setConfig(cfg);
-
-      // NOTE: hasRejected is intentionally NOT read from AsyncStorage here.
-      // Per spec: the popup must appear every time the user opens the app until
-      // they either REGISTER (permanent) or REJECT (session-only dismiss).
-      // Persisting the rejection across sessions prevented the popup from ever
-      // reappearing after the first rejection — fixed by keeping it in memory only.
+      if (mounted.current) {
+        setConfig(cfg);
+        setIsIntermission(intermission);
+      }
     } catch {
       // tournament_config collection may not exist yet — fail silently
     } finally {
@@ -144,20 +193,13 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         setUserPoints(Number(u.weekly_tournament_points) || 0);
       }
     } catch {
-      // Network error — treat as "not joined" so popup can show
       if (mounted.current) setUserJoined(false);
     } finally {
-      // Signal that join-status has been confirmed (or best-effort attempted).
-      // showPopup gates on this to avoid the race where popup fires
-      // before we know if the user already joined.
       if (mounted.current) setUserStatsChecked(true);
     }
   }, [user?.pbId]);
 
-  // ── Reset all user-specific state immediately when the logged-in user changes ─
-  // Without this, stale state from the previous user session (e.g. userJoined=true)
-  // suppresses the popup for the new user during the async gap while refreshUserStats
-  // is in flight. Resetting synchronously ensures a clean slate before the fetch.
+  // ── Reset all user-specific state when the logged-in user changes ────────
   useEffect(() => {
     setUserJoined(false);
     setUserPoints(0);
@@ -173,33 +215,31 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     setLbLoading(true);
     try {
       const res = await pb.collection('users').getList(1, 100, {
-        sort: '-weekly_tournament_points',
+        sort:   '-weekly_tournament_points',
         filter: 'tournament_joined = true && weekly_tournament_points > 0',
         fields: 'id,display_name,weekly_tournament_points,avatar2',
       });
       if (!mounted.current) return;
 
-      const PB_URL = 'https://api.webcod.in';
       const rewardMap = config?.reward_structure ?? {};
       const entries: TournamentEntry[] = res.items.map((u: any, i: number) => {
         let name: string = u.display_name || 'Miner';
         if (name.includes('@')) name = name.split('@')[0];
         const rank = i + 1;
 
-        // Build avatar URL from the avatar2 field ("Avatar 2.0")
         let avatarUrl: string | undefined;
         const av2 = u.avatar2;
         if (av2) {
           const filename = Array.isArray(av2) ? av2[0] : av2;
-          if (filename) avatarUrl = `${PB_URL}/api/files/users/${u.id}/${filename}`;
+          if (filename) avatarUrl = `${POCKETBASE_URL}/api/files/users/${u.id}/${filename}`;
         }
 
         return {
           rank,
-          id: u.id,
+          id:          u.id,
           displayName: name,
-          points: Number(u.weekly_tournament_points) || 0,
-          prize: Number(rewardMap[String(rank)]) || 0,
+          points:      Number(u.weekly_tournament_points) || 0,
+          prize:       Number(rewardMap[String(rank)])    || 0,
           avatarUrl,
         };
       });
@@ -210,36 +250,31 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   }, [config]);
 
   // ── Join tournament ──────────────────────────────────────────────────────
-  const joinTournament = useCallback(async () => {
+  const joinTournament = useCallback(async (duringIntermission = false) => {
     if (!user?.pbId) return;
     await pb.collection('users').update(user.pbId, { tournament_joined: true });
     if (mounted.current) setUserJoined(true);
 
-    // Track participation — non-critical, best-effort
     const displayName = (user as any).displayName || (user as any).email || 'Miner';
     pb.collection('tournament_participants').create({
-      user_id:      user.pbId,
-      display_name: typeof displayName === 'string' ? displayName.split('@')[0] : 'Miner',
-      week_start:   config?.week_start || new Date().toISOString(),
-      joined_at:    new Date().toISOString(),
-      points:       0,
+      user_id:                      user.pbId,
+      display_name:                 typeof displayName === 'string' ? displayName.split('@')[0] : 'Miner',
+      week_start:                   config?.week_start || new Date().toISOString(),
+      joined_at:                    new Date().toISOString(),
+      points:                       0,
+      registered_during_intermission: duringIntermission,
     }).catch(() => {});
   }, [user?.pbId, config?.week_start]);
 
   // ── Reject tournament (session-only dismiss) ─────────────────────────────
-  // Rejection is stored in-memory only — NOT in AsyncStorage — so the popup
-  // re-appears the next time the user opens the app. This matches the spec:
-  // "every time the user opens the app, this banner must keep showing up
-  //  until they click REGISTER or REJECT."
   const rejectTournament = useCallback(async () => {
     if (mounted.current) setHasRejected(true);
   }, []);
 
-  // Derived: show popup only once ALL async checks have settled.
-  // userStatsChecked guards against the race condition where the popup
-  // briefly fires before we confirm the user hasn't already joined.
+  // Popup shows during active tournament OR intermission (pre-register for next week).
+  // Gates on userStatsChecked to avoid the race before join-status is confirmed.
   const showPopup = !!(
-    config?.is_active &&
+    (config?.is_active || isIntermission) &&
     !userJoined &&
     !hasRejected &&
     !loadingConfig &&
@@ -254,6 +289,8 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       userPoints,
       hasRejected,
       showPopup,
+      isIntermission,
+      serverOffset,
       leaderboard,
       leaderboardLoading,
       loadingConfig,

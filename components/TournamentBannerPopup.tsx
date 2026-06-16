@@ -1,8 +1,15 @@
 /**
  * TournamentBannerPopup — Weekly Tournament registration bottom sheet.
  *
+ * Security: countdown uses server-authoritative time (serverOffset from
+ * TournamentContext) so device clock manipulation doesn't affect the deadline.
+ *
+ * Two modes:
+ *   Active     — normal tournament running; countdown to end_time (Sunday 18:00 UTC).
+ *   Intermission — Sunday 6PM → Monday 12AM gap; pre-registration for next week.
+ *
  * Layout (top → bottom inside the sheet):
- *   1. Live countdown timer  "X Days : XX Hours : XX Minutes : XX Seconds"
+ *   1. Mode label + live countdown timer
  *   2. Banner image ONLY — no overlays, no text, no icons
  *   3. Side-by-side capsule buttons [REGISTER] [REJECT]
  *   4. Small disclaimer note
@@ -16,14 +23,18 @@ import * as Haptics from 'expo-haptics';
 import { useTournament } from '@/context/TournamentContext';
 import Colors from '@/constants/colors';
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-
-// ── Countdown hook ─────────────────────────────────────────────────────────
-function useCountdown(weekStart: string) {
-  const endMs = new Date(weekStart).getTime() + WEEK_MS;
+// ── Server-corrected countdown hook ────────────────────────────────────────
+/**
+ * Counts down to `endTimeIso` using a server-offset-corrected clock.
+ * `serverOffset` = serverTime - Date.now() at the moment config was fetched.
+ * Using `Date.now() + serverOffset` compensates for device clock skew/manipulation.
+ */
+function useCountdown(endTimeIso: string, serverOffset: number) {
+  const endMs = endTimeIso ? new Date(endTimeIso).getTime() : 0;
 
   const calc = () => {
-    const diff = Math.max(0, endMs - Date.now());
+    const serverNow = Date.now() + serverOffset;
+    const diff = Math.max(0, endMs - serverNow);
     return {
       days:    Math.floor(diff / 86_400_000),
       hours:   Math.floor((diff % 86_400_000) / 3_600_000),
@@ -35,10 +46,11 @@ function useCountdown(weekStart: string) {
   const [time, setTime] = useState(calc);
 
   useEffect(() => {
+    if (!endMs) return;
     setTime(calc());
     const id = setInterval(() => setTime(calc()), 1000);
     return () => clearInterval(id);
-  }, [endMs]);
+  }, [endMs, serverOffset]);
 
   return time;
 }
@@ -46,11 +58,10 @@ function useCountdown(weekStart: string) {
 // ── Zero-padded helper ─────────────────────────────────────────────────────
 const pad = (n: number) => String(n).padStart(2, '0');
 
-// ── Dynamic banner image — respects uploaded image's true aspect ratio ──────
+// ── Dynamic banner image ───────────────────────────────────────────────────
 const SCREEN_W = Dimensions.get('window').width;
 
 function BannerImage({ uri }: { uri: string }) {
-  // Default to 16:9 while loading; replaced once Image.getSize resolves
   const [imgH, setImgH] = useState(Math.round(SCREEN_W * (9 / 16)));
 
   useEffect(() => {
@@ -58,15 +69,11 @@ function BannerImage({ uri }: { uri: string }) {
     Image.getSize(
       uri,
       (w, h) => {
-        const ratio = h / w;
-        // Display the full image at natural aspect ratio.
-        // Cap at 1.4× screen width equivalent height so buttons remain visible.
+        const ratio   = h / w;
         const naturalH = Math.round(SCREEN_W * ratio);
         setImgH(Math.min(naturalH, Math.round(SCREEN_W * 1.4)));
       },
-      () => {
-        // On error keep the 16:9 default
-      }
+      () => {},
     );
   }, [uri]);
 
@@ -79,7 +86,7 @@ function BannerImage({ uri }: { uri: string }) {
   );
 }
 
-// ── Capsule button with spring scale feedback ──────────────────────────────
+// ── Capsule button ─────────────────────────────────────────────────────────
 interface CapsuleButtonProps {
   label: string;
   bg: string;
@@ -92,7 +99,7 @@ interface CapsuleButtonProps {
 function CapsuleButton({ label, bg, borderColor, glowColor, onPress, disabled }: CapsuleButtonProps) {
   const scale = useRef(new Animated.Value(1)).current;
 
-  const onPressIn = () => {
+  const onPressIn  = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     Animated.spring(scale, { toValue: 0.93, useNativeDriver: true, speed: 60, bounciness: 4 }).start();
   };
@@ -122,23 +129,39 @@ function CapsuleButton({ label, bg, borderColor, glowColor, onPress, disabled }:
 // ── Main popup ─────────────────────────────────────────────────────────────
 export function TournamentBannerPopup() {
   const insets = useSafeAreaInsets();
-  const { config, showPopup, joinTournament, rejectTournament } = useTournament();
+  const { config, showPopup, isIntermission, serverOffset, joinTournament, rejectTournament } = useTournament();
   const [joining, setJoining] = useState(false);
 
-  const countdown = useCountdown(config?.week_start ?? new Date().toISOString());
+  // During intermission: countdown to next Monday 12AM (when new week starts).
+  // During active:       countdown to end_time (next Sunday 18:00 UTC).
+  // Fallback to week_start + 7d if end_time not set (legacy configs).
+  const countdownTarget = (() => {
+    if (!config) return '';
+    if (isIntermission) {
+      // Show countdown to next Monday midnight (when new week will start)
+      const nextMon = nextMonday12AM_UTC();
+      return nextMon.toISOString();
+    }
+    if (config.end_time) return config.end_time;
+    // Legacy fallback: week_start + 7 days
+    const legacyEnd = new Date(config.week_start).getTime() + 7 * 24 * 60 * 60 * 1000;
+    return new Date(legacyEnd).toISOString();
+  })();
+
+  const countdown = useCountdown(countdownTarget, serverOffset);
 
   const handleRegister = useCallback(async () => {
     if (joining) return;
     setJoining(true);
     try {
-      await joinTournament();
+      await joinTournament(isIntermission);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setJoining(false);
     }
-  }, [joinTournament, joining]);
+  }, [joinTournament, joining, isIntermission]);
 
   const handleReject = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -147,36 +170,44 @@ export function TournamentBannerPopup() {
 
   if (!showPopup || !config) return null;
 
+  const modeLabel     = isIntermission ? 'NEXT WEEK STARTS IN' : 'TOURNAMENT ENDS IN';
+  const modeColor     = isIntermission ? '#7B68EE' : Colors.gold; // purple during intermission
+  const disclaimerMsg = isIntermission
+    ? 'Pre-register now — your mining rewards will count as points when the new week begins.'
+    : 'Registering is free — your mining rewards count as tournament points.';
+
   return (
     <Modal visible transparent animationType="slide" statusBarTranslucent>
       <View style={styles.overlay}>
-
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 4 }]}>
 
-          {/* ── 1. Live countdown timer — always visible at the top ──────── */}
-          <View style={styles.timerRow}>
-            <View style={styles.timerBlock}>
-              <Text style={styles.timerDigit}>{countdown.days}</Text>
-              <Text style={styles.timerUnit}>Days</Text>
-            </View>
-            <Text style={styles.timerColon}>:</Text>
-            <View style={styles.timerBlock}>
-              <Text style={styles.timerDigit}>{pad(countdown.hours)}</Text>
-              <Text style={styles.timerUnit}>Hours</Text>
-            </View>
-            <Text style={styles.timerColon}>:</Text>
-            <View style={styles.timerBlock}>
-              <Text style={styles.timerDigit}>{pad(countdown.minutes)}</Text>
-              <Text style={styles.timerUnit}>Minutes</Text>
-            </View>
-            <Text style={styles.timerColon}>:</Text>
-            <View style={styles.timerBlock}>
-              <Text style={styles.timerDigit}>{pad(countdown.seconds)}</Text>
-              <Text style={styles.timerUnit}>Seconds</Text>
+          {/* ── 1. Mode label + countdown ────────────────────────────────── */}
+          <View style={[styles.timerRow, isIntermission && styles.timerRowIntermission]}>
+            <Text style={[styles.modeLabel, { color: modeColor }]}>{modeLabel}</Text>
+            <View style={styles.timerDigitsRow}>
+              <View style={styles.timerBlock}>
+                <Text style={[styles.timerDigit, { color: modeColor }]}>{countdown.days}</Text>
+                <Text style={styles.timerUnit}>Days</Text>
+              </View>
+              <Text style={[styles.timerColon, { color: modeColor }]}>:</Text>
+              <View style={styles.timerBlock}>
+                <Text style={[styles.timerDigit, { color: modeColor }]}>{pad(countdown.hours)}</Text>
+                <Text style={styles.timerUnit}>Hours</Text>
+              </View>
+              <Text style={[styles.timerColon, { color: modeColor }]}>:</Text>
+              <View style={styles.timerBlock}>
+                <Text style={[styles.timerDigit, { color: modeColor }]}>{pad(countdown.minutes)}</Text>
+                <Text style={styles.timerUnit}>Minutes</Text>
+              </View>
+              <Text style={[styles.timerColon, { color: modeColor }]}>:</Text>
+              <View style={styles.timerBlock}>
+                <Text style={[styles.timerDigit, { color: modeColor }]}>{pad(countdown.seconds)}</Text>
+                <Text style={styles.timerUnit}>Seconds</Text>
+              </View>
             </View>
           </View>
 
-          {/* ── 2. Banner image — scrollable so tall images don't overflow ─ */}
+          {/* ── 2. Banner image ──────────────────────────────────────────── */}
           <ScrollView
             style={styles.imageScroll}
             contentContainerStyle={styles.imageScrollContent}
@@ -190,7 +221,7 @@ export function TournamentBannerPopup() {
             )}
           </ScrollView>
 
-          {/* ── 3. Side-by-side capsule buttons ────────────────────────── */}
+          {/* ── 3. Capsule buttons ───────────────────────────────────────── */}
           <View style={styles.buttonRow}>
             <CapsuleButton
               label={joining ? 'REGISTERING…' : 'REGISTER'}
@@ -209,16 +240,30 @@ export function TournamentBannerPopup() {
             />
           </View>
 
-          {/* ── 4. Disclaimer ───────────────────────────────────────────── */}
-          <Text style={styles.note}>
-            Registering is free — your mining rewards count as tournament points.
-          </Text>
+          {/* ── 4. Disclaimer ────────────────────────────────────────────── */}
+          <Text style={styles.note}>{disclaimerMsg}</Text>
         </View>
       </View>
     </Modal>
   );
 }
 
+// ── Calendar helper (client-side approximation for countdown target) ────────
+function nextMonday12AM_UTC(): Date {
+  const now  = new Date();
+  const day  = now.getUTCDay(); // 1=Monday
+  const daysUntil = day === 1 ? 0 : (8 - day) % 7;
+  const candidate = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntil,
+    0, 0, 0, 0,
+  ));
+  if (candidate.getTime() <= now.getTime()) {
+    candidate.setUTCDate(candidate.getUTCDate() + 7);
+  }
+  return candidate;
+}
+
+// ── Styles ─────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
@@ -236,16 +281,30 @@ const styles = StyleSheet.create({
 
   // ── Countdown timer ──
   timerRow: {
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 22,
-    paddingBottom: 16,
+    paddingTop: 18,
+    paddingBottom: 14,
     paddingHorizontal: 20,
     gap: 6,
     backgroundColor: 'rgba(244,196,48,0.04)',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(244,196,48,0.1)',
+  },
+  timerRowIntermission: {
+    backgroundColor: 'rgba(123,104,238,0.06)',
+    borderBottomColor: 'rgba(123,104,238,0.15)',
+  },
+  modeLabel: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 10,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  timerDigitsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   timerBlock: {
     alignItems: 'center',
@@ -254,7 +313,6 @@ const styles = StyleSheet.create({
   timerDigit: {
     fontFamily: 'Inter_700Bold',
     fontSize: 28,
-    color: Colors.gold,
     letterSpacing: 1,
     lineHeight: 32,
   },
@@ -269,28 +327,23 @@ const styles = StyleSheet.create({
   timerColon: {
     fontFamily: 'Inter_700Bold',
     fontSize: 24,
-    color: Colors.gold,
     opacity: 0.6,
     marginBottom: 10,
   },
 
-  // ── Banner image — scrollable, full aspect ratio ──
+  // ── Banner image ──
   imageScroll: {
-    // Cap scroll area so the sheet never fills more than ~60% of screen height.
-    // BannerImage inside calculates its own natural height.
     maxHeight: Math.round(Dimensions.get('window').height * 0.60),
     backgroundColor: '#111118',
   },
-  imageScrollContent: {
-    // Let the BannerImage size itself; no flex needed
-  },
+  imageScrollContent: {},
   bannerPlaceholder: {
     width: SCREEN_W,
     height: Math.round(SCREEN_W * (9 / 16)),
     backgroundColor: '#111118',
   },
 
-  // ── Side-by-side buttons ──
+  // ── Buttons ──
   buttonRow: {
     flexDirection: 'row',
     gap: 12,
@@ -298,9 +351,7 @@ const styles = StyleSheet.create({
     paddingTop: 18,
     paddingBottom: 4,
   },
-  capsuleWrap: {
-    flex: 1,
-  },
+  capsuleWrap: { flex: 1 },
   capsule: {
     alignItems: 'center',
     justifyContent: 'center',
