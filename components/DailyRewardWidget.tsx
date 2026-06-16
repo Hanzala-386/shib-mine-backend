@@ -274,14 +274,12 @@ type DayState = 'claimed' | 'active' | 'locked';
 interface DayCardProps {
   day: number;
   state: DayState;
-  rewards: DailyRewards;
   glowAnim: Animated.Value;
   imgUrl?: string | null;
 }
 
-function DayCard({ day, state, rewards, glowAnim, imgUrl }: DayCardProps) {
-  const reward   = getReward(day, rewards);
-  const cfg      = DAY_CONFIG[day];
+/** Clean image-only card box — no text inside */
+function DayCard({ day, state, glowAnim, imgUrl }: DayCardProps) {
   const isClaimed = state === 'claimed';
   const isActive  = state === 'active';
   const isLocked  = state === 'locked';
@@ -297,8 +295,6 @@ function DayCard({ day, state, rewards, glowAnim, imgUrl }: DayCardProps) {
   const bgOpacity = isActive
     ? glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.09] })
     : 0;
-
-  const amtColor = cfg.type === 'pt' ? Colors.neonOrange : Colors.gold;
 
   return (
     <Animated.View style={[
@@ -316,38 +312,17 @@ function DayCard({ day, state, rewards, glowAnim, imgUrl }: DayCardProps) {
         />
       )}
 
-      {/* Day label */}
-      <View style={[cs.dayLabel, isActive && cs.dayLabelActive, isClaimed && cs.dayLabelClaimed]}>
-        <Text style={[cs.dayLabelTxt, isActive && { color: Colors.gold }]}>
-          {isClaimed ? '✓ ' : ''}Day {day}
-        </Text>
-      </View>
-
-      {/* Icon / admin image */}
-      <View style={cs.iconWrap}>
-        {imgUrl ? (
-          <Image
-            source={{ uri: imgUrl }}
-            style={[cs.dayImg, isLocked && { opacity: 0.35 }]}
-            resizeMode="contain"
-          />
-        ) : (
-          <RewardIcon day={day} dimmed={isLocked} />
-        )}
-      </View>
-
-      {/* Reward amount — always shown (??? when locked) */}
-      {isLocked ? (
-        <Text style={cs.lockedAmt}>???</Text>
-      ) : cfg.type === 'both' ? (
-        <View style={{ alignItems: 'center', gap: 1 }}>
-          <Text style={[cs.amt, { color: Colors.gold, fontSize: 8 }]}>{fmtNum(reward.shib)} SHIB</Text>
-          <Text style={[cs.amt, { color: Colors.neonOrange, fontSize: 8 }]}>{fmtNum(reward.pt)} PT</Text>
-        </View>
+      {/* Icon / admin image — fills the entire box */}
+      {imgUrl ? (
+        <Image
+          source={{ uri: imgUrl }}
+          style={[cs.dayImg, isLocked && { opacity: 0.35 }]}
+          resizeMode="cover"
+        />
       ) : (
-        <Text style={[cs.amt, { color: amtColor }, isClaimed && { color: Colors.textMuted }]}>
-          {cfg.type === 'shib' ? `${fmtNum(reward.shib)} SHIB` : `${fmtNum(reward.pt)} PT`}
-        </Text>
+        <View style={cs.iconWrap}>
+          <RewardIcon day={day} dimmed={isLocked} />
+        </View>
       )}
 
       {/* Lock overlay */}
@@ -359,7 +334,7 @@ function DayCard({ day, state, rewards, glowAnim, imgUrl }: DayCardProps) {
         </View>
       )}
 
-      {/* Claimed overlay */}
+      {/* Claimed checkmark corner badge */}
       {isClaimed && (
         <View style={[cs.claimedOverlay, { pointerEvents: 'none' }]}>
           <View style={cs.checkCircle}>
@@ -371,12 +346,52 @@ function DayCard({ day, state, rewards, glowAnim, imgUrl }: DayCardProps) {
   );
 }
 
+/** Slot wrapper: bold "Day N" above card, amount below card */
+function DaySlot({ day, state, rewards, glowAnim, imgUrl }: DayCardProps & { rewards: DailyRewards }) {
+  const reward    = getReward(day, rewards);
+  const cfg       = DAY_CONFIG[day];
+  const isClaimed = state === 'claimed';
+  const isActive  = state === 'active';
+  const isLocked  = state === 'locked';
+  const amtColor  = cfg.type === 'pt' ? Colors.neonOrange : Colors.gold;
+
+  return (
+    <View style={cs.daySlot}>
+      {/* ── Day label — ABOVE the box ── */}
+      <Text style={[
+        cs.daySlotLabel,
+        isActive  && cs.daySlotLabelActive,
+        isClaimed && cs.daySlotLabelClaimed,
+      ]}>
+        {isClaimed ? '✓ ' : ''}Day {day}
+      </Text>
+
+      {/* ── Clean image box ── */}
+      <DayCard day={day} state={state} glowAnim={glowAnim} imgUrl={imgUrl} />
+
+      {/* ── Reward amount — BELOW the box ── */}
+      {isLocked ? (
+        <Text style={cs.daySlotLockedAmt}>???</Text>
+      ) : cfg.type === 'both' ? (
+        <View style={{ alignItems: 'center', gap: 1 }}>
+          <Text style={[cs.daySlotAmt, { color: Colors.gold }]}>{fmtNum(reward.shib)} SHIB</Text>
+          <Text style={[cs.daySlotAmt, { color: Colors.neonOrange }]}>{fmtNum(reward.pt)} PT</Text>
+        </View>
+      ) : (
+        <Text style={[cs.daySlotAmt, { color: amtColor }, isClaimed && { color: Colors.textMuted }]}>
+          {cfg.type === 'shib' ? `${fmtNum(reward.shib)} SHIB` : `${fmtNum(reward.pt)} PT`}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 // ─── Day 7 Grand Reward card ──────────────────────────────────────────────────
+/** Grand card inner box — images only, no text inside */
 function GrandCard({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
   state: DayState; rewards: DailyRewards; glowAnim: Animated.Value;
   shibaImgUrl?: string | null; powerImgUrl?: string | null;
 }) {
-  const reward    = getReward(7, rewards);
   const isClaimed = state === 'claimed';
   const isActive  = state === 'active';
   const isLocked  = state === 'locked';
@@ -403,41 +418,24 @@ function GrandCard({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
         />
       )}
 
-      {/* Left: label col */}
-      <View style={{ gap: 4 }}>
-        <LinearGradient colors={[Colors.gold, Colors.neonOrange]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={cs.grandBadge}>
-          <Text style={cs.grandBadgeTxt}>⭐ GRAND REWARD</Text>
-        </LinearGradient>
-        <Text style={cs.grandDay}>{isClaimed ? '✓ Day 7 Claimed' : 'Day 7'}</Text>
-      </View>
-
-      {/* Right: icons + amounts */}
-      <View style={cs.grandRight}>
-        {isLocked ? (
-          <>
-            <Text style={[cs.lockedAmt, { fontSize: 14 }]}>???</Text>
-            <View style={cs.lockCircle}>
-              <Ionicons name="lock-closed" size={15} color="#2a2a2a" />
-            </View>
-          </>
-        ) : (
-          <>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              {shibaImgUrl
-                ? <Image source={{ uri: shibaImgUrl }} style={cs.grandImg} resizeMode="contain" />
-                : <ShibStack size={32} count={2} />}
-              <Text style={{ color: Colors.gold, fontWeight: '900', fontSize: 16 }}>+</Text>
-              {powerImgUrl
-                ? <Image source={{ uri: powerImgUrl }} style={cs.grandImg} resizeMode="contain" />
-                : <Ionicons name="flash" size={30} color={Colors.neonOrange} />}
-            </View>
-            <View style={{ gap: 2, alignItems: 'flex-end' }}>
-              <Text style={[cs.amt, { color: Colors.gold, fontSize: 11, fontFamily: 'Inter_700Bold' }]}>{fmtNum(reward.shib)} SHIB</Text>
-              <Text style={[cs.amt, { color: Colors.neonOrange, fontSize: 11, fontFamily: 'Inter_700Bold' }]}>+ {fmtNum(reward.pt)} PT</Text>
-            </View>
-          </>
-        )}
-      </View>
+      {/* Two image slots side by side — clean, no text */}
+      {isLocked ? (
+        <View style={cs.grandRight}>
+          <View style={cs.lockCircle}>
+            <Ionicons name="lock-closed" size={18} color="#2a2a2a" />
+          </View>
+        </View>
+      ) : (
+        <View style={cs.grandRight}>
+          {shibaImgUrl
+            ? <Image source={{ uri: shibaImgUrl }} style={cs.grandImg} resizeMode="contain" />
+            : <ShibStack size={44} count={2} />}
+          <Text style={{ color: Colors.gold, fontWeight: '900', fontSize: 20 }}>+</Text>
+          {powerImgUrl
+            ? <Image source={{ uri: powerImgUrl }} style={cs.grandImg} resizeMode="contain" />
+            : <Ionicons name="flash" size={44} color={Colors.neonOrange} />}
+        </View>
+      )}
 
       {isClaimed && (
         <View style={[cs.claimedOverlay, { pointerEvents: 'none' }]}>
@@ -447,6 +445,54 @@ function GrandCard({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
         </View>
       )}
     </Animated.View>
+  );
+}
+
+/** Grand slot wrapper: "⭐ GRAND REWARD  Day 7" above card, amounts below */
+function GrandSlot({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
+  state: DayState; rewards: DailyRewards; glowAnim: Animated.Value;
+  shibaImgUrl?: string | null; powerImgUrl?: string | null;
+}) {
+  const reward    = getReward(7, rewards);
+  const isClaimed = state === 'claimed';
+  const isActive  = state === 'active';
+  const isLocked  = state === 'locked';
+
+  return (
+    <View style={cs.grandSlot}>
+      {/* ── Day 7 header row — ABOVE the card ── */}
+      <View style={cs.grandSlotHeader}>
+        <LinearGradient
+          colors={[Colors.gold, Colors.neonOrange]}
+          start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+          style={cs.grandBadge}
+        >
+          <Text style={cs.grandBadgeTxt}>⭐ GRAND REWARD</Text>
+        </LinearGradient>
+        <Text style={[
+          cs.daySlotLabel,
+          isActive  && cs.daySlotLabelActive,
+          isClaimed && cs.daySlotLabelClaimed,
+          { marginTop: 0 },
+        ]}>
+          {isClaimed ? '✓ ' : ''}Day 7
+        </Text>
+      </View>
+
+      {/* ── Clean image box ── */}
+      <GrandCard state={state} rewards={rewards} glowAnim={glowAnim}
+        shibaImgUrl={shibaImgUrl} powerImgUrl={powerImgUrl} />
+
+      {/* ── Amounts — BELOW the card ── */}
+      {isLocked ? (
+        <Text style={[cs.daySlotLockedAmt, { fontSize: 13 }]}>???</Text>
+      ) : (
+        <View style={cs.grandSlotAmts}>
+          <Text style={[cs.grandSlotAmt, { color: Colors.gold }]}>{fmtNum(reward.shib)} SHIB</Text>
+          <Text style={[cs.grandSlotAmt, { color: Colors.neonOrange }]}>+ {fmtNum(reward.pt)} PT</Text>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -871,23 +917,23 @@ function DailyRewardWidgetInner() {
               contentContainerStyle={cs.scrollContent}
               bounces={false}
             >
-              {/* ── Grid rows ── */}
+              {/* ── Grid rows — DaySlot = label above + card + amount below ── */}
               <View style={cs.gridRow}>
                 {[1, 2, 3].map(d => (
-                  <DayCard key={d} day={d} state={getDayState(d)} rewards={rewards}
+                  <DaySlot key={d} day={d} state={getDayState(d)} rewards={rewards}
                     glowAnim={glowAnim} imgUrl={getImgUrl(d)} />
                 ))}
               </View>
               <View style={cs.gridRow}>
                 {[4, 5, 6].map(d => (
-                  <DayCard key={d} day={d} state={getDayState(d)} rewards={rewards}
+                  <DaySlot key={d} day={d} state={getDayState(d)} rewards={rewards}
                     glowAnim={glowAnim} imgUrl={getImgUrl(d)} />
                 ))}
               </View>
 
-              {/* ── Day 7 grand reward ── */}
+              {/* ── Day 7 grand reward — GrandSlot = label above + card + amounts below ── */}
               <View style={cs.grandSection}>
-                <GrandCard state={getDayState(7)} rewards={rewards} glowAnim={glowAnim}
+                <GrandSlot state={getDayState(7)} rewards={rewards} glowAnim={glowAnim}
                   shibaImgUrl={claimSettings?.day7ShibImageUrl ?? null}
                   powerImgUrl={claimSettings?.day7PowerImageUrl ?? null} />
               </View>
@@ -1062,36 +1108,53 @@ const cs = StyleSheet.create({
   },
 
   // Grid
-  gridRow: { flexDirection: 'row', gap: GRID_GAP, marginBottom: GRID_GAP },
+  gridRow: { flexDirection: 'row', gap: GRID_GAP, marginBottom: GRID_GAP + 4 },
+  grandSection: { width: '100%' },
 
   // Day card
+  // ── Day slot (column wrapper: label above + card + amount below) ──
+  daySlot: {
+    width: SMALL_CARD_W,
+    alignItems: 'center',
+    gap: 5,
+  },
+  daySlotLabel: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 12,
+    color: Colors.textMuted,
+    letterSpacing: 0.2,
+    textAlign: 'center',
+  },
+  daySlotLabelActive: { color: Colors.gold },
+  daySlotLabelClaimed: { color: Colors.gold + 'aa' },
+  daySlotAmt: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 10,
+    color: Colors.gold,
+    textAlign: 'center',
+  },
+  daySlotLockedAmt: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 11,
+    color: '#2e2e3a',
+    textAlign: 'center',
+  },
+
+  // ── Day card (clean image-only box) ──
   dayCard: {
     width: SMALL_CARD_W,
-    minHeight: 110,
+    height: SMALL_CARD_W,
     backgroundColor: '#111120',
     borderRadius: 12,
     borderWidth: 1.5,
-    paddingVertical: 10,
-    paddingHorizontal: 4,
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
     overflow: 'hidden',
     position: 'relative',
   },
   dayCardLocked: { backgroundColor: '#0a0a12' },
 
-  dayLabel: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 20, paddingHorizontal: 6, paddingVertical: 2,
-  },
-  dayLabelActive: { backgroundColor: 'rgba(244,196,48,0.18)', borderWidth: 1, borderColor: 'rgba(244,196,48,0.4)' },
-  dayLabelClaimed: { backgroundColor: 'rgba(244,196,48,0.08)' },
-  dayLabelTxt: { fontFamily: 'Inter_600SemiBold', fontSize: 8.5, color: Colors.textMuted, letterSpacing: 0.3 },
-
-  iconWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 44 },
-
-  amt: { fontFamily: 'Inter_700Bold', fontSize: 9, color: Colors.gold, textAlign: 'center' },
-  lockedAmt: { fontFamily: 'Inter_500Medium', fontSize: 10, color: '#2e2e3a' },
+  iconWrap: { alignItems: 'center', justifyContent: 'center', flex: 1 },
 
   // Lock overlay
   lockOverlay: {
@@ -1120,27 +1183,51 @@ const cs = StyleSheet.create({
   },
 
   // Grand Day 7 card
+  // ── Grand slot (column: header above + card + amounts below) ──
+  grandSlot: {
+    width: '100%',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  grandSlotHeader: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+  },
+  grandSlotAmts: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  grandSlotAmt: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 13,
+    textAlign: 'center',
+  },
+
+  // ── Grand Day 7 card (clean image-only box) ──
   grandCard: {
     width: '100%',
     backgroundColor: '#100e1e',
     borderRadius: 16,
     borderWidth: 1.5,
-    paddingVertical: 16,
+    paddingVertical: 20,
     paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     overflow: 'hidden',
     position: 'relative',
-    marginBottom: 14,
   },
   grandBadge: {
     borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4,
-    alignSelf: 'flex-start',
+    alignSelf: 'center',
   },
   grandBadgeTxt: { fontFamily: 'Inter_700Bold', fontSize: 9.5, color: '#0A0A0F', letterSpacing: 1.2 },
-  grandDay: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.textMuted, marginTop: 4 },
-  grandRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  grandRight: { flexDirection: 'row', alignItems: 'center', gap: 16 },
 
   // Claim button
   claimBtn: {
@@ -1198,16 +1285,18 @@ const cs = StyleSheet.create({
   // Coin sub-components
   coin: { alignItems: 'center', justifyContent: 'center' },
 
-  // Admin-image slots in day cards
+  // Admin-image fills the entire day card box
   dayImg: {
-    width: 44,
-    height: 44,
+    width: SMALL_CARD_W,
+    height: SMALL_CARD_W,
+    borderRadius: 10,
   },
 
-  // Admin-image slots in grand card
+  // Admin-image in grand card — larger to fill the wide card
   grandImg: {
-    width: 38,
-    height: 38,
+    width: 70,
+    height: 70,
+    borderRadius: 10,
   },
 
   // ── TOP countdown banner (always above grid) ──────────────────────────────
