@@ -435,20 +435,20 @@ function GrandCard({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
         />
       )}
 
-      {/* Full-width banner — always shows something (remote or local fallback) */}
-      {isLocked ? (
-        <View style={cs.grandBannerLocked}>
+      {/* Full-width banner — ALWAYS rendered (dimmed when locked, like DayCard) */}
+      <Image
+        source={bannerSource}
+        style={[cs.grandBannerImg, isLocked && { opacity: 0.35 }]}
+        resizeMode="cover"
+        onError={() => setImgFailed(true)}
+      />
+      {/* Lock overlay on top of the dimmed banner — same pattern as DayCard */}
+      {isLocked && (
+        <View style={[cs.lockOverlay, { pointerEvents: 'none' }]}>
           <View style={cs.lockCircle}>
-            <Ionicons name="lock-closed" size={22} color="#2a2a2a" />
+            <Ionicons name="lock-closed" size={13} color="#2a2a2a" />
           </View>
         </View>
-      ) : (
-        <Image
-          source={bannerSource}
-          style={cs.grandBannerImg}
-          resizeMode="cover"
-          onError={() => setImgFailed(true)}
-        />
       )}
 
       {isClaimed && (
