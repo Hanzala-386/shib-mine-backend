@@ -21,7 +21,7 @@ import React, {
 } from 'react';
 import {
   View, Text, StyleSheet, Modal, Pressable, Animated,
-  PanResponder, Dimensions, ScrollView, ActivityIndicator, Platform,
+  PanResponder, Dimensions, ScrollView, ActivityIndicator, Platform, Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -30,7 +30,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/context/AuthContext';
 import { useAdmin } from '@/context/AdminContext';
 import { pb } from '@/lib/pocketbase';
-import { api, type DailyStatus, type DailyRewards, type DailyClaimResult } from '@/lib/api';
+import { api, type DailyStatus, type DailyRewards, type DailyClaimResult, type DailyClaimSettings } from '@/lib/api';
 import Colors from '@/constants/colors';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -251,9 +251,10 @@ interface DayCardProps {
   state: DayState;
   rewards: DailyRewards;
   glowAnim: Animated.Value;
+  imgUrl?: string | null;
 }
 
-function DayCard({ day, state, rewards, glowAnim }: DayCardProps) {
+function DayCard({ day, state, rewards, glowAnim, imgUrl }: DayCardProps) {
   const reward   = getReward(day, rewards);
   const cfg      = DAY_CONFIG[day];
   const isClaimed = state === 'claimed';
@@ -299,7 +300,11 @@ function DayCard({ day, state, rewards, glowAnim }: DayCardProps) {
 
       {/* Icon */}
       <View style={cs.iconWrap}>
-        <RewardIcon day={day} dimmed={isLocked} />
+        {imgUrl && !isLocked ? (
+          <Image source={{ uri: imgUrl }} style={cs.dayImg} resizeMode="contain" />
+        ) : (
+          <RewardIcon day={day} dimmed={isLocked} />
+        )}
       </View>
 
       {/* Reward amount */}
@@ -338,7 +343,10 @@ function DayCard({ day, state, rewards, glowAnim }: DayCardProps) {
 }
 
 // ─── Day 7 Grand Reward card ──────────────────────────────────────────────────
-function GrandCard({ state, rewards, glowAnim }: { state: DayState; rewards: DailyRewards; glowAnim: Animated.Value }) {
+function GrandCard({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
+  state: DayState; rewards: DailyRewards; glowAnim: Animated.Value;
+  shibaImgUrl?: string | null; powerImgUrl?: string | null;
+}) {
   const reward    = getReward(7, rewards);
   const isClaimed = state === 'claimed';
   const isActive  = state === 'active';
@@ -385,7 +393,15 @@ function GrandCard({ state, rewards, glowAnim }: { state: DayState; rewards: Dai
           </>
         ) : (
           <>
-            <RewardIcon day={7} dimmed={isLocked} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {shibaImgUrl
+                ? <Image source={{ uri: shibaImgUrl }} style={cs.grandImg} resizeMode="contain" />
+                : <ShibStack size={32} count={2} />}
+              <Text style={{ color: Colors.gold, fontWeight: '900', fontSize: 16 }}>+</Text>
+              {powerImgUrl
+                ? <Image source={{ uri: powerImgUrl }} style={cs.grandImg} resizeMode="contain" />
+                : <Ionicons name="flash" size={30} color={Colors.neonOrange} />}
+            </View>
             <View style={{ gap: 2, alignItems: 'flex-end' }}>
               <Text style={[cs.amt, { color: Colors.gold, fontSize: 11, fontFamily: 'Inter_700Bold' }]}>{fmtNum(reward.shib)} SHIB</Text>
               <Text style={[cs.amt, { color: Colors.neonOrange, fontSize: 11, fontFamily: 'Inter_700Bold' }]}>+ {fmtNum(reward.pt)} PT</Text>
@@ -441,7 +457,8 @@ function DailyRewardWidgetInner() {
   const [serverOffset, setOffset]   = useState(0);    // device vs server ms delta
   const [countdownMs, setCountdown] = useState(0);
   const [claimDone, setClaimDone]   = useState<{ shib: number; pt: number } | null>(null);
-  const [floatReady, setFloatReady] = useState(false); // badge on float when reward available
+  const [floatReady, setFloatReady]       = useState(false);
+  const [claimSettings, setClaimSettings] = useState<DailyClaimSettings | null>(null);
 
   // ── Animations ──
   const glowAnim   = useRef(new Animated.Value(0)).current;
@@ -532,6 +549,37 @@ function DailyRewardWidgetInner() {
     }, 1600);
 
     return () => clearTimeout(t);
+  }, [user?.pbId]);
+
+  // ── Fetch daily_claim_settings (images + admin-set amounts) ──
+  useEffect(() => {
+    if (!user?.pbId) return;
+    (async () => {
+      try {
+        const cs = await api.getDailySettings();
+        setClaimSettings(cs);
+      } catch {
+        try {
+          const res = await pb.collection('daily_claim_settings').getList(1, 1);
+          const rec = res.items[0];
+          if (rec) {
+            const BASE = `https://api.webcod.in/api/files/daily_claim_settings/${rec.id}`;
+            const fu = (f: string) => (f ? `${BASE}/${f}` : null);
+            setClaimSettings({
+              id: rec.id,
+              day1ImageUrl: fu(rec.day_1_image),   day1Amount: rec.day_1_amount ?? 1000,
+              day2ImageUrl: fu(rec.day_2_image),   day2Amount: rec.day_2_amount ?? 50,
+              day3ImageUrl: fu(rec.day_3_image),   day3Amount: rec.day_3_amount ?? 3000,
+              day4ImageUrl: fu(rec.day_4_image),   day4Amount: rec.day_4_amount ?? 100,
+              day5ImageUrl: fu(rec.day_5_image),   day5Amount: rec.day_5_amount ?? 5000,
+              day6ImageUrl: fu(rec.day_6_image),   day6Amount: rec.day_6_amount ?? 200,
+              day7ShibImageUrl: fu(rec.day_7_shiba_image),  day7ShibAmount: rec.day_7_shiba_amount ?? 10000,
+              day7PowerImageUrl: fu(rec.day_7_power_image), day7PowerAmount: rec.day_7_power_amount ?? 500,
+            });
+          }
+        } catch { /* keep null — fallback icons will render */ }
+      }
+    })();
   }, [user?.pbId]);
 
   // ── Poll every 5 min; auto-popup when timer expires ──
@@ -636,7 +684,30 @@ function DailyRewardWidgetInner() {
   const activeDay = status?.activeDay ?? 1;
   const canClaim  = status?.canClaim  ?? false;
   const streak    = status?.streak    ?? 0;
-  const rewards   = status?.rewards   ?? fallbackRewards;
+  // Use claimSettings amounts when available (admin-configured), else server status rewards
+  const rewards = claimSettings ? {
+    day1Shib: claimSettings.day1Amount,
+    day2Pt:   claimSettings.day2Amount,
+    day3Shib: claimSettings.day3Amount,
+    day4Pt:   claimSettings.day4Amount,
+    day5Shib: claimSettings.day5Amount,
+    day6Pt:   claimSettings.day6Amount,
+    day7Shib: claimSettings.day7ShibAmount,
+    day7Pt:   claimSettings.day7PowerAmount,
+  } : (status?.rewards ?? fallbackRewards);
+
+  function getImgUrl(d: number): string | null {
+    if (!claimSettings) return null;
+    const map: Record<number, string | null> = {
+      1: claimSettings.day1ImageUrl,
+      2: claimSettings.day2ImageUrl,
+      3: claimSettings.day3ImageUrl,
+      4: claimSettings.day4ImageUrl,
+      5: claimSettings.day5ImageUrl,
+      6: claimSettings.day6ImageUrl,
+    };
+    return map[d] ?? null;
+  }
 
   function getDayState(d: number): DayState {
     if (d < activeDay) return 'claimed';
@@ -721,6 +792,19 @@ function DailyRewardWidgetInner() {
             {/* ── Success toast ── */}
             {claimDone && <SuccessToast shib={claimDone.shib} pt={claimDone.pt} />}
 
+            {/* ── TOP: Countdown or "Ready" banner (ALWAYS above the grid) ── */}
+            {!canClaim && countdownMs > 0 ? (
+              <View style={cs.countdownBanner}>
+                <Text style={cs.countdownBannerLabel}>CLAIM REFRESHES IN</Text>
+                <Text style={cs.countdownBannerDigits}>{countdownStr}</Text>
+              </View>
+            ) : canClaim ? (
+              <View style={cs.claimAvailableBanner}>
+                <Ionicons name="gift-outline" size={15} color={Colors.gold} />
+                <Text style={cs.claimAvailableTxt}>✦ YOUR REWARD IS READY!</Text>
+              </View>
+            ) : null}
+
             <ScrollView
               showsVerticalScrollIndicator={false}
               contentContainerStyle={cs.scrollContent}
@@ -728,19 +812,27 @@ function DailyRewardWidgetInner() {
             >
               {/* ── Grid rows ── */}
               <View style={cs.gridRow}>
-                {[1, 2, 3].map(d => <DayCard key={d} day={d} state={getDayState(d)} rewards={rewards} glowAnim={glowAnim} />)}
+                {[1, 2, 3].map(d => (
+                  <DayCard key={d} day={d} state={getDayState(d)} rewards={rewards}
+                    glowAnim={glowAnim} imgUrl={getImgUrl(d)} />
+                ))}
               </View>
               <View style={cs.gridRow}>
-                {[4, 5, 6].map(d => <DayCard key={d} day={d} state={getDayState(d)} rewards={rewards} glowAnim={glowAnim} />)}
+                {[4, 5, 6].map(d => (
+                  <DayCard key={d} day={d} state={getDayState(d)} rewards={rewards}
+                    glowAnim={glowAnim} imgUrl={getImgUrl(d)} />
+                ))}
               </View>
 
               {/* ── Day 7 grand reward ── */}
               <View style={cs.grandSection}>
-                <GrandCard state={getDayState(7)} rewards={rewards} glowAnim={glowAnim} />
+                <GrandCard state={getDayState(7)} rewards={rewards} glowAnim={glowAnim}
+                  shibaImgUrl={claimSettings?.day7ShibImageUrl ?? null}
+                  powerImgUrl={claimSettings?.day7PowerImageUrl ?? null} />
               </View>
 
-              {/* ── Claim button / timer ── */}
-              {canClaim ? (
+              {/* ── Claim button (only when eligible) ── */}
+              {canClaim && (
                 <Pressable
                   onPress={handleClaim}
                   disabled={claiming}
@@ -756,14 +848,6 @@ function DailyRewardWidgetInner() {
                       : <Text style={cs.claimTxt}>✦  CLAIM DAY {activeDay}</Text>}
                   </LinearGradient>
                 </Pressable>
-              ) : (
-                <View style={cs.timerBox}>
-                  <Ionicons name="time-outline" size={16} color={Colors.textMuted} />
-                  <View>
-                    <Text style={cs.timerLabel}>NEXT REWARD IN</Text>
-                    <Text style={cs.timerVal}>{countdownStr}</Text>
-                  </View>
-                </View>
               )}
 
               <Text style={cs.hint}>Miss 2+ days? Your streak resets to Day 1.</Text>
@@ -1052,4 +1136,65 @@ const cs = StyleSheet.create({
 
   // Coin sub-components
   coin: { alignItems: 'center', justifyContent: 'center' },
+
+  // Admin-image slots in day cards
+  dayImg: {
+    width: 44,
+    height: 44,
+  },
+
+  // Admin-image slots in grand card
+  grandImg: {
+    width: 38,
+    height: 38,
+  },
+
+  // ── TOP countdown banner (always above grid) ──────────────────────────────
+  countdownBanner: {
+    marginHorizontal: CARD_PAD,
+    marginBottom: 10,
+    backgroundColor: '#0D0C1E',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.20)',
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    gap: 3,
+  },
+  countdownBannerLabel: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 9,
+    color: Colors.textMuted,
+    letterSpacing: 2.5,
+    textTransform: 'uppercase',
+  },
+  countdownBannerDigits: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 28,
+    color: Colors.textPrimary,
+    letterSpacing: 4,
+  },
+
+  // ── "Ready" banner ────────────────────────────────────────────────────────
+  claimAvailableBanner: {
+    marginHorizontal: CARD_PAD,
+    marginBottom: 10,
+    backgroundColor: 'rgba(244,196,48,0.10)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.35)',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  claimAvailableTxt: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 13,
+    color: Colors.gold,
+    letterSpacing: 1.2,
+  },
 });

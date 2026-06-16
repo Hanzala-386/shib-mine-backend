@@ -138,6 +138,59 @@ async function ensureTournamentParticipantsCollection(): Promise<void> {
   }
 }
 
+// ── daily_claim_settings collection setup ──────────────────────────────────
+async function ensureDailyClaimSettingsCollection(): Promise<void> {
+  try {
+    const existing = await pbGet('/api/collections/daily_claim_settings');
+    if (existing.id) {
+      console.log('[daily] daily_claim_settings collection already exists ✓');
+      return;
+    }
+    const fileOpts = {
+      maxSelect: 1,
+      maxSize: 5242880,
+      mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+      thumbs: [],
+      protected: false,
+    };
+    await pbPost('/api/collections', {
+      name: 'daily_claim_settings',
+      type: 'base',
+      schema: [
+        { name: 'day_1_image',        type: 'file',   required: false, options: fileOpts },
+        { name: 'day_1_amount',        type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'day_2_image',        type: 'file',   required: false, options: fileOpts },
+        { name: 'day_2_amount',        type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'day_3_image',        type: 'file',   required: false, options: fileOpts },
+        { name: 'day_3_amount',        type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'day_4_image',        type: 'file',   required: false, options: fileOpts },
+        { name: 'day_4_amount',        type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'day_5_image',        type: 'file',   required: false, options: fileOpts },
+        { name: 'day_5_amount',        type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'day_6_image',        type: 'file',   required: false, options: fileOpts },
+        { name: 'day_6_amount',        type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'day_7_shiba_image',  type: 'file',   required: false, options: fileOpts },
+        { name: 'day_7_shiba_amount', type: 'number', required: false, options: { min: null, max: null } },
+        { name: 'day_7_power_image',  type: 'file',   required: false, options: fileOpts },
+        { name: 'day_7_power_amount', type: 'number', required: false, options: { min: null, max: null } },
+      ],
+      listRule: '',
+      viewRule: '',
+      createRule: null,
+      updateRule: null,
+      deleteRule: null,
+    });
+    console.log('[daily] daily_claim_settings collection created ✓');
+    await pbPost('/api/collections/daily_claim_settings/records', {
+      day_1_amount: 1000, day_2_amount: 50,  day_3_amount: 3000, day_4_amount: 100,
+      day_5_amount: 5000, day_6_amount: 200, day_7_shiba_amount: 10000, day_7_power_amount: 500,
+    });
+    console.log('[daily] daily_claim_settings default record seeded ✓');
+  } catch (e: any) {
+    console.warn('[daily] ensureDailyClaimSettingsCollection:', e.message);
+  }
+}
+
 // ── daily_claims collection setup ──────────────────────────────────────────
 async function ensureDailyClaimsCollection(): Promise<void> {
   try {
@@ -227,6 +280,9 @@ export async function setupTournamentSchema(): Promise<void> {
         type: 'number', required: false, options: { min: null, max: null },
       });
     }
+
+    // ── daily_claim_settings collection (admin-controlled images + amounts) ──
+    await ensureDailyClaimSettingsCollection();
 
     // ── daily_claims collection (audit log) ────────────────────────────────
     await ensureDailyClaimsCollection();

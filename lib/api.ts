@@ -109,6 +109,8 @@ export const api = {
     request<DailyStatus>('GET', `/api/app/daily/status/${encodeURIComponent(pbId)}`),
   claimDailyReward: (pbId: string) =>
     request<DailyClaimResult>('POST', `/api/app/daily/claim/${encodeURIComponent(pbId)}`, {}),
+  getDailySettings: () =>
+    request<DailyClaimSettings>('GET', '/api/app/daily/settings'),
 
   // ── Server time — anti-clock-manipulation ──────────────────────────────
   getServerTime: () => request<{ serverTime: number }>('GET', '/api/app/server-time'),
@@ -500,6 +502,26 @@ export interface DailyClaimResult {
   newPt: number;
   nextClaimAt: string;
   serverTime: string;
+}
+
+export interface DailyClaimSettings {
+  id: string;
+  day1ImageUrl: string | null;
+  day1Amount: number;
+  day2ImageUrl: string | null;
+  day2Amount: number;
+  day3ImageUrl: string | null;
+  day3Amount: number;
+  day4ImageUrl: string | null;
+  day4Amount: number;
+  day5ImageUrl: string | null;
+  day5Amount: number;
+  day6ImageUrl: string | null;
+  day6Amount: number;
+  day7ShibImageUrl: string | null;
+  day7ShibAmount: number;
+  day7PowerImageUrl: string | null;
+  day7PowerAmount: number;
 }
 
 export interface MiningSessionResponse {

@@ -3699,6 +3699,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Daily Claim Settings (admin-configured images + amounts) ────────────
+  app.get("/api/app/daily/settings", async (req: Request, res: Response) => {
+    try {
+      const result = await pbGet('/api/collections/daily_claim_settings/records?perPage=1');
+      const rec = result?.items?.[0];
+      if (!rec) {
+        return res.json({
+          id: '', day1ImageUrl: null, day1Amount: 1000,
+          day2ImageUrl: null, day2Amount: 50,
+          day3ImageUrl: null, day3Amount: 3000,
+          day4ImageUrl: null, day4Amount: 100,
+          day5ImageUrl: null, day5Amount: 5000,
+          day6ImageUrl: null, day6Amount: 200,
+          day7ShibImageUrl: null, day7ShibAmount: 10000,
+          day7PowerImageUrl: null, day7PowerAmount: 500,
+        });
+      }
+      const BASE = `https://api.webcod.in/api/files/daily_claim_settings/${rec.id}`;
+      const fu = (f: string | undefined) => (f ? `${BASE}/${f}` : null);
+      res.json({
+        id: rec.id,
+        day1ImageUrl: fu(rec.day_1_image),       day1Amount: rec.day_1_amount ?? 1000,
+        day2ImageUrl: fu(rec.day_2_image),       day2Amount: rec.day_2_amount ?? 50,
+        day3ImageUrl: fu(rec.day_3_image),       day3Amount: rec.day_3_amount ?? 3000,
+        day4ImageUrl: fu(rec.day_4_image),       day4Amount: rec.day_4_amount ?? 100,
+        day5ImageUrl: fu(rec.day_5_image),       day5Amount: rec.day_5_amount ?? 5000,
+        day6ImageUrl: fu(rec.day_6_image),       day6Amount: rec.day_6_amount ?? 200,
+        day7ShibImageUrl: fu(rec.day_7_shiba_image), day7ShibAmount: rec.day_7_shiba_amount ?? 10000,
+        day7PowerImageUrl: fu(rec.day_7_power_image), day7PowerAmount: rec.day_7_power_amount ?? 500,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/daily/settings]", e.message);
+      res.status(500).json({ error: "Failed to fetch daily settings" });
+    }
+  });
+
   // ── Daily Rewards: Claim ─────────────────────────────────────────────────
   app.post("/api/app/daily/claim/:pbId", async (req: Request, res: Response) => {
     try {
@@ -3735,8 +3771,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(429).json({ error: "Not yet eligible", nextClaimAt: new Date(nextMs).toISOString(), remainingSec });
       }
 
-      // Compute reward for this day
-      const rewardMap: Record<number, { shib: number; pt: number }> = {
+      // Fetch authoritative amounts from daily_claim_settings (primary) → settings (fallback)
+      let dsRec: any = null;
+      try {
+        const dsResult = await pbGet('/api/collections/daily_claim_settings/records?perPage=1');
+        dsRec = dsResult?.items?.[0] ?? null;
+      } catch { /* ignore */ }
+
+      const rewardMap: Record<number, { shib: number; pt: number }> = dsRec ? {
+        1: { shib: dsRec.day_1_amount ?? 1000,  pt: 0 },
+        2: { shib: 0,                             pt: dsRec.day_2_amount ?? 50 },
+        3: { shib: dsRec.day_3_amount ?? 3000,  pt: 0 },
+        4: { shib: 0,                             pt: dsRec.day_4_amount ?? 100 },
+        5: { shib: dsRec.day_5_amount ?? 5000,  pt: 0 },
+        6: { shib: 0,                             pt: dsRec.day_6_amount ?? 200 },
+        7: { shib: dsRec.day_7_shiba_amount ?? 10000, pt: dsRec.day_7_power_amount ?? 500 },
+      } : {
         1: { shib: s?.daily_reward_day1_shib ?? 1000,  pt: 0 },
         2: { shib: 0,                                   pt: s?.daily_reward_day2_pt ?? 50 },
         3: { shib: s?.daily_reward_day3_shib ?? 3000,  pt: 0 },

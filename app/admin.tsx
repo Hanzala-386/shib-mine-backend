@@ -63,6 +63,25 @@ export default function AdminScreen() {
   const [localBannerMime, setLocalBannerMime] = useState<string>('image/jpeg');
   const [savingTournament, setSavingTournament] = useState(false);
 
+  // ── Daily Reward Settings state ──
+  const [dailySettingsId, setDailySettingsId] = useState('');
+  type DayImgState = { localUri: string | null; localMime: string; existingUrl: string };
+  const [dayImages, setDayImages] = useState<Record<string, DayImgState>>({
+    day_1: { localUri: null, localMime: 'image/jpeg', existingUrl: '' },
+    day_2: { localUri: null, localMime: 'image/jpeg', existingUrl: '' },
+    day_3: { localUri: null, localMime: 'image/jpeg', existingUrl: '' },
+    day_4: { localUri: null, localMime: 'image/jpeg', existingUrl: '' },
+    day_5: { localUri: null, localMime: 'image/jpeg', existingUrl: '' },
+    day_6: { localUri: null, localMime: 'image/jpeg', existingUrl: '' },
+    day_7_shiba: { localUri: null, localMime: 'image/jpeg', existingUrl: '' },
+    day_7_power: { localUri: null, localMime: 'image/jpeg', existingUrl: '' },
+  });
+  const [dayAmounts, setDayAmounts] = useState<Record<string, string>>({
+    day_1: '1000', day_2: '50', day_3: '3000', day_4: '100',
+    day_5: '5000', day_6: '200', day_7_shiba: '10000', day_7_power: '500',
+  });
+  const [savingDailySettings, setSavingDailySettings] = useState(false);
+
   const fetchSupportTickets = useCallback(async () => {
     setSupportLoading(true);
     try {
@@ -150,6 +169,28 @@ export default function AdminScreen() {
             rank3: String(rw['3'] || 100000),
           });
         }).catch(() => {});
+
+      // Load daily claim settings (images + amounts per day)
+      api.getDailySettings().then(cs => {
+        setDailySettingsId(cs.id || '');
+        const fu = (url: string | null) => url ?? '';
+        setDayImages({
+          day_1:       { localUri: null, localMime: 'image/jpeg', existingUrl: fu(cs.day1ImageUrl) },
+          day_2:       { localUri: null, localMime: 'image/jpeg', existingUrl: fu(cs.day2ImageUrl) },
+          day_3:       { localUri: null, localMime: 'image/jpeg', existingUrl: fu(cs.day3ImageUrl) },
+          day_4:       { localUri: null, localMime: 'image/jpeg', existingUrl: fu(cs.day4ImageUrl) },
+          day_5:       { localUri: null, localMime: 'image/jpeg', existingUrl: fu(cs.day5ImageUrl) },
+          day_6:       { localUri: null, localMime: 'image/jpeg', existingUrl: fu(cs.day6ImageUrl) },
+          day_7_shiba: { localUri: null, localMime: 'image/jpeg', existingUrl: fu(cs.day7ShibImageUrl) },
+          day_7_power: { localUri: null, localMime: 'image/jpeg', existingUrl: fu(cs.day7PowerImageUrl) },
+        });
+        setDayAmounts({
+          day_1: String(cs.day1Amount), day_2: String(cs.day2Amount),
+          day_3: String(cs.day3Amount), day_4: String(cs.day4Amount),
+          day_5: String(cs.day5Amount), day_6: String(cs.day6Amount),
+          day_7_shiba: String(cs.day7ShibAmount), day_7_power: String(cs.day7PowerAmount),
+        });
+      }).catch(() => {});
     }
   }, [isAdmin]);
 
@@ -242,6 +283,87 @@ export default function AdminScreen() {
       Alert.alert('Error', e.message || 'Failed to save tournament config.');
     } finally {
       setSavingTournament(false);
+    }
+  }
+
+  async function pickDayImage(key: string) {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission required', 'Allow photo library access to upload an image.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.90,
+    });
+    if (!result.canceled && result.assets[0]) {
+      const asset = result.assets[0];
+      setDayImages(prev => ({
+        ...prev,
+        [key]: { ...prev[key], localUri: asset.uri, localMime: asset.mimeType || 'image/jpeg' },
+      }));
+    }
+  }
+
+  async function handleSaveDailySettings() {
+    setSavingDailySettings(true);
+    try {
+      const pbFieldMap: Record<string, { imageField: string; amountField: string }> = {
+        day_1:       { imageField: 'day_1_image',       amountField: 'day_1_amount' },
+        day_2:       { imageField: 'day_2_image',       amountField: 'day_2_amount' },
+        day_3:       { imageField: 'day_3_image',       amountField: 'day_3_amount' },
+        day_4:       { imageField: 'day_4_image',       amountField: 'day_4_amount' },
+        day_5:       { imageField: 'day_5_image',       amountField: 'day_5_amount' },
+        day_6:       { imageField: 'day_6_image',       amountField: 'day_6_amount' },
+        day_7_shiba: { imageField: 'day_7_shiba_image', amountField: 'day_7_shiba_amount' },
+        day_7_power: { imageField: 'day_7_power_image', amountField: 'day_7_power_amount' },
+      };
+      const form = new FormData();
+      for (const [key, fields] of Object.entries(pbFieldMap)) {
+        const img = dayImages[key];
+        if (img.localUri) {
+          const ext = img.localMime.includes('png') ? 'png' : 'jpg';
+          form.append(fields.imageField, { uri: img.localUri, type: img.localMime, name: `${key}-image.${ext}` } as any);
+        }
+        form.append(fields.amountField, dayAmounts[key] || '0');
+      }
+      let rec: any;
+      if (dailySettingsId) {
+        rec = await pb.collection('daily_claim_settings').update(dailySettingsId, form);
+      } else {
+        rec = await pb.collection('daily_claim_settings').create(form);
+        setDailySettingsId(rec.id);
+      }
+      // Refresh existingUrls
+      const newImages = { ...dayImages };
+      for (const [key, fields] of Object.entries(pbFieldMap)) {
+        const fname = rec[fields.imageField];
+        if (fname) {
+          newImages[key] = { ...newImages[key], existingUrl: `https://api.webcod.in/api/files/daily_claim_settings/${rec.id}/${fname}`, localUri: null };
+        }
+      }
+      setDayImages(newImages);
+      // Sync amounts to settings collection for server-side claim computation
+      if (local) {
+        await updateSettings({
+          ...local,
+          dailyRewardDay1Shib: Number(dayAmounts.day_1) || 0,
+          dailyRewardDay2Pt:   Number(dayAmounts.day_2) || 0,
+          dailyRewardDay3Shib: Number(dayAmounts.day_3) || 0,
+          dailyRewardDay4Pt:   Number(dayAmounts.day_4) || 0,
+          dailyRewardDay5Shib: Number(dayAmounts.day_5) || 0,
+          dailyRewardDay6Pt:   Number(dayAmounts.day_6) || 0,
+          dailyRewardDay7Shib: Number(dayAmounts.day_7_shiba) || 0,
+          dailyRewardDay7Pt:   Number(dayAmounts.day_7_power) || 0,
+        });
+      }
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Saved', 'Daily reward configuration updated!');
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to save daily settings.');
+    } finally {
+      setSavingDailySettings(false);
     }
   }
 
@@ -347,15 +469,63 @@ export default function AdminScreen() {
             ))}
           </AdminSection>
 
-          <AdminSection title="Daily Reward Amounts" icon="gift">
-            <AdminField label="Day 1 (SHIB)" value={String(local.dailyRewardDay1Shib ?? 1000)} onChangeText={(v) => setField('dailyRewardDay1Shib', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 1000" />
-            <AdminField label="Day 2 (Power Tokens)" value={String(local.dailyRewardDay2Pt ?? 50)} onChangeText={(v) => setField('dailyRewardDay2Pt', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 50" />
-            <AdminField label="Day 3 (SHIB)" value={String(local.dailyRewardDay3Shib ?? 3000)} onChangeText={(v) => setField('dailyRewardDay3Shib', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 3000" />
-            <AdminField label="Day 4 (Power Tokens)" value={String(local.dailyRewardDay4Pt ?? 100)} onChangeText={(v) => setField('dailyRewardDay4Pt', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 100" />
-            <AdminField label="Day 5 (SHIB)" value={String(local.dailyRewardDay5Shib ?? 5000)} onChangeText={(v) => setField('dailyRewardDay5Shib', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 5000" />
-            <AdminField label="Day 6 (Power Tokens)" value={String(local.dailyRewardDay6Pt ?? 200)} onChangeText={(v) => setField('dailyRewardDay6Pt', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 200" />
-            <AdminField label="Day 7 Grand — SHIB" value={String(local.dailyRewardDay7Shib ?? 10000)} onChangeText={(v) => setField('dailyRewardDay7Shib', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 10000" />
-            <AdminField label="Day 7 Grand — Power Tokens" value={String(local.dailyRewardDay7Pt ?? 500)} onChangeText={(v) => setField('dailyRewardDay7Pt', Number(v) || 0)} keyboardType="numeric" placeholder="e.g. 500" />
+          <AdminSection title="Daily Reward Images & Amounts" icon="gift">
+            {([
+              { key: 'day_1',       label: 'Day 1',              amtLabel: 'SHIB Amount' },
+              { key: 'day_2',       label: 'Day 2',              amtLabel: 'PT Amount' },
+              { key: 'day_3',       label: 'Day 3',              amtLabel: 'SHIB Amount' },
+              { key: 'day_4',       label: 'Day 4',              amtLabel: 'PT Amount' },
+              { key: 'day_5',       label: 'Day 5',              amtLabel: 'SHIB Amount' },
+              { key: 'day_6',       label: 'Day 6',              amtLabel: 'PT Amount' },
+              { key: 'day_7_shiba', label: 'Day 7 Grand — SHIB', amtLabel: 'SHIB Amount' },
+              { key: 'day_7_power', label: 'Day 7 Grand — PT',   amtLabel: 'PT Amount' },
+            ] as const).map(({ key, label, amtLabel }) => {
+              const img = dayImages[key];
+              const thumbUri = img.localUri || (img.existingUrl || null);
+              return (
+                <View key={key} style={{ marginBottom: 18, gap: 8 }}>
+                  <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.textSecondary, letterSpacing: 0.5 }}>{label}</Text>
+                  <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                    {thumbUri ? (
+                      <Image source={{ uri: thumbUri }} style={{ width: 54, height: 54, borderRadius: 10 }} resizeMode="cover" />
+                    ) : (
+                      <View style={{ width: 54, height: 54, borderRadius: 10, backgroundColor: Colors.darkCard, borderWidth: 1, borderColor: Colors.darkBorder, alignItems: 'center', justifyContent: 'center' }}>
+                        <Ionicons name="image-outline" size={22} color={Colors.textMuted} />
+                      </View>
+                    )}
+                    <Pressable
+                      onPress={() => pickDayImage(key)}
+                      style={({ pressed }) => [styles.pickerBtn, { opacity: pressed ? 0.7 : 1, flex: 1 }]}
+                    >
+                      <Ionicons name="cloud-upload-outline" size={16} color={Colors.gold} />
+                      <Text style={styles.pickerBtnText}>{thumbUri ? 'Change Image' : 'Upload Image'}</Text>
+                    </Pressable>
+                  </View>
+                  <AdminField
+                    label={amtLabel}
+                    value={dayAmounts[key] ?? ''}
+                    onChangeText={(v) => setDayAmounts(prev => ({ ...prev, [key]: v }))}
+                    keyboardType="numeric"
+                    placeholder="e.g. 1000"
+                  />
+                </View>
+              );
+            })}
+            <Pressable
+              onPress={handleSaveDailySettings}
+              disabled={savingDailySettings}
+              style={({ pressed }) => ({ opacity: pressed || savingDailySettings ? 0.8 : 1, borderRadius: 12, overflow: 'hidden', marginTop: 4 })}
+            >
+              <LinearGradient
+                colors={[Colors.gold, Colors.neonOrange]}
+                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                style={{ paddingVertical: 13, alignItems: 'center', borderRadius: 12 }}
+              >
+                <Text style={{ fontFamily: 'Inter_700Bold', fontSize: 14, color: '#0A0A0F' }}>
+                  {savingDailySettings ? 'Saving…' : '✦ Save Daily Reward Config'}
+                </Text>
+              </LinearGradient>
+            </Pressable>
           </AdminSection>
 
           <AdminSection title="Withdrawal Thresholds (SHIB)" icon="wallet">
