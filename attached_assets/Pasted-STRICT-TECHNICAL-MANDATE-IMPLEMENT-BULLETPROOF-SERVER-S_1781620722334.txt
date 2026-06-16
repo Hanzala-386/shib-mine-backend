@@ -1,0 +1,32 @@
+STRICT TECHNICAL MANDATE: IMPLEMENT BULLETPROOF SERVER-SIDE TIME VALIDATION FOR DAILY CLAIMS
+
+The user has detected that the current Daily Reward system relies on client-side device time, allowing users to bypass the 24-hour restriction simply by advancing their phone's manual clock. This is a critical security vulnerability. 
+
+You must completely migrate the check-in verification logic to our backend running on Railway.app, utilizing the server's master clock and PocketBase for data persistence. 
+
+Implement the following backend validation workflow with 100% precision:
+
+1. THE SERVER-SIDE VALIDATION WORKFLOW (Railway Server + PocketBase):
+   - When the user presses the "CLAIM NOW" button in the frontend, the app must dispatch a secure API request to the backend hosted on Railway.app.
+   - The Railway server must immediately query the PocketBase database to retrieve the target user's `last_claimed_at` timestamp.
+   - The server must then calculate the difference using its own absolute system clock: 
+     Formula: [ Current_Server_Time ] minus [ user's last_claimed_at ]
+   - If the calculated difference is strictly greater than or equal to 24 hours (or if `last_claimed_at` is empty/null for a new user):
+     * The server approves the transaction.
+     * The server updates the user's balance (`shib_balance` or `power_tokens`) in the database.
+     * The server updates the user's `last_claimed_at` field in PocketBase, overwriting it with the EXACT current server timestamp.
+     * The server advances the user's streak day count (`current_streak_day`).
+   - If the calculated difference is less than 24 hours:
+     * The server must instantly REJECT the request.
+     * Return a strict error response containing the remaining milliseconds or seconds.
+     * The frontend must remain locked, ignoring any manual variations made to the user's phone clock settings.
+
+2. FIXING THE POPUP TIMER ENTRIFUGATION:
+   - The countdown timer shown on the dynamic popup screen ("CLAIM REFRESHES IN: HH:MM:SS") must NOT run on a simple local interval based on `new Date()`.
+   - On popup load, fetch the exact remaining time calculated by the Railway server. Continuously decrement that server-calculated offset on the client side. If the user alters their mobile phone's system time while the popup is open, the countdown must remain unaffected or auto-correct by re-fetching the server timestamp.
+
+3. DATA RE-VERIFICATION TESTING LOGIC:
+   - Ensure that after a successful claim execution, a row entry is explicitly written and saved inside the `daily_claims` or updated in the `users` profile tracker collection so that it is never empty on subsequent reloads.
+   - Verify that when testing with the user account 'abukapadi@gmail.com', advancing the local device time manually by 2 days fails to trigger a successful response from the database due to the server clock rejection rule.
+
+Re-engineer the entire daily check-in API route on your backend controller using this absolute calculation method. Ensure no client-side clock values are trusted for the validation phase.

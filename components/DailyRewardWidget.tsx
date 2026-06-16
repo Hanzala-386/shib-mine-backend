@@ -483,9 +483,11 @@ function DailyRewardWidgetInner() {
   const [mode, setMode]             = useState<WidgetMode>('hidden');
   const [status, setStatus]         = useState<DailyStatus | null>(null);
   const [claiming, setClaiming]     = useState(false);
-  const [serverOffset, setOffset]   = useState(0);    // device vs server ms delta
   const [countdownMs, setCountdown] = useState(0);
   const [claimDone, setClaimDone]   = useState<{ shib: number; pt: number } | null>(null);
+  const [claimError, setClaimError] = useState<string | null>(null);
+  // Monotonic countdown seed — set purely from server values, never device clock
+  const countdownSeedRef = useRef<number>(0);
   const [floatReady, setFloatReady]       = useState(false);
   const [claimSettings, setClaimSettings] = useState<DailyClaimSettings | null>(null);
 
@@ -549,10 +551,18 @@ function DailyRewardWidgetInner() {
       let s: DailyStatus;
       try {
         s = await api.getDailyStatus(user.pbId);
-        setOffset(new Date(s.serverTime).getTime() - Date.now());
       } catch {
         s = await fetchStatusDirect(user.pbId, fallbackRewards);
-        setOffset(0);
+      }
+      // Seed the monotonic countdown from pure server values — no device clock involved
+      if (s.nextClaimAt && s.serverTime) {
+        const nextMs   = new Date(s.nextClaimAt).getTime();
+        const srvNowMs = new Date(s.serverTime).getTime();
+        countdownSeedRef.current = Math.max(0, nextMs - srvNowMs);
+        setCountdown(countdownSeedRef.current);
+      } else {
+        countdownSeedRef.current = 0;
+        setCountdown(0);
       }
       setStatus(s);
       setFloatReady(s.canClaim);
@@ -651,14 +661,26 @@ function DailyRewardWidgetInner() {
     return () => { loop.stop(); pulseAnim.setValue(1); };
   }, [floatReady]);
 
-  // ── Countdown tick (server-clock adjusted) ──
+  // ── Monotonic countdown — seeded from server values, immune to device clock changes ──
+  // We never call Date.now() inside the tick. The interval fires on the platform's
+  // monotonic timer (not wall clock), so advancing the system clock has no effect.
   useEffect(() => {
-    if (!status?.nextClaimAt) { setCountdown(0); return; }
-    const tick = () => {
-      const rem = new Date(status.nextClaimAt!).getTime() - (Date.now() + serverOffset);
-      if (rem <= 0) {
-        setCountdown(0);
-        // Re-fetch when timer hits 0; server decides if it's time
+    if (!status?.nextClaimAt || countdownSeedRef.current <= 0) {
+      setCountdown(0);
+      return;
+    }
+    // Snapshot the seed so the interval closure captures a stable value
+    let remMs = countdownSeedRef.current;
+    setCountdown(remMs);
+
+    const id = setInterval(() => {
+      remMs = Math.max(0, remMs - 1000);
+      setCountdown(remMs);
+      countdownSeedRef.current = remMs;
+
+      if (remMs <= 0) {
+        clearInterval(id);
+        // Re-verify with server — it is the ONLY source of truth for canClaim
         loadStatus().then(s => {
           if (s?.canClaim && !autoPopRef.current) {
             autoPopRef.current = true;
@@ -666,19 +688,18 @@ function DailyRewardWidgetInner() {
             if (mode !== 'popup') openPopup();
           }
         });
-        return;
       }
-      setCountdown(rem);
-    };
-    tick();
-    const id = setInterval(tick, 1000);
+    }, 1000);
+
     return () => clearInterval(id);
-  }, [status?.nextClaimAt, serverOffset]);
+  // Re-run only when the server provides a fresh nextClaimAt timestamp
+  }, [status?.nextClaimAt, status?.serverTime]);
 
   // ── Claim handler ──
   const handleClaim = useCallback(async () => {
     if (!user?.pbId || claiming || !status?.canClaim) return;
     setClaiming(true);
+    setClaimError(null);
     try {
       let result: DailyClaimResult;
       try {
@@ -688,16 +709,19 @@ function DailyRewardWidgetInner() {
       }
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setClaimDone({ shib: result.rewardShib, pt: result.rewardPt });
-      autoPopRef.current = false; // allow re-popup next day
+      autoPopRef.current = false;
       setFloatReady(false);
       await loadStatus();
-      setTimeout(() => {
-        closePopup();
-      }, 2200);
+      setTimeout(() => closePopup(), 2200);
     } catch (e: any) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-      // Show inline error (no device Alert — user is in a modal)
-      console.warn('[DailyWidget] claim failed:', e?.message);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      const msg: string = e?.message || 'Claim failed. Try again.';
+      // Show server's rejection reason inline — covers the "not yet eligible" case
+      setClaimError(msg);
+      // Re-sync with server to get the accurate remaining time
+      await loadStatus();
+      // Auto-clear after 5 s
+      setTimeout(() => setClaimError(null), 5000);
     } finally {
       setClaiming(false);
     }
@@ -820,6 +844,14 @@ function DailyRewardWidgetInner() {
 
             {/* ── Success toast ── */}
             {claimDone && <SuccessToast shib={claimDone.shib} pt={claimDone.pt} />}
+
+            {/* ── Server rejection banner — shown when server says not yet eligible ── */}
+            {claimError && (
+              <View style={cs.errorBanner}>
+                <Ionicons name="alert-circle" size={14} color="#ff4d4d" />
+                <Text style={cs.errorBannerTxt}>{claimError}</Text>
+              </View>
+            )}
 
             {/* ── TOP: Countdown or "Ready" banner (ALWAYS above the grid) ── */}
             {!canClaim && countdownMs > 0 ? (
@@ -1203,6 +1235,27 @@ const cs = StyleSheet.create({
     fontSize: 28,
     color: Colors.textPrimary,
     letterSpacing: 4,
+  },
+
+  // ── Server rejection error banner ────────────────────────────────────────
+  errorBanner: {
+    marginHorizontal: CARD_PAD,
+    marginBottom: 8,
+    backgroundColor: 'rgba(255,77,77,0.10)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,77,77,0.30)',
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  errorBannerTxt: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    color: '#ff6b6b',
+    flex: 1,
   },
 
   // ── "Ready" banner ────────────────────────────────────────────────────────
