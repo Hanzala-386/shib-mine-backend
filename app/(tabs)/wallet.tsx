@@ -14,7 +14,8 @@ import SpinningCoin from '@/components/SpinningCoin';
 import { pb } from '@/lib/pocketbase';
 import type { MiningHistoryRecord } from '@/lib/api';
 
-const BEP20_FEE = 3680; // fixed SHIB fee for BEP-20 network withdrawals
+const BEP20_FEE         = 3680;   // fixed SHIB fee for BEP-20 network withdrawals
+const BEP20_MIN_BALANCE = 50_000; // balance required to unlock BEP-20 withdrawals
 
 function formatShib(val: number) {
   if (val >= 1_000_000_000) return `${(val / 1_000_000_000).toFixed(2)}B`;
@@ -119,6 +120,17 @@ export default function WalletScreen() {
 
   const addressLabel = method === 'BEP-20' ? 'BEP-20 Wallet Address' : 'Binance Email';
   const addressPlaceholder = method === 'BEP-20' ? 'Enter your BEP-20 address (0x...)' : 'Enter your Binance email';
+
+  /* ── BEP-20 balance lock — requires 50,000+ SHIB ── */
+  const isBep20Locked = shibBalance < BEP20_MIN_BALANCE;
+
+  // Auto-switch away from BEP-20 if balance drops below the threshold
+  useEffect(() => {
+    if (isBep20Locked && method === 'BEP-20') {
+      setMethod('Binance Email');
+      setAddress('');
+    }
+  }, [isBep20Locked]);
 
   /* ── Pending withdrawal lock ── */
   const hasPendingWithdrawal = withdrawals.some(w => w.status === 'pending');
@@ -337,21 +349,36 @@ export default function WalletScreen() {
             <Text style={styles.fieldLabel}>Withdrawal Method</Text>
             <View style={styles.methodRow}>
               {(['Binance Email', 'BEP-20'] as const).map(m => {
-                const isActive = method === m;
-                const isFree   = m === 'Binance Email';
+                const isActive  = method === m;
+                const isFree    = m === 'Binance Email';
+                const isLocked  = m === 'BEP-20' && isBep20Locked;
                 return (
                   <Pressable
                     key={m}
-                    style={[styles.methodBtn, isActive && styles.methodBtnActive]}
-                    onPress={() => handleMethodChange(m)}
+                    style={[
+                      styles.methodBtn,
+                      isActive && styles.methodBtnActive,
+                      isLocked && styles.methodBtnLocked,
+                    ]}
+                    onPress={() => !isLocked && handleMethodChange(m)}
+                    disabled={isLocked}
                   >
                     <View style={styles.methodBtnInner}>
                       <MaterialCommunityIcons
                         name={m === 'BEP-20' ? 'ethereum' : 'email-outline'}
                         size={14}
-                        color={isActive ? Colors.gold : Colors.textMuted}
+                        color={isLocked ? Colors.textMuted : isActive ? Colors.gold : Colors.textMuted}
                       />
-                      <Text style={[styles.methodBtnText, isActive && styles.methodBtnTextActive]}>{m}</Text>
+                      <Text style={[
+                        styles.methodBtnText,
+                        isActive && !isLocked && styles.methodBtnTextActive,
+                        isLocked && styles.methodBtnTextLocked,
+                      ]}>
+                        {m}
+                      </Text>
+                      {isLocked && (
+                        <Ionicons name="lock-closed" size={13} color={Colors.textMuted} style={{ marginLeft: 2 }} />
+                      )}
                     </View>
                     <View style={[styles.feeBadge, isFree ? styles.feeBadgeFree : styles.feeBadgePaid]}>
                       <Text style={[styles.feeBadgeText, isFree ? styles.feeBadgeTextFree : styles.feeBadgeTextPaid]}>
@@ -362,6 +389,16 @@ export default function WalletScreen() {
                 );
               })}
             </View>
+
+            {/* ── BEP-20 lock notice ── */}
+            {isBep20Locked && (
+              <View style={styles.bep20LockNotice}>
+                <Ionicons name="lock-closed-outline" size={13} color="#ff5252" />
+                <Text style={styles.bep20LockText}>
+                  This withdrawal method unlocks automatically once your balance exceeds 50,000 coins.
+                </Text>
+              </View>
+            )}
 
             {/* ── Address / email input ── */}
             <Text style={styles.fieldLabel}>{addressLabel}</Text>
@@ -577,6 +614,19 @@ const styles = StyleSheet.create({
   methodBtnInner:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   methodBtnText:       { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textMuted },
   methodBtnTextActive: { color: Colors.gold },
+  methodBtnLocked:     { opacity: 0.45, borderColor: Colors.darkBorder },
+  methodBtnTextLocked: { color: Colors.textMuted },
+  bep20LockNotice: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 7,
+    backgroundColor: 'rgba(255,82,82,0.08)',
+    borderWidth: 1, borderColor: 'rgba(255,82,82,0.25)',
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9,
+  },
+  bep20LockText: {
+    flex: 1,
+    fontFamily: 'Inter_400Regular', fontSize: 12,
+    color: '#ff5252', lineHeight: 17,
+  },
   feeBadge:     { alignSelf: 'center', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, marginTop: 4 },
   feeBadgeFree: { backgroundColor: 'rgba(76,175,80,0.15)', borderWidth: 1, borderColor: 'rgba(76,175,80,0.4)' },
   feeBadgePaid: { backgroundColor: 'rgba(255,82,82,0.12)', borderWidth: 1, borderColor: 'rgba(255,82,82,0.3)' },

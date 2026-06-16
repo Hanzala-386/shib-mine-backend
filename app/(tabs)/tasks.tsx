@@ -190,12 +190,21 @@ export default function TasksScreen() {
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top + 8;
 
-  const { data: tasks = [], isLoading, refetch } = useQuery<TaskItem[]>({
+  const { data: rawTasks = [], isLoading, refetch } = useQuery<TaskItem[]>({
     queryKey: ['/api/app/tasks', user?.pbId],
     queryFn: () => api.getTasks(user?.pbId || ''),
     enabled: !!user?.pbId,
     staleTime: 30_000,
   });
+
+  // ── DB-driven permanent filter ────────────────────────────────────────────
+  // Exclude tasks where the admin has already acted (approved OR rejected).
+  // This data comes fresh from PocketBase on every load — it survives reinstalls
+  // and cache clears because it is never stored locally. Once the admin acts,
+  // the task is permanently gone for that user unless a new task entry is created.
+  const tasks = rawTasks.filter(
+    t => t.submission?.status !== 'approved' && t.submission?.status !== 'rejected',
+  );
 
   const submitMut = useMutation({
     mutationFn: ({ taskId, uri, base64 }: { taskId: string; uri: string; base64: string }) =>
