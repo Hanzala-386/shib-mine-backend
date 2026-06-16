@@ -390,12 +390,16 @@ function DaySlot({ day, state, rewards, glowAnim, imgUrl }: DayCardProps & { rew
   );
 }
 
+// Local fallback for Day 7 banner — always available, no network needed
+const DAY7_BANNER_LOCAL = require('../assets/aurora_banner.jpg');
+
 // ─── Day 7 Grand Reward card ──────────────────────────────────────────────────
-/** Grand card inner box — images only, no text inside */
+/** Grand card inner box — banner image fills the full width */
 function GrandCard({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
   state: DayState; rewards: DailyRewards; glowAnim: Animated.Value;
   shibaImgUrl?: string | null; powerImgUrl?: string | null;
 }) {
+  const [imgFailed, setImgFailed] = useState(false);
   const isClaimed = state === 'claimed';
   const isActive  = state === 'active';
   const isLocked  = state === 'locked';
@@ -407,6 +411,15 @@ function GrandCard({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
   const glowOpacity = isActive
     ? glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0.2, 0.6] })
     : 0;
+
+  // Reset error state when the URL changes (new upload in admin)
+  const prevUrl = useRef<string | null | undefined>(null);
+  if (shibaImgUrl !== prevUrl.current) { prevUrl.current = shibaImgUrl; setImgFailed(false); }
+
+  // Resolve the banner source: prefer PocketBase URL, fall back to bundled asset
+  const bannerSource = (!imgFailed && shibaImgUrl)
+    ? { uri: shibaImgUrl }
+    : DAY7_BANNER_LOCAL;
 
   return (
     <Animated.View style={[cs.grandCard, { borderColor },
@@ -422,21 +435,20 @@ function GrandCard({ state, rewards, glowAnim, shibaImgUrl, powerImgUrl }: {
         />
       )}
 
-      {/* Full-width banner — single image spans the entire card */}
+      {/* Full-width banner — always shows something (remote or local fallback) */}
       {isLocked ? (
-        <View style={[cs.grandBannerLocked]}>
+        <View style={cs.grandBannerLocked}>
           <View style={cs.lockCircle}>
             <Ionicons name="lock-closed" size={22} color="#2a2a2a" />
           </View>
         </View>
-      ) : shibaImgUrl ? (
-        <Image source={{ uri: shibaImgUrl }} style={cs.grandBannerImg} resizeMode="cover" />
       ) : (
-        <View style={cs.grandRight}>
-          <ShibStack size={44} count={2} />
-          <Text style={{ color: Colors.gold, fontWeight: '900', fontSize: 20 }}>+</Text>
-          <Ionicons name="flash" size={44} color={Colors.neonOrange} />
-        </View>
+        <Image
+          source={bannerSource}
+          style={cs.grandBannerImg}
+          resizeMode="cover"
+          onError={() => setImgFailed(true)}
+        />
       )}
 
       {isClaimed && (
@@ -1249,19 +1261,18 @@ const cs = StyleSheet.create({
     borderWidth: 1.5,
     overflow: 'hidden',
     position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 90,
+    // DO NOT set alignItems/justifyContent here — it collapses width:'100%' on
+    // child Images to zero in Yoga (React Native layout engine). Let children
+    // use alignSelf: 'stretch' individually.
   },
-  // Full-width 4:1 banner image
+  // Full-width 4:1 banner image — alignSelf:'stretch' ensures width resolves
   grandBannerImg: {
-    width: '100%',
+    alignSelf: 'stretch',
     aspectRatio: 4,
-    borderRadius: 14,
   },
   // Lock placeholder for Day 7 when still locked
   grandBannerLocked: {
-    width: '100%',
+    alignSelf: 'stretch',
     aspectRatio: 4,
     backgroundColor: '#0a0a12',
     alignItems: 'center',
