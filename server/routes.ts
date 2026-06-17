@@ -3449,15 +3449,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      res.json(tasks.map((t: any) => ({
-        id: t.id,
-        title: t.title,
-        description: t.description || "",
-        link: t.link || "",
-        reward_amount: t.reward_amount || 0,
-        reward_type: t.reward_type || "PT",
-        submission: submissionsMap[t.id] || null,
-      })));
+      // Zero-trust: never send approved/rejected tasks to the client.
+      // Even if a user clears cache, reinstalls, or forges a request, the server
+      // never includes tasks with a finalised submission in the response.
+      res.json(tasks
+        .map((t: any) => ({
+          id: t.id,
+          title: t.title,
+          description: t.description || "",
+          link: t.link || "",
+          reward_amount: t.reward_amount || 0,
+          reward_type: t.reward_type || "PT",
+          submission: submissionsMap[t.id] || null,
+        }))
+        .filter((t: any) =>
+          !t.submission ||
+          (t.submission.status !== "approved" && t.submission.status !== "rejected")
+        ));
     } catch (e: any) {
       console.error("[/api/app/tasks]", e.message);
       res.status(500).json({ error: "Failed to fetch tasks" });

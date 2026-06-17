@@ -1,0 +1,29 @@
+CRITICAL HIGH-SECURITY PROTOCOL: FIX TASK RESUBMISSION EXPLOIT & EXECUTE MANDATORY RE-TEST
+
+We have detected a massive security loophole in the Task system during our live test. You successfully uploaded the proof, and after it was approved in the Admin Panel, the 10,000 Power Tokens were credited correctly. 
+
+HOWEVER, THE EXPLOIT IS THIS: As soon as the app is refreshed, closed, or restarted, the EXACT SAME task opens up again as available for submission! A malicious user can upload the same screenshot over and over to infinitely farm and exploit Power Tokens. This must be fixed using a Top-Level Zero-Trust verification layer immediately.
+
+---
+
+STEP 1: THE ARCHITECTURAL SECURITY FIX (ZERO-TRUST FILTER)
+1. DO NOT handle task visibility states using local storage or client-side temporary state variables.
+2. CRITICAL LOGIC: Modify the Task Page data-fetching service. When loading the list of tasks for a logged-in user, execute a server-side query to inspect your task submissions collection (e.g., `task_submissions`).
+3. RULE: If a record exists for this specific `user_id` and `task_id` where the status is set to "approved" OR "rejected", you must permanently filter out and HIDE this task from the user's view array. 
+4. The task must completely vanish from the UI so they can never tap it or view the upload button again. Do not alter the backend approval/reward ledger transaction history; simply lock down and filter the frontend visibility query directly from the PocketBase collection.
+
+---
+
+STEP 2: MANDATORY LIVE RE-TEST FROM AGENT SIDE
+
+To guarantee you have fixed this loop permanently, you must live-test it right now using the same test credentials:
+- Email: sakibsoni27@gmail.com
+- Password: 12345678
+
+EXECUTION TRACE FOR AGENT:
+1. Log into the test account, go to the active 10,000 PT Task page.
+2. Use the new proof image file that the user is uploading to you in this current chat session. Attach it and click "Submit".
+3. After doing so, simulate or trigger the approval/rejection cycle on the database record.
+4. Refresh your application state, reload the view, and confirm that the "Upload Proof" button and the task card itself are 100% hidden and completely inaccessible.
+
+Fix this loop vector immediately and notify us when you have completed the live submission verification.
