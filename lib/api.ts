@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import { getApiUrl } from '@/lib/query-client';
 import { pb } from '@/lib/pocketbase';
 
@@ -352,20 +353,32 @@ export const api = {
       return globalThis.fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
     };
 
-    // PATH 1 — data: URI + explicit Authorization header (most reliable on Android/iOS).
-    // Uses the base64 string already computed by ImageManipulator as a data: URI so we
-    // never touch the file system again. Bypasses pb.authStore to avoid stale-token
-    // silent failures. Works in Hermes, JSC, and web.
+    // Platform-aware file appender:
+    //   • Web (browser): fetch the data: URI to get a real Blob — the only valid
+    //     file type browsers accept in FormData. { uri, name, type } is RN-only
+    //     and causes "invalid formatting" in every browser.
+    //   • Native (iOS/Android): use the RN { uri, name, type } object which the
+    //     native bridge reads as a binary file attachment.
+    const appendProof = async (form: FormData, base64: string, fileUri: string): Promise<void> => {
+      if (Platform.OS === 'web') {
+        const blob = await globalThis.fetch(`data:image/jpeg;base64,${base64}`).then(r => r.blob());
+        (form as any).append('proof_screenshot', blob, 'proof.jpg');
+      } else {
+        (form as any).append('proof_screenshot', {
+          uri:  `data:image/jpeg;base64,${base64}`,
+          name: 'proof.jpg',
+          type: 'image/jpeg',
+        });
+      }
+    };
+
+    // PATH 1 — direct PB REST + explicit Authorization (bypasses pb.authStore staleness)
     try {
       const form = new FormData();
       form.append('user_id', params.pbId);
       form.append('task_id', params.taskId);
       form.append('status',  'pending');
-      form.append('proof_screenshot', {
-        uri:  `data:image/jpeg;base64,${params.base64}`,
-        name: 'proof.jpg',
-        type: 'image/jpeg',
-      } as any);
+      await appendProof(form, params.base64, params.uri);
       const pbToken = pb.authStore.token;
       const res = await fetchWithTimeout(PB_ENDPOINT, {
         method:  'POST',
@@ -376,36 +389,28 @@ export const api = {
       if (data.id) return { success: true, submissionId: data.id };
       throw new Error(data?.message || `PB ${res.status}`);
     } catch (e1: any) {
-      console.warn('[submitTaskProof] path1 (data-uri) failed:', e1?.message);
+      console.warn('[submitTaskProof] path1 failed:', e1?.message);
     }
 
-    // PATH 2 — file:// URI via PB SDK (original pattern, works on many devices)
+    // PATH 2 — PB SDK (also gets the platform-correct file attachment)
     try {
       const form = new FormData();
       form.append('user_id', params.pbId);
       form.append('task_id', params.taskId);
       form.append('status',  'pending');
-      form.append('proof_screenshot', {
-        uri:  params.uri,
-        name: 'proof.jpg',
-        type: 'image/jpeg',
-      } as any);
+      await appendProof(form, params.base64, params.uri);
       const rec = await pb.collection('task_submissions').create(form);
       return { success: true, submissionId: rec.id };
     } catch (e2: any) {
-      console.warn('[submitTaskProof] path2 (pb-sdk file-uri) failed:', e2?.message);
+      console.warn('[submitTaskProof] path2 failed:', e2?.message);
     }
 
-    // PATH 3 — Express server (dev environment only; 404s on APK, surfaces the error)
+    // PATH 3 — Express server (dev only; 404s on APK)
     const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
     const form = new FormData();
     form.append('pbId',   params.pbId);
     form.append('taskId', params.taskId);
-    form.append('proof_screenshot', {
-      uri:  params.uri,
-      name: 'proof.jpg',
-      type: 'image/jpeg',
-    } as any);
+    await appendProof(form, params.base64, params.uri);
     const res = await fetchWithTimeout(url, { method: 'POST', body: form });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
