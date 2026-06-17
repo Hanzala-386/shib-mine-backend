@@ -320,23 +320,19 @@ export const api = {
             subByTask[s.task_id] = { id: s.id, status: s.status, admin_notes: s.admin_notes || '' };
           }
         }
-        // Zero-trust: never return approved/rejected tasks to the caller.
-        // Mirrors the server-side filter so the APK (which uses this fallback
-        // instead of Express) is equally protected against replay exploits.
-        return (tasksRes.items || [])
-          .map((t: any) => ({
-            id: t.id,
-            title: t.title || '',
-            description: t.description || '',
-            link: t.link || '',
-            reward_amount: Number(t.reward_amount) || 0,
-            reward_type: (t.reward_type || 'PT') as 'SHIB' | 'PT',
-            submission: subByTask[t.id] ?? null,
-          }))
-          .filter((t) =>
-            !t.submission ||
-            (t.submission.status !== 'approved' && t.submission.status !== 'rejected'),
-          );
+        // Return ALL active tasks with submission status attached.
+        // The DB unique index + server duplicate check are the authoritative
+        // guards; the frontend decides how to render each status (locked state,
+        // pending pill, or upload button).
+        return (tasksRes.items || []).map((t: any) => ({
+          id:            t.id,
+          title:         t.title         || '',
+          description:   t.description   || '',
+          link:          t.link          || '',
+          reward_amount: Number(t.reward_amount) || 0,
+          reward_type:   (t.reward_type  || 'PT') as 'SHIB' | 'PT',
+          submission:    subByTask[t.id] ?? null,
+        }));
       } catch {
         return [];
       }

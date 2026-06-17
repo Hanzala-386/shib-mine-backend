@@ -871,6 +871,40 @@ async function ensureTaskSubmissionsCollection() {
   } catch (e: any) { console.warn("[task_submissions] Setup failed:", e.message); }
 }
 
+// ─── Add unique composite index (user_id, task_id) to task_submissions ────
+// This enforces at the PocketBase database engine level that a given user
+// can only ever have ONE submission record per task — regardless of status.
+// Any direct PocketBase SDK call (APK fallback path) that attempts to insert
+// a duplicate will receive a 400/409 from PocketBase before Express even runs.
+async function ensureTaskSubmissionsUniqueIndex() {
+  try {
+    const token = await getAdminToken();
+    const col   = await pbGet("/api/collections/task_submissions");
+    if (col.code) { console.log("[task_submissions] Collection not found — skip index"); return; }
+
+    const UNIQUE_IDX =
+      "CREATE UNIQUE INDEX `idx_user_task` ON `task_submissions` (`user_id`, `task_id`)";
+    const existingIndexes: string[] = col.indexes || [];
+
+    if (existingIndexes.some((s: string) => s.includes("idx_user_task"))) {
+      console.log("[task_submissions] unique index idx_user_task already present ✓");
+      return;
+    }
+
+    const r = await pbHttp("PATCH", `/api/collections/${col.id}`, {
+      indexes: [...existingIndexes, UNIQUE_IDX],
+    }, token);
+
+    if (!r.code) {
+      console.log("[task_submissions] unique composite index (user_id, task_id) created ✓");
+    } else {
+      console.warn("[task_submissions] Index creation failed:", JSON.stringify(r).slice(0, 200));
+    }
+  } catch (e: any) {
+    console.warn("[task_submissions] Index migration failed:", e.message);
+  }
+}
+
 // ─── Migrate proof_screenshot field: text → file ───────────────────────────
 async function migrateProofScreenshotToFile() {
   try {
@@ -1384,6 +1418,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
+    .then(() => ensureTaskSubmissionsUniqueIndex())
     .then(() => migrateProofScreenshotToFile())
     .then(() => patchTasksCollectionRules())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
@@ -3676,23 +3711,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Zero-trust: never send approved/rejected tasks to the client.
-      // Even if a user clears cache, reinstalls, or forges a request, the server
-      // never includes tasks with a finalised submission in the response.
-      res.json(tasks
-        .map((t: any) => ({
-          id: t.id,
-          title: t.title,
-          description: t.description || "",
-          link: t.link || "",
-          reward_amount: t.reward_amount || 0,
-          reward_type: t.reward_type || "PT",
-          submission: submissionsMap[t.id] || null,
-        }))
-        .filter((t: any) =>
-          !t.submission ||
-          (t.submission.status !== "approved" && t.submission.status !== "rejected")
-        ));
+      // Return ALL active tasks with their submission status.
+      // Previously approved/rejected tasks were filtered out here, which caused a
+      // race window: on app restart the stale React Query cache briefly showed
+      // "Upload Proof" before the fresh fetch arrived.
+      // Now the server always returns the full task list with submission attached —
+      // the frontend renders a "Task Locked" / "Already Participated" state instead
+      // of hiding the card entirely. The DB unique index + Express duplicate check
+      // are the authoritative submission guards; the UI state is informational only.
+      res.json(tasks.map((t: any) => ({
+        id:            t.id,
+        title:         t.title,
+        description:   t.description   || "",
+        link:          t.link          || "",
+        reward_amount: t.reward_amount || 0,
+        reward_type:   t.reward_type   || "PT",
+        submission:    submissionsMap[t.id] || null,
+      })));
     } catch (e: any) {
       console.error("[/api/app/tasks]", e.message);
       res.status(500).json({ error: "Failed to fetch tasks" });
@@ -3716,11 +3751,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,email`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
+      // Zero-trust duplicate check: reject ANY existing submission regardless of status.
+      // This covers the rejected-then-resubmit exploit — once a record exists for
+      // (user_id, task_id), PocketBase's unique index also enforces this at DB level.
       const existing = await pbGet(
-        `/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${pbId}" && task_id="${taskId}" && (status="pending" || status="approved")`)}&perPage=1`,
+        `/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${pbId}" && task_id="${taskId}"`)}&perPage=1`,
       );
       if ((existing.items || []).length > 0) {
-        return res.status(409).json({ error: "Already submitted or approved for this task" });
+        return res.status(409).json({ error: "You have already participated in this task" });
       }
 
       // Forward to PocketBase as multipart so the image is stored as a real file

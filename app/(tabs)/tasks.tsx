@@ -50,6 +50,23 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
+// ── Locked state: shown instead of "Upload Proof" for finalized submissions ──
+// Replaces the submit button with a clear lock indicator so the user always
+// knows their submission status even across app restarts, cache clears, or
+// reinstalls — no brief "Upload Proof" flash caused by a stale query cache.
+function LockedPill({ status }: { status: 'approved' | 'rejected' }) {
+  const isApproved = status === 'approved';
+  const color      = isApproved ? Colors.success : Colors.textMuted;
+  const icon       = isApproved ? 'checkmark-done-circle' : 'lock-closed';
+  const label      = isApproved ? 'Already Participated' : 'Task Locked';
+  return (
+    <View style={[locked.wrap, { borderColor: color + '60', backgroundColor: color + '12' }]}>
+      <Ionicons name={icon as any} size={14} color={color} />
+      <Text style={[locked.text, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
 // ── Task Card ─────────────────────────────────────────────────────────────────
 function TaskCard({ item, pbId, onProofSelected }: {
   item: TaskItem;
@@ -65,14 +82,13 @@ function TaskCard({ item, pbId, onProofSelected }: {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: false,
-      quality: 1, // keep full quality here — we compress manually below
-      base64: false, // we get base64 from the manipulator step
+      quality: 1,
+      base64: false,
     });
     if (result.canceled || !result.assets[0]) return;
 
     const asset = result.assets[0];
 
-    // ── Resize to max 1024px wide + compress to JPEG 0.65 ──
     const manipulated = await ImageManipulator.manipulateAsync(
       asset.uri,
       [{ resize: { width: Math.min(asset.width || 1024, 1024) } }],
@@ -84,7 +100,6 @@ function TaskCard({ item, pbId, onProofSelected }: {
       return;
     }
 
-    // ── 2 MB hard cap — use base64 length to estimate raw bytes ──
     if (manipulated.base64) {
       const rawBytes = (manipulated.base64.length * 3) / 4;
       if (rawBytes > MAX_PROOF_BYTES) {
@@ -96,13 +111,15 @@ function TaskCard({ item, pbId, onProofSelected }: {
       }
     }
 
-    // Pass both URI (for preview) and base64 (for reliable binary upload)
     onProofSelected(item, manipulated.uri, manipulated.base64!);
   }, [item, onProofSelected]);
 
   const openLink = useCallback(() => {
     if (item.link) Linking.openURL(item.link).catch(() => {});
   }, [item.link]);
+
+  const subStatus = item.submission?.status ?? null;
+  const isFinalized = subStatus === 'approved' || subStatus === 'rejected';
 
   return (
     <Animated.View entering={FadeInDown.springify()} style={card.wrap}>
@@ -123,21 +140,33 @@ function TaskCard({ item, pbId, onProofSelected }: {
           </Pressable>
         )}
 
+        {/* Action area — three mutually-exclusive states:
+              1. No submission       → Upload Proof button
+              2. pending             → "Under Review" status pill
+              3. approved / rejected → LockedPill (cannot re-submit)         */}
         {!item.submission ? (
-          <Pressable style={card.submitBtn} onPress={pickProof} android_ripple={{ color: Colors.darkBorder }}>
+          <Pressable
+            style={card.submitBtn}
+            onPress={pickProof}
+            android_ripple={{ color: Colors.darkBorder }}
+          >
             <Ionicons name="camera-outline" size={15} color="#0A0A0F" />
             <Text style={card.submitBtnText}>Upload Proof</Text>
           </Pressable>
+        ) : isFinalized ? (
+          <LockedPill status={subStatus as 'approved' | 'rejected'} />
         ) : (
-          <StatusPill status={item.submission.status} />
+          <StatusPill status={subStatus!} />
         )}
       </View>
 
+      {/* Format hint: only shown when proof upload is available */}
       {!item.submission && (
         <Text style={card.formatHint}>Accepted: JPG, PNG · Max 2 MB</Text>
       )}
 
-      {item.submission?.status === 'rejected' && !!item.submission.admin_notes && (
+      {/* Rejection reason */}
+      {subStatus === 'rejected' && !!item.submission?.admin_notes && (
         <Text style={card.rejection}>Reason: {item.submission.admin_notes}</Text>
       )}
     </Animated.View>
@@ -183,28 +212,21 @@ export default function TasksScreen() {
   const { user } = useAuth();
   const qc = useQueryClient();
 
-  const [pendingTask, setPendingTask] = useState<TaskItem | null>(null);
-  const [pendingUri, setPendingUri] = useState('');
-  // base64 is kept alongside the URI: URI is used for the preview image, base64 for the upload
+  const [pendingTask,   setPendingTask]   = useState<TaskItem | null>(null);
+  const [pendingUri,    setPendingUri]    = useState('');
   const [pendingBase64, setPendingBase64] = useState('');
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top + 8;
 
-  const { data: rawTasks = [], isLoading, refetch } = useQuery<TaskItem[]>({
+  const { data: tasks = [], isLoading, refetch } = useQuery<TaskItem[]>({
     queryKey: ['/api/app/tasks', user?.pbId],
-    queryFn: () => api.getTasks(user?.pbId || ''),
-    enabled: !!user?.pbId,
-    staleTime: 30_000,
+    queryFn:  () => api.getTasks(user?.pbId || ''),
+    enabled:  !!user?.pbId,
+    // staleTime: 0 — always fetch fresh data on screen focus so the locked state
+    // is never delayed by a stale cache after an admin approves/rejects a task.
+    staleTime:      0,
+    refetchOnMount: true,
   });
-
-  // ── DB-driven permanent filter ────────────────────────────────────────────
-  // Exclude tasks where the admin has already acted (approved OR rejected).
-  // This data comes fresh from PocketBase on every load — it survives reinstalls
-  // and cache clears because it is never stored locally. Once the admin acts,
-  // the task is permanently gone for that user unless a new task entry is created.
-  const tasks = rawTasks.filter(
-    t => t.submission?.status !== 'approved' && t.submission?.status !== 'rejected',
-  );
 
   const submitMut = useMutation({
     mutationFn: ({ taskId, uri, base64 }: { taskId: string; uri: string; base64: string }) =>
@@ -215,7 +237,7 @@ export default function TasksScreen() {
       setPendingTask(null);
       setPendingUri('');
       setPendingBase64('');
-      Alert.alert('Submitted!', 'Your proof is under review. You\'ll receive your reward once approved.');
+      Alert.alert('Submitted!', "Your proof is under review. You'll receive your reward once approved.");
     },
     onError: (e: any) => {
       Alert.alert('Upload Failed', e.message || 'Submission failed. Please try again.');
@@ -335,6 +357,14 @@ const badge = StyleSheet.create({
 const pill = StyleSheet.create({
   wrap: { flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
   text: { fontFamily: 'Inter_600SemiBold', fontSize: 12 },
+});
+
+const locked = StyleSheet.create({
+  wrap: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
+  },
+  text: { fontFamily: 'Inter_700Bold', fontSize: 13 },
 });
 
 const preview = StyleSheet.create({
