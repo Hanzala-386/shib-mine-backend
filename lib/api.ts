@@ -343,41 +343,74 @@ export const api = {
   },
 
   submitTaskProof: async (params: { pbId: string; taskId: string; uri: string; base64: string }): Promise<{ success: boolean; submissionId: string }> => {
-    // PRIMARY: PocketBase SDK direct upload — works on APK without Express.
-    // Uses the React Native native FormData { uri, name, type } object — the only
-    // supported way to attach a local file URI in React Native (Hermes engine).
-    // new Blob([ArrayBuffer/Uint8Array]) is explicitly NOT supported in Hermes and
-    // throws "Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not supported".
+    const PB_ENDPOINT = 'https://api.webcod.in/api/collections/task_submissions/records';
+
+    // Fetch with a 30-second hard timeout — prevents infinite spinner
+    const fetchWithTimeout = (url: string, opts: RequestInit, ms = 30_000): Promise<Response> => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), ms);
+      return globalThis.fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+    };
+
+    // PATH 1 — data: URI + explicit Authorization header (most reliable on Android/iOS).
+    // Uses the base64 string already computed by ImageManipulator as a data: URI so we
+    // never touch the file system again. Bypasses pb.authStore to avoid stale-token
+    // silent failures. Works in Hermes, JSC, and web.
     try {
       const form = new FormData();
       form.append('user_id', params.pbId);
       form.append('task_id', params.taskId);
-      form.append('status', 'pending');
-      // React Native native file attachment — no Blob, no ArrayBuffer
+      form.append('status',  'pending');
       form.append('proof_screenshot', {
-        uri: params.uri,
+        uri:  `data:image/jpeg;base64,${params.base64}`,
+        name: 'proof.jpg',
+        type: 'image/jpeg',
+      } as any);
+      const pbToken = pb.authStore.token;
+      const res = await fetchWithTimeout(PB_ENDPOINT, {
+        method:  'POST',
+        headers: pbToken ? { Authorization: pbToken } : {},
+        body:    form,
+      });
+      const data = await res.json();
+      if (data.id) return { success: true, submissionId: data.id };
+      throw new Error(data?.message || `PB ${res.status}`);
+    } catch (e1: any) {
+      console.warn('[submitTaskProof] path1 (data-uri) failed:', e1?.message);
+    }
+
+    // PATH 2 — file:// URI via PB SDK (original pattern, works on many devices)
+    try {
+      const form = new FormData();
+      form.append('user_id', params.pbId);
+      form.append('task_id', params.taskId);
+      form.append('status',  'pending');
+      form.append('proof_screenshot', {
+        uri:  params.uri,
         name: 'proof.jpg',
         type: 'image/jpeg',
       } as any);
       const rec = await pb.collection('task_submissions').create(form);
       return { success: true, submissionId: rec.id };
-    } catch (pbErr: any) {
-      // FALLBACK: Express backend with the same URI-based FormData trick
-      const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
-      const form = new FormData();
-      form.append('pbId',   params.pbId);
-      form.append('taskId', params.taskId);
-      form.append('proof_screenshot', {
-        uri: params.uri,
-        name: 'proof.jpg',
-        type: 'image/jpeg',
-      } as any);
-      const res = await globalThis.fetch(url, { method: 'POST', body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-      if (!data.submissionId) throw new Error('Upload failed — screenshot was not saved on the server');
-      return data;
+    } catch (e2: any) {
+      console.warn('[submitTaskProof] path2 (pb-sdk file-uri) failed:', e2?.message);
     }
+
+    // PATH 3 — Express server (dev environment only; 404s on APK, surfaces the error)
+    const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
+    const form = new FormData();
+    form.append('pbId',   params.pbId);
+    form.append('taskId', params.taskId);
+    form.append('proof_screenshot', {
+      uri:  params.uri,
+      name: 'proof.jpg',
+      type: 'image/jpeg',
+    } as any);
+    const res = await fetchWithTimeout(url, { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    if (!data.submissionId) throw new Error('Upload failed — no record created');
+    return data;
   },
 
   // ── Admin: Tasks ──────────────────────────────────────────────────────
