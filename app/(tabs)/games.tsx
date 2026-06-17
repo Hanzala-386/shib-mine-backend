@@ -12,6 +12,8 @@ import { pb } from '@/lib/pocketbase';
 import { api } from '@/lib/api';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
+import { useSecurity } from '@/context/SecurityContext';
+import { TapMonitor } from '@/lib/tapMonitor';
 
 let WebView: any = null;
 if (Platform.OS !== 'web') {
@@ -52,6 +54,7 @@ export default function GamesScreen() {
   const { addPowerTokens, powerTokens } = useWallet();
   const { pbUser, refreshBalance } = useAuth();
   const { showGameInterstitial, showRewarded } = useAds();
+  const { triggerAutoClicker } = useSecurity();
 
   const wvRef           = useRef<any>(null);
   const scoreRef           = useRef(0);        // final score at game-over
@@ -69,6 +72,8 @@ export default function GamesScreen() {
   const matchIdRef        = useRef<string>('');
   // Anti-double-tap: set true the moment Claim is tapped, never cleared until phase changes
   const claimInFlightRef  = useRef(false);
+  // Auto-clicker detection: tracks inter-hit intervals for CV analysis
+  const tapMonitor        = useRef(new TapMonitor()).current;
 
   // wvKey: incrementing this forces the WebView to fully remount (= fresh network attempt)
   const [wvKey,         setWvKey]         = useState(0);
@@ -274,6 +279,8 @@ export default function GamesScreen() {
     // Reset anti-replay state for new session
     matchIdRef.current        = '';
     claimInFlightRef.current  = false;
+    // Reset auto-clicker monitor for fresh session
+    tapMonitor.reset();
     setLiveScore(0);
     setSessionTime(SESSION_SECONDS);
     setSessionActive(true);
@@ -441,9 +448,16 @@ export default function GamesScreen() {
       if (msg.type === 'COMMITTED' && msg.matchId) {
         matchIdRef.current = String(msg.matchId);
       }
+      // Auto-clicker detection: record every server-validated hit; fire block if pattern detected
+      if (msg.type === 'HIT_ACK') {
+        tapMonitor.record();
+        if (tapMonitor.isAutoClicking()) {
+          triggerAutoClicker();
+        }
+      }
       if (msg.type === 'INJECT_DONE') { /* no-op */ }
     } catch { /* ignore non-JSON */ }
-  }, [handleBridgeReady, handleScoreUpdate, handleGameOver]);
+  }, [handleBridgeReady, handleScoreUpdate, handleGameOver, tapMonitor, triggerAutoClicker]);
 
   /* ── Web iframe message handler ── */
   useEffect(() => {
@@ -465,11 +479,18 @@ export default function GamesScreen() {
         if (msg.type === 'COMMITTED' && msg.matchId) {
           matchIdRef.current = String(msg.matchId);
         }
+        // Auto-clicker detection: record every server-validated hit; fire block if pattern detected
+        if (msg.type === 'HIT_ACK') {
+          tapMonitor.record();
+          if (tapMonitor.isAutoClicking()) {
+            triggerAutoClicker();
+          }
+        }
       } catch { /* ignore non-JSON */ }
     };
     window.addEventListener('message', h);
     return () => window.removeEventListener('message', h);
-  }, [handleBridgeReady, handleScoreUpdate, handleGameOver]);
+  }, [handleBridgeReady, handleScoreUpdate, handleGameOver, tapMonitor, triggerAutoClicker]);
 
   /* ── Android back button ── */
   useEffect(() => {

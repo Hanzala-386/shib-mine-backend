@@ -1,14 +1,7 @@
 import React from 'react';
 import {
-  Modal,
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  BackHandler,
-  Platform,
-  Alert,
-  StatusBar,
+  Modal, View, Text, StyleSheet,
+  TouchableOpacity, BackHandler, Platform, Alert, StatusBar,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,31 +10,63 @@ import { useSecurity, SecurityBlockType } from '@/context/SecurityContext';
 
 // ── Block configuration ───────────────────────────────────────────────────────
 type BlockConfig = {
-  icon: keyof typeof Ionicons.glyphMap;
-  title: string;
+  icon:     keyof typeof Ionicons.glyphMap;
+  title:    string;
   subtitle: string;
-  message: string;
+  message:  string;
   canRetry: boolean;
 };
 
 const BLOCK_CONFIG: Record<NonNullable<SecurityBlockType>, BlockConfig> = {
   root: {
-    icon: 'skull',
-    title: 'Security Alert',
-    subtitle: 'Rooted Device / Hacking Tool Detected',
+    icon:     'skull',
+    title:    'Security Violation',
+    subtitle: 'Rooted / Jailbroken Device Detected',
     message:
-      'Your device environment is unsafe. The app cannot open.\n\n' +
-      'Please ensure your device is unrooted and remove any cheat tools ' +
-      'to continue.',
+      'Your device environment is unsafe. Rooting or jailbreaking breaks the ' +
+      'security model that protects all players.\n\n' +
+      'Please restore your device to an unmodified state and remove any ' +
+      'cheat tools, Magisk modules, or system-level tweaks to continue.',
+    canRetry: false,
+  },
+  emulator: {
+    icon:     'hardware-chip',
+    title:    'Security Violation',
+    subtitle: 'Unauthorized Device Detected',
+    message:
+      'Shiba Hit cannot run on emulators or virtual device environments.\n\n' +
+      'Please use a physical Android or iOS device to play.',
+    canRetry: false,
+  },
+  autoclicker: {
+    icon:     'flash',
+    title:    'Suspicious Activity',
+    subtitle: 'Automation Tool / Auto-Clicker Detected',
+    message:
+      'Our anti-cheat system detected statistically non-human input patterns ' +
+      'consistent with an auto-clicker or macro script.\n\n' +
+      'Please disable any automation tools, accessibility scripts, or macro ' +
+      'apps and play the game manually to continue.',
+    canRetry: false,
+  },
+  integrity: {
+    icon:     'shield',
+    title:    'Device Integrity Failure',
+    subtitle: 'Uncertified or Modified OS Environment',
+    message:
+      'Google Play Integrity has determined that your device does not meet ' +
+      'the required integrity standards.\n\n' +
+      'This typically indicates a modified operating system, uncertified ' +
+      'hardware, or a virtual device. Please use a certified device.',
     canRetry: false,
   },
   adblock: {
-    icon: 'ban',
-    title: 'Network Error',
+    icon:     'ban',
+    title:    'Network Error',
     subtitle: 'Active Ad-Blocker / DNS Filter Detected',
     message:
-      'Ads support the Shiba mining network. Please disable your ' +
-      'Ad-Blocker or DNS Filter to continue using the app.',
+      'Ads fund the Shiba mining network and keep rewards free. ' +
+      'Please disable your ad-blocker or DNS filter to continue using the app.',
     canRetry: true,
   },
 };
@@ -66,10 +91,9 @@ export function SecurityModal() {
 
   if (!blockType) return null;
 
-  const cfg = BLOCK_CONFIG[blockType];
-
-  const topPad  = Platform.OS === 'web' ? 67 : insets.top + 16;
-  const botPad  = Platform.OS === 'web' ? 34 : insets.bottom + 16;
+  const cfg    = BLOCK_CONFIG[blockType];
+  const topPad = Platform.OS === 'web' ? 67  : insets.top    + 16;
+  const botPad = Platform.OS === 'web' ? 34  : insets.bottom + 16;
 
   return (
     <Modal
@@ -83,36 +107,24 @@ export function SecurityModal() {
 
       <View style={[styles.container, { paddingTop: topPad, paddingBottom: botPad }]}>
 
-        {/* Brand header */}
+        {/* Brand */}
         <Text style={styles.brand}>SHIBA HIT</Text>
 
         {/* Alert card */}
         <View style={styles.card}>
-          {/* Icon */}
           <View style={styles.iconRing}>
             <Ionicons name={cfg.icon} size={52} color={Colors.error} />
           </View>
 
-          {/* Title */}
           <Text style={styles.cardTitle}>⚠  {cfg.title}</Text>
-
-          {/* Divider */}
           <View style={styles.divider} />
-
-          {/* Subtitle */}
           <Text style={styles.cardSubtitle}>{cfg.subtitle}</Text>
-
-          {/* Message */}
           <Text style={styles.cardMessage}>{cfg.message}</Text>
         </View>
 
-        {/* Buttons */}
+        {/* Action buttons */}
         <View style={[styles.btnRow, !cfg.canRetry && styles.btnRowSingle]}>
-          <TouchableOpacity
-            style={styles.exitBtn}
-            onPress={exitApp}
-            activeOpacity={0.82}
-          >
+          <TouchableOpacity style={styles.exitBtn} onPress={exitApp} activeOpacity={0.82}>
             <Ionicons name="close-circle" size={18} color="#fff" />
             <Text style={styles.exitBtnText}>Exit App</Text>
           </TouchableOpacity>
@@ -133,7 +145,7 @@ export function SecurityModal() {
         </View>
 
         <Text style={styles.footer}>
-          This security check protects our users and platform integrity.
+          This security check protects our community and platform integrity.
         </Text>
       </View>
     </Modal>
@@ -149,7 +161,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
-
   brand: {
     fontSize: 12,
     fontWeight: '800' as const,
@@ -158,8 +169,6 @@ const styles = StyleSheet.create({
     marginBottom: 28,
     opacity: 0.75,
   },
-
-  // ── Card ──
   card: {
     width: '100%',
     backgroundColor: '#12121A',
@@ -169,14 +178,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 28,
     alignItems: 'center',
-    // Red glow
     shadowColor: Colors.error,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.45,
     shadowRadius: 24,
     elevation: 14,
   },
-
   iconRing: {
     width: 90,
     height: 90,
@@ -188,7 +195,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 20,
   },
-
   cardTitle: {
     fontSize: 21,
     fontWeight: '800' as const,
@@ -197,14 +203,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     marginBottom: 14,
   },
-
   divider: {
     width: '72%',
     height: 1,
     backgroundColor: 'rgba(255,61,87,0.28)',
     marginBottom: 14,
   },
-
   cardSubtitle: {
     fontSize: 13,
     fontWeight: '700' as const,
@@ -212,25 +216,19 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 12,
   },
-
   cardMessage: {
     fontSize: 13,
     color: Colors.textSecondary,
     textAlign: 'center',
     lineHeight: 20,
   },
-
-  // ── Buttons ──
   btnRow: {
     flexDirection: 'row',
     gap: 12,
     marginTop: 26,
     width: '100%',
   },
-  btnRowSingle: {
-    justifyContent: 'center',
-  },
-
+  btnRowSingle: { justifyContent: 'center' },
   exitBtn: {
     flex: 1,
     flexDirection: 'row',
@@ -246,7 +244,6 @@ const styles = StyleSheet.create({
     fontWeight: '700' as const,
     fontSize: 15,
   },
-
   retryBtn: {
     flex: 1,
     flexDirection: 'row',
@@ -257,15 +254,12 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 14,
   },
-  retryBtnDisabled: {
-    opacity: 0.6,
-  },
+  retryBtnDisabled: { opacity: 0.6 },
   retryBtnText: {
     color: '#0A0A0F',
     fontWeight: '700' as const,
     fontSize: 15,
   },
-
   footer: {
     marginTop: 20,
     fontSize: 11,

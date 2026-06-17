@@ -1,3 +1,4 @@
 - [Tournament system](tournament-system.md) — Weekly tournament: PB collections, CRON in server/tournament.ts, context in TournamentContext.tsx; all user ops use PB SDK (APK-safe).
-- [Daily Rewards System](daily-rewards.md) — 7-day streak feature: schema, routes, UI, admin. Key anti-cheat and APK fallback patterns documented.
+- [Daily Rewards System](daily-rewards.md) — 7-day streak feature: schema, admin. Key anti-cheat and APK fallback patterns documented.
 - [Tournament Zero-Trust Architecture](tournament-zero-trust.md) — Server-side scoring (never trust client points), dual calendar crons, intermission state, server-time clock offset anti-hack.
+- [Security layer architecture](security-layers.md) — 4-layer anti-cheat; jail-monkey + expo-device + TapMonitor (CV analysis) + Play Integrity pipeline. All checks skip in __DEV__. Activate Play Integrity with GOOGLE_PLAY_INTEGRITY_KEY env var + EAS build.

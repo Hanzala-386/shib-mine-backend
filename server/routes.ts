@@ -758,6 +758,31 @@ async function ensureGameLogsFields() {
   }
 }
 
+// ─── Migrate users: add is_flagged + flag_reason for security violations ──
+// is_flagged  (bool) — set to true when root/emulator/integrity/autoclicker detected
+// flag_reason (text) — one of: 'root' | 'emulator' | 'play_integrity' | 'autoclicker'
+async function ensureIsFlaggedField() {
+  try {
+    const token = await getAdminToken();
+    const coll  = await pbGet("/api/collections/users");
+    if (coll.code) return;
+    const existingNames: string[] = (coll.schema || coll.fields || []).map((f: any) => f.name);
+    if (existingNames.includes("is_flagged")) {
+      console.log("[users] is_flagged / flag_reason already present ✓");
+      return;
+    }
+    const updatedSchema = [
+      ...(coll.schema || coll.fields || []),
+      { name: "is_flagged",  type: "bool", required: false },
+      { name: "flag_reason", type: "text", required: false },
+    ];
+    await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: updatedSchema }, token);
+    console.log("[users] is_flagged + flag_reason fields added ✓");
+  } catch (e: any) {
+    console.warn("[users] is_flagged migration failed:", e.message);
+  }
+}
+
 // ─── Ensure referral_history collection exists in PocketBase ──────────────
 // One record per referral commission payment (admin analytics only — separate
 // from referral_earnings_log which drives the secure payout pipeline).
@@ -1355,12 +1380,104 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureSessionLogsCollection())
     .then(() => ensureGameLogsCollection())
     .then(() => ensureGameLogsFields())
+    .then(() => ensureIsFlaggedField())
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
     .then(() => migrateProofScreenshotToFile())
     .then(() => patchTasksCollectionRules())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
+
+  // ── Security: Flag a device / user as cheating on PocketBase ─────────────
+  // Called by SecurityContext when root / emulator / autoclicker is detected.
+  // Writes is_flagged=true + flag_reason to the user's PB record so admins
+  // can audit flagged accounts from the PocketBase admin dashboard.
+  app.post("/api/app/security/flag-device", async (req: Request, res: Response) => {
+    try {
+      const { pbId, reason } = req.body;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+
+      const token = await getAdminToken();
+      await pbHttp("PATCH", `/api/collections/users/records/${pbId}`, {
+        is_flagged:  true,
+        flag_reason: String(reason ?? "unknown").slice(0, 64),
+      }, token);
+
+      console.warn(`[security] Device flagged: pbId=${pbId} reason=${reason}`);
+      return res.json({ flagged: true });
+    } catch (e: any) {
+      console.warn("[security] flag-device error:", e.message);
+      return res.status(500).json({ error: "Failed to flag device" });
+    }
+  });
+
+  // ── Security: Verify Google Play Integrity token ───────────────────────────
+  // The client (lib/playIntegrity.ts) requests an on-device attestation token
+  // from Google Play Services and forwards it here for server-side verification.
+  //
+  // Prerequisites to activate:
+  //   1. Enable Play Integrity API in Google Cloud Console.
+  //   2. Create an API key and set GOOGLE_PLAY_INTEGRITY_KEY on Railway.
+  //   3. Replace PACKAGE_NAME below with your actual bundle identifier.
+  //
+  // Without GOOGLE_PLAY_INTEGRITY_KEY the endpoint returns pass=true (fail-open)
+  // so legitimate users are never blocked while credentials are being set up.
+  app.post("/api/app/security/verify-integrity", async (req: Request, res: Response) => {
+    try {
+      const { token: integrityToken, pbId } = req.body;
+      if (!integrityToken) return res.status(400).json({ error: "token required" });
+
+      const apiKey = process.env.GOOGLE_PLAY_INTEGRITY_KEY;
+      if (!apiKey) {
+        // No credentials yet — fail open so legitimate users are not blocked
+        return res.json({ pass: true, verdict: "SKIPPED_NO_CREDENTIALS" });
+      }
+
+      // Replace with your actual Android package name:
+      const PACKAGE_NAME = process.env.ANDROID_PACKAGE_NAME ?? "com.shibahit.app";
+
+      const gResp = await fetch(
+        `https://playintegrity.googleapis.com/v1/${PACKAGE_NAME}:decodeIntegrityToken?key=${apiKey}`,
+        {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ integrity_token: integrityToken }),
+        },
+      );
+
+      if (!gResp.ok) {
+        // Google API error — fail open to avoid false-blocking legit users
+        console.warn("[integrity] Google API error:", gResp.status);
+        return res.json({ pass: true, verdict: "GOOGLE_API_ERROR" });
+      }
+
+      const data = await gResp.json();
+      const verdicts: string[] =
+        data?.tokenPayloadExternal?.deviceIntegrity?.deviceRecognitionVerdict ?? [];
+
+      // Device passes if it meets BASIC or STRONG integrity
+      const pass =
+        verdicts.includes("MEETS_DEVICE_INTEGRITY") ||
+        verdicts.includes("MEETS_STRONG_INTEGRITY") ||
+        verdicts.includes("MEETS_BASIC_INTEGRITY");
+
+      if (!pass && pbId) {
+        // Fail + flag the user in PocketBase
+        const adminTok = await getAdminToken();
+        await pbHttp("PATCH", `/api/collections/users/records/${pbId}`, {
+          is_flagged:  true,
+          flag_reason: "play_integrity",
+        }, adminTok).catch(() => {});
+        console.warn(`[integrity] FAIL — pbId=${pbId} verdicts=${JSON.stringify(verdicts)}`);
+      }
+
+      return res.json({ pass, verdicts });
+    } catch (e: any) {
+      console.warn("[integrity] verify error:", e.message);
+      // Fail open on unexpected errors
+      return res.json({ pass: true, error: e.message });
+    }
+  });
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
   app.post("/api/auth/request-delete-otp", async (req: Request, res: Response) => {
