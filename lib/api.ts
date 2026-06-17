@@ -339,7 +339,18 @@ export const api = {
     }
   },
 
-  submitTaskProof: async (params: { pbId: string; taskId: string; uri: string; base64: string }): Promise<{ success: boolean; submissionId: string }> => {
+  submitTaskProof: async (params: {
+    pbId: string;
+    taskId: string;
+    uri: string;
+    base64: string;
+    // Contextual fields that must be stored on the record so the admin panel
+    // shows meaningful data without having to join back to the tasks collection.
+    taskTitle: string;
+    userEmail: string;
+    rewardAmount: number;
+    rewardType: string;
+  }): Promise<{ success: boolean; submissionId: string }> => {
     const PB_ENDPOINT = 'https://api.webcod.in/api/collections/task_submissions/records';
 
     // Fetch with a 30-second hard timeout — prevents infinite spinner
@@ -371,9 +382,13 @@ export const api = {
     // PATH 1 — direct PB REST + explicit Authorization (bypasses pb.authStore staleness)
     try {
       const form = new FormData();
-      form.append('user_id', params.pbId);
-      form.append('task_id', params.taskId);
-      form.append('status',  'pending');
+      form.append('user_id',       params.pbId);
+      form.append('task_id',       params.taskId);
+      form.append('status',        'pending');
+      form.append('task_title',    params.taskTitle);
+      form.append('user_email',    params.userEmail);
+      form.append('reward_amount', String(params.rewardAmount));
+      form.append('reward_type',   params.rewardType);
       await appendProof(form, params.base64, params.uri);
       const pbToken = pb.authStore.token;
       const res = await fetchWithTimeout(PB_ENDPOINT, {
@@ -391,9 +406,13 @@ export const api = {
     // PATH 2 — PB SDK (also gets the platform-correct file attachment)
     try {
       const form = new FormData();
-      form.append('user_id', params.pbId);
-      form.append('task_id', params.taskId);
-      form.append('status',  'pending');
+      form.append('user_id',       params.pbId);
+      form.append('task_id',       params.taskId);
+      form.append('status',        'pending');
+      form.append('task_title',    params.taskTitle);
+      form.append('user_email',    params.userEmail);
+      form.append('reward_amount', String(params.rewardAmount));
+      form.append('reward_type',   params.rewardType);
       await appendProof(form, params.base64, params.uri);
       const rec = await pb.collection('task_submissions').create(form);
       return { success: true, submissionId: rec.id };

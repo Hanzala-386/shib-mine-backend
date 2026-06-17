@@ -229,8 +229,11 @@ export default function TasksScreen() {
   });
 
   const submitMut = useMutation({
-    mutationFn: ({ taskId, uri, base64 }: { taskId: string; uri: string; base64: string }) =>
-      api.submitTaskProof({ pbId: user!.pbId, taskId, uri, base64 }),
+    mutationFn: ({ taskId, uri, base64, taskTitle, userEmail, rewardAmount, rewardType }: {
+      taskId: string; uri: string; base64: string;
+      taskTitle: string; userEmail: string; rewardAmount: number; rewardType: string;
+    }) =>
+      api.submitTaskProof({ pbId: user!.pbId, taskId, uri, base64, taskTitle, userEmail, rewardAmount, rewardType }),
     onSuccess: () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       qc.invalidateQueries({ queryKey: ['/api/app/tasks', user?.pbId] });
@@ -252,7 +255,15 @@ export default function TasksScreen() {
 
   const handleConfirmSubmit = () => {
     if (!pendingTask || !pendingBase64) return;
-    submitMut.mutate({ taskId: pendingTask.id, uri: pendingUri, base64: pendingBase64 });
+    submitMut.mutate({
+      taskId:       pendingTask.id,
+      uri:          pendingUri,
+      base64:       pendingBase64,
+      taskTitle:    pendingTask.title,
+      userEmail:    user?.email ?? '',
+      rewardAmount: pendingTask.reward_amount,
+      rewardType:   pendingTask.reward_type,
+    });
   };
 
   return (

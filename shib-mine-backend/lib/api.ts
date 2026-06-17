@@ -290,7 +290,10 @@ export const api = {
   getTasks: (pbId: string) =>
     request<TaskItem[]>('GET', `/api/app/tasks?userId=${encodeURIComponent(pbId)}`),
 
-  submitTaskProof: async (params: { pbId: string; taskId: string; uri: string; base64: string }): Promise<{ success: boolean; submissionId: string }> => {
+  submitTaskProof: async (params: {
+    pbId: string; taskId: string; uri: string; base64: string;
+    taskTitle: string; userEmail: string; rewardAmount: number; rewardType: string;
+  }): Promise<{ success: boolean; submissionId: string }> => {
     const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
     const form = new FormData();
     form.append('pbId',   params.pbId);
