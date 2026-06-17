@@ -142,8 +142,17 @@ async function wsCommitSession(sid: string, session: WsGameSession): Promise<voi
     await pbPatch(`/api/collections/users/records/${session.pbId}`, {
       last_session_score: finalPT,
     });
+    // Write a game_logs record with match_id = sid + status "started".
+    // The /api/app/game/reward endpoint flips this to "completed" atomically,
+    // which is the primary replay-attack guard.
     pbPost("/api/collections/game_logs/records", {
-      user: session.pbId, raw_score: finalPT, is_double: false, final_tokens: finalPT,
+      user:         session.pbId,
+      raw_score:    finalPT,
+      is_double:    false,
+      final_tokens: finalPT,
+      match_id:     sid,
+      start_time:   new Date(session.startMs).toISOString(),
+      match_status: "started",
     }).catch(() => {});
   } catch (e: any) {
     console.error(`[ws/game] commit error (${session.pbId}):`, e.message);
@@ -235,7 +244,9 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           }
 
           await wsCommitSession(sid, session);
-          send({ type: "COMMITTED", serverPT: session.serverPT });
+          // Return matchId so the client can pass it as a replay-attack guard
+          // when it calls /api/app/game/reward.
+          send({ type: "COMMITTED", serverPT: session.serverPT, matchId: sid });
           break;
         }
       }
@@ -705,6 +716,9 @@ async function ensureGameLogsCollection() {
         { name: "raw_score",    type: "number", required: false },
         { name: "is_double",    type: "bool",   required: false },
         { name: "final_tokens", type: "number", required: false },
+        { name: "match_id",     type: "text",   required: false },
+        { name: "start_time",   type: "text",   required: false },
+        { name: "match_status", type: "text",   required: false },
       ],
     }, token);
     if (created.code) {
@@ -717,6 +731,30 @@ async function ensureGameLogsCollection() {
     console.log("[game_logs] Collection created ✓");
   } catch (e: any) {
     console.warn("[game_logs] Setup failed:", e.message);
+  }
+}
+
+// ─── Migrate existing game_logs: add match_id / start_time / match_status ──
+async function ensureGameLogsFields() {
+  try {
+    const token = await getAdminToken();
+    const coll  = await pbGet("/api/collections/game_logs");
+    if (coll.code) return; // Collection doesn't exist yet
+    const existingNames: string[] = (coll.schema || coll.fields || []).map((f: any) => f.name);
+    if (existingNames.includes("match_id")) {
+      console.log("[game_logs] match_id / start_time / match_status already present ✓");
+      return;
+    }
+    const updatedSchema = [
+      ...(coll.schema || coll.fields || []),
+      { name: "match_id",     type: "text",   required: false },
+      { name: "start_time",   type: "text",   required: false },
+      { name: "match_status", type: "text",   required: false },
+    ];
+    await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: updatedSchema }, token);
+    console.log("[game_logs] match_id / start_time / match_status fields added ✓");
+  } catch (e: any) {
+    console.warn("[game_logs] Field migration failed:", e.message);
   }
 }
 
@@ -1237,6 +1275,15 @@ const gameRewardHourly = new Map<string, { count: number; windowStart: number }>
 const dailyPtEarned   = new Map<string, { earned: number; day: string }>();
 // One-time ad tokens: token → { pbId, reward, expiresAt }
 const adTokenStore    = new Map<string, { pbId: string; reward: number; expiresAt: number }>();
+// Replay-attack guard: match IDs that have already been claimed this server instance.
+// Prevents TOCTOU race conditions where two simultaneous requests both read
+// match_status="started" before either has written "completed".
+// Entries auto-expire after 6 hours to prevent unbounded memory growth.
+const claimedMatchIds = new Map<string, number>(); // matchId → claimedAt timestamp
+setInterval(() => {
+  const cutoff = Date.now() - 6 * 3_600_000;
+  for (const [id, ts] of claimedMatchIds) { if (ts < cutoff) claimedMatchIds.delete(id); }
+}, 3_600_000).unref();
 
 function checkHourlyRewardLimit(pbId: string): boolean {
   const MAX = 30;
@@ -1307,6 +1354,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureNotificationsCollection())
     .then(() => ensureSessionLogsCollection())
     .then(() => ensureGameLogsCollection())
+    .then(() => ensureGameLogsFields())
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
@@ -3303,9 +3351,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ── Game: Add power tokens ────────────────────────────────────────────────
   app.post("/api/app/game/reward", async (req: Request, res: Response) => {
     try {
-      const { pbId, amount, type } = req.body;
+      const { pbId, amount, type, matchId } = req.body;
       if (!pbId || !amount)
         return res.status(400).json({ error: "pbId and amount required" });
+
+      // ── LAYER 1: In-process replay-attack guard (sub-ms, no DB round-trip) ──
+      // Claimed before any async work so concurrent requests for the same matchId
+      // can't both slip through the DB check (TOCTOU race condition).
+      if (matchId) {
+        if (claimedMatchIds.has(matchId)) {
+          console.warn(`[/api/app/game/reward] REPLAY BLOCKED (in-memory): ${matchId} (${pbId})`);
+          return res.status(403).json({ error: "Duplicate submission — this session has already been claimed." });
+        }
+        claimedMatchIds.set(matchId, Date.now()); // claim the slot immediately
+      }
 
       // Cap incoming amount to prevent inflated rewards from client tampering.
       // ABSOLUTE_MAX_SCORE * 2 covers the double-reward (2×) ad scenario.
@@ -3320,11 +3379,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Hourly rate limit: max 30 reward claims per user per hour
       if (!checkHourlyRewardLimit(pbId)) {
         console.warn(`[/api/app/game/reward] Rate-limited: ${pbId}`);
+        if (matchId) claimedMatchIds.delete(matchId); // release slot on rejection
         return res.status(429).json({ error: "Too many reward requests. Please wait before trying again." });
       }
 
+      // ── LAYER 2: DB-level replay guard + time-to-score check ─────────────
+      // Uses the game_logs record written by wsCommitSession (match_status="started").
+      // If that record is already "completed" → 403 Duplicate Submission.
+      let gameLogId: string | null = null;
+      if (matchId) {
+        try {
+          const logRes = await pbGet(
+            `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
+          );
+          const logRecord = logRes?.items?.[0];
+          if (logRecord) {
+            gameLogId = logRecord.id;
+            if (logRecord.match_status === "completed") {
+              console.warn(`[/api/app/game/reward] REPLAY BLOCKED (db): ${matchId} (${pbId})`);
+              return res.status(403).json({ error: "Duplicate submission — this session has already been claimed." });
+            }
+            // Time-to-score check: duration × 5 PT/sec = max achievable score.
+            // A tiny 10 PT buffer covers legitimate rounding and network delays.
+            if (logRecord.start_time) {
+              const startMs      = new Date(logRecord.start_time).getTime();
+              const durationSec  = (Date.now() - startMs) / 1000;
+              const maxPossible  = Math.ceil(durationSec * 5) + 10;
+              if (safeAmount > maxPossible) {
+                console.warn(
+                  `[/api/app/game/reward] Time-score mismatch: ${safeAmount}PT in ${Math.round(durationSec)}s (max ${maxPossible}) — capping`
+                );
+                safeAmount = maxPossible;
+              }
+            }
+          }
+        } catch (logErr: any) {
+          console.warn("[/api/app/game/reward] game_logs lookup failed:", logErr.message);
+        }
+      }
+
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
-      if (user.code) return res.status(404).json({ error: "User not found" });
+      if (user.code) {
+        if (matchId) claimedMatchIds.delete(matchId);
+        return res.status(404).json({ error: "User not found" });
+      }
 
       // Anti-cheat: if the server set a validated last_session_score via WebSocket,
       // the claim amount must not exceed 2× that value (2× covers the ad double-reward).
@@ -3351,13 +3449,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         last_session_score:      0,        // reset after claim
       });
       console.log(`[/api/app/game/reward] pbId=${pbId} +${safeAmount}PT → newPT=${newPT} totalScore=${newTotal}`);
-      // Log simple (1×) game reward for admin analytics
-      pbPost("/api/collections/game_logs/records", {
-        user:         pbId,
-        raw_score:    safeAmount,
-        is_double:    false,
-        final_tokens: safeAmount,
-      }).catch(() => {});
+
+      // ── LAYER 2 (cont): Flip match_status → "completed" atomically ────────
+      // Any future call with the same matchId will be rejected by Layer 1 (in-memory)
+      // or caught here (DB check). Using fire-and-forget since the in-memory guard
+      // already blocks races; the DB update is the durable audit trail.
+      if (gameLogId) {
+        pbPatch(`/api/collections/game_logs/records/${gameLogId}`, {
+          match_status: "completed",
+          final_tokens: safeAmount,
+        }).catch(() => {});
+      } else if (!matchId) {
+        // Legacy path (no matchId): log a new record for admin analytics
+        pbPost("/api/collections/game_logs/records", {
+          user:         pbId,
+          raw_score:    safeAmount,
+          is_double:    false,
+          final_tokens: safeAmount,
+        }).catch(() => {});
+      }
 
       // 10% referral commission on game earnings → referral_balance (claimable)
       if (user.referred_by) {

@@ -216,11 +216,11 @@ export const api = {
     request<WithdrawalRecord[]>('GET', `/api/app/withdrawals/${pbId}`),
 
   // ── Game ──────────────────────────────────────────────────────────────
-  gameReward: (pbId: string, amount: number, type = 'game_win') =>
+  gameReward: (pbId: string, amount: number, type = 'game_win', matchId?: string) =>
     request<{ success: boolean; newPowerTokens: number }>(
       'POST',
       '/api/app/game/reward',
-      { pbId, amount, type },
+      { pbId, amount, type, ...(matchId ? { matchId } : {}) },
     ),
 
   gameSpend: (pbId: string, amount: number) =>

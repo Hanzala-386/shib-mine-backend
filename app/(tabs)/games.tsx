@@ -65,6 +65,10 @@ export default function GamesScreen() {
   const gameOverFiredRef  = useRef(false);     // guard against double GAME_OVER
   const sessionActiveRef  = useRef(false);     // ref mirror of sessionActive — safe in callbacks
   const warningPulse      = useRef(new Animated.Value(1)).current;
+  // Anti-replay: matchId from COMMITTED message — passed to /api/app/game/reward
+  const matchIdRef        = useRef<string>('');
+  // Anti-double-tap: set true the moment Claim is tapped, never cleared until phase changes
+  const claimInFlightRef  = useRef(false);
 
   // wvKey: incrementing this forces the WebView to fully remount (= fresh network attempt)
   const [wvKey,         setWvKey]         = useState(0);
@@ -78,6 +82,7 @@ export default function GamesScreen() {
   const [overReason,    setOverReason]    = useState<GameOverReason>('death');
   const [gameError,     setGameError]     = useState(false);
   const [isAutoRetrying, setIsAutoRetrying] = useState(false);
+  const [claimLoading,  setClaimLoading]  = useState(false);
 
   const TOP    = Platform.OS === 'web' ? 10 : insets.top;
   const HUDTOP = TOP + 4;
@@ -262,13 +267,17 @@ export default function GamesScreen() {
       return;
     }
     stopSessionTimer();
-    gameOverFiredRef.current = false;
-    liveScoreRef.current = 0;
+    gameOverFiredRef.current  = false;
+    liveScoreRef.current      = 0;
     sessionPeakScoreRef.current = 0;
-    sessionActiveRef.current = true;
+    sessionActiveRef.current  = true;
+    // Reset anti-replay state for new session
+    matchIdRef.current        = '';
+    claimInFlightRef.current  = false;
     setLiveScore(0);
     setSessionTime(SESSION_SECONDS);
     setSessionActive(true);
+    setClaimLoading(false);
     warningPulse.setValue(1);
     warningPulse.stopAnimation();
 
@@ -382,24 +391,34 @@ export default function GamesScreen() {
 
   /* ── CLAIM → interstitial ad (AdMob → Unity → AppLovin) then add score PT ── */
   const handleClaim = useCallback(async () => {
+    // Layer 3 — double-tap / multi-submit guard: freeze immediately on first tap
+    if (claimInFlightRef.current) return;
+    claimInFlightRef.current = true;
+    setClaimLoading(true);
+
     // Show interstitial before processing the claim
     await new Promise<void>((resolve) => {
       showGameInterstitial(() => resolve());
     });
     setPhase('saving');
-    const pts = scoreRef.current;
+    const pts     = scoreRef.current;
+    const pbId    = pbIdRef.current;
+    const matchId = matchIdRef.current || undefined;
     try {
-      await addPowerTokens(pts, 'weapon_master');
+      // Call api.gameReward directly so we can pass matchId for server-side replay check
+      await api.gameReward(pbId, pts, 'weapon_master', matchId);
       await refreshBalance();
       setEarned(pts);
       setPhase('reward');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      if (pbIdRef.current) fetchGameData(pbIdRef.current);
+      if (pbId) fetchGameData(pbId);
     } catch {
       await refreshBalance().catch(() => {});
       setEarned(pts); setPhase('reward');
+    } finally {
+      setClaimLoading(false);
     }
-  }, [addPowerTokens, fetchGameData, refreshBalance, showGameInterstitial]);
+  }, [fetchGameData, refreshBalance, showGameInterstitial]);
 
   /* ── Native WebView message handler ── */
   const onNativeMessage = useCallback((e: { nativeEvent: { data: string } }) => {
@@ -417,6 +436,10 @@ export default function GamesScreen() {
         const reason: GameOverReason = msg.reason === 'score_limit' ? 'score'
                                      : msg.reason === 'time_limit'  ? 'time' : 'death';
         handleGameOver(s, t, reason);
+      }
+      // Capture matchId from server-committed session for replay-attack prevention
+      if (msg.type === 'COMMITTED' && msg.matchId) {
+        matchIdRef.current = String(msg.matchId);
       }
       if (msg.type === 'INJECT_DONE') { /* no-op */ }
     } catch { /* ignore non-JSON */ }
@@ -437,6 +460,10 @@ export default function GamesScreen() {
           const reason: GameOverReason = msg.reason === 'score_limit' ? 'score'
                                        : msg.reason === 'time_limit'  ? 'time' : 'death';
           handleGameOver(s, t, reason);
+        }
+        // Capture matchId from server-committed session for replay-attack prevention
+        if (msg.type === 'COMMITTED' && msg.matchId) {
+          matchIdRef.current = String(msg.matchId);
         }
       } catch { /* ignore non-JSON */ }
     };
@@ -621,10 +648,19 @@ export default function GamesScreen() {
             )}
 
             {/* Claim Tokens — direct, no ad */}
-            <Pressable style={[S.claimBtn, score === 0 && S.claimBtnDim]} onPress={handleClaim} disabled={score === 0}>
+            {/* Disabled + spinner after first tap until server responds — prevents replay attacks */}
+            <Pressable
+              style={[S.claimBtn, (score === 0 || claimLoading) && S.claimBtnDim]}
+              onPress={handleClaim}
+              disabled={score === 0 || claimLoading}
+            >
+              {claimLoading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
               <Text style={S.claimTxt}>
                 {score > 0 ? `Claim  ${score} PT` : 'No tokens earned — Play Again'}
               </Text>
+              )}
             </Pressable>
 
             {score === 0 && (
