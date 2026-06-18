@@ -3409,23 +3409,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,email`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
+      // Zero-trust duplicate check: block ANY existing submission regardless of
+      // status. This closes the rejected-then-resubmit exploit — a rejected
+      // submission keeps the (user_id, task_id) slot permanently locked.
       const existing = await pbGet(
-        `/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${pbId}" && task_id="${taskId}" && (status="pending" || status="approved")`)}&perPage=1`,
+        `/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${pbId}" && task_id="${taskId}"`)}&perPage=1`,
       );
       if ((existing.items || []).length > 0) {
-        return res.status(409).json({ error: "Already submitted or approved for this task" });
+        return res.status(409).json({ error: "You have already participated in this task" });
       }
+
+      // Metadata from PocketBase is authoritative; client-provided values are a
+      // fallback for cases where the server-side fetch fails (e.g., race-condition
+      // between task deactivation and fetch) so the record is never blank.
+      const clientTitle  = String(req.body.task_title   || "");
+      const clientEmail  = String(req.body.user_email   || "");
+      const clientAmount = req.body.reward_amount ? Number(req.body.reward_amount) : 0;
+      const clientType   = String(req.body.reward_type  || "PT");
 
       // Forward to PocketBase as multipart so the image is stored as a real file
       const form = new FormData();
       form.append("user_id",      pbId);
       form.append("task_id",      taskId);
-      form.append("task_title",   task.title || "");
-      form.append("user_email",   user.email || "");
+      form.append("task_title",   task.title   || clientTitle);
+      form.append("user_email",   user.email   || clientEmail);
       form.append("status",       "pending");
       form.append("admin_notes",  "");
-      form.append("reward_amount", String(task.reward_amount || 0));
-      form.append("reward_type",  task.reward_type || "PT");
+      form.append("reward_amount", String(task.reward_amount ?? clientAmount));
+      form.append("reward_type",  task.reward_type || clientType);
 
       if (req.file) {
         const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "image/jpeg" });
@@ -3525,15 +3536,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       await pbPatch(`/api/collections/users/records/${sub.user_id}`, patch);
 
-      // Mark approved via multipart so we can delete the stored screenshot file
+      // PATCH status to "approved" — do NOT touch the screenshot file.
+      // Removing the file while updating status can fail silently in PocketBase,
+      // causing the record to appear deleted. Screenshot cleanup is deferred.
       const approveForm = new FormData();
       approveForm.append("status",      "approved");
       approveForm.append("admin_notes", notes || "");
-      // PocketBase file-delete syntax: fieldname- = filename to remove
-      if (sub.proof_screenshot) {
-        approveForm.append("proof_screenshot-", sub.proof_screenshot);
+      const patchRes = await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, approveForm);
+      if (patchRes.code) {
+        console.error("[tasks/approve] PB patch failed:", JSON.stringify(patchRes).slice(0, 300));
+        return res.status(500).json({ error: "Failed to update submission status" });
       }
-      await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, approveForm);
 
       res.json({ success: true });
     } catch (e: any) {
@@ -3552,15 +3565,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (sub.code) return res.status(404).json({ error: "Submission not found" });
       if (sub.status !== "pending") return res.status(400).json({ error: "Already processed" });
 
-      // Mark rejected via multipart so we can delete the stored screenshot file
+      // PATCH status to "rejected" — do NOT touch the screenshot file.
       const rejectForm = new FormData();
       rejectForm.append("status",      "rejected");
       rejectForm.append("admin_notes", notes || "");
-      // PocketBase file-delete syntax: fieldname- = filename to remove
-      if (sub.proof_screenshot) {
-        rejectForm.append("proof_screenshot-", sub.proof_screenshot);
+      const rejectPatchRes = await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, rejectForm);
+      if (rejectPatchRes.code) {
+        console.error("[tasks/reject] PB patch failed:", JSON.stringify(rejectPatchRes).slice(0, 300));
+        return res.status(500).json({ error: "Failed to update submission status" });
       }
-      await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, rejectForm);
 
       res.json({ success: true });
     } catch (e: any) {

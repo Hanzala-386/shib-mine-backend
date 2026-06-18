@@ -380,14 +380,17 @@ export const api = {
     };
 
     // ── PATH 1 · Railway (PRIMARY — production server) ────────────────────
-    // The Railway Express handler receives pbId + taskId + the image, then
-    // fetches task_title / user_email / reward_amount / reward_type from
-    // PocketBase as admin before writing the record. Field population is
-    // 100% server-side — the client cannot accidentally send 0 or null.
+    // Server fetches metadata from PocketBase authoritatively. Client fields
+    // are sent as a belt-and-suspenders fallback so the server can use them
+    // if its own PB fetch yields empty values (e.g., stale task cache).
     try {
       const form = new FormData();
-      form.append('pbId',   params.pbId);
-      form.append('taskId', params.taskId);
+      form.append('pbId',          params.pbId);
+      form.append('taskId',        params.taskId);
+      form.append('task_title',    params.taskTitle);
+      form.append('user_email',    params.userEmail);
+      form.append('reward_amount', String(params.rewardAmount));
+      form.append('reward_type',   params.rewardType);
       await appendProof(form, 'proof_screenshot');
       const res = await fetchWithTimeout(RAILWAY_ENDPOINT, { method: 'POST', body: form });
       const data = await res.json();

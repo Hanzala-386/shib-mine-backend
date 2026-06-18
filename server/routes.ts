@@ -3870,15 +3870,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       await pbPatch(`/api/collections/users/records/${sub.user_id}`, patch);
 
-      // Mark approved via multipart so we can delete the stored screenshot file
+      // PATCH status to "approved" — do NOT touch the screenshot file.
+      // Removing the file while updating status can fail silently in PocketBase,
+      // causing the record to look deleted. Screenshot cleanup is deferred.
       const approveForm = new FormData();
       approveForm.append("status",      "approved");
       approveForm.append("admin_notes", notes || "");
-      // PocketBase file-delete syntax: fieldname- = filename to remove
-      if (sub.proof_screenshot) {
-        approveForm.append("proof_screenshot-", sub.proof_screenshot);
+      const patchRes = await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, approveForm);
+      if (patchRes.code) {
+        console.error("[tasks/approve] PB patch failed:", JSON.stringify(patchRes).slice(0, 300));
+        return res.status(500).json({ error: "Failed to update submission status" });
       }
-      await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, approveForm);
 
       res.json({ success: true });
     } catch (e: any) {
@@ -3897,15 +3899,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (sub.code) return res.status(404).json({ error: "Submission not found" });
       if (sub.status !== "pending") return res.status(400).json({ error: "Already processed" });
 
-      // Mark rejected via multipart so we can delete the stored screenshot file
+      // PATCH status to "rejected" — do NOT touch the screenshot file.
       const rejectForm = new FormData();
       rejectForm.append("status",      "rejected");
       rejectForm.append("admin_notes", notes || "");
-      // PocketBase file-delete syntax: fieldname- = filename to remove
-      if (sub.proof_screenshot) {
-        rejectForm.append("proof_screenshot-", sub.proof_screenshot);
+      const rejectPatchRes = await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, rejectForm);
+      if (rejectPatchRes.code) {
+        console.error("[tasks/reject] PB patch failed:", JSON.stringify(rejectPatchRes).slice(0, 300));
+        return res.status(500).json({ error: "Failed to update submission status" });
       }
-      await pbFetchMultipart("PATCH", `/api/collections/task_submissions/records/${id}`, rejectForm);
 
       res.json({ success: true });
     } catch (e: any) {

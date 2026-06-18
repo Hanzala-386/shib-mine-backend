@@ -324,11 +324,16 @@ export const api = {
       return null;
     };
 
-    // PATH 1 — Railway (primary)
+    // PATH 1 — Railway (primary). Metadata fields sent as fallback in case
+    // the server-side PB fetch returns empty values for any field.
     try {
       const form = new FormData();
-      form.append('pbId',   params.pbId);
-      form.append('taskId', params.taskId);
+      form.append('pbId',          params.pbId);
+      form.append('taskId',        params.taskId);
+      form.append('task_title',    params.taskTitle);
+      form.append('user_email',    params.userEmail);
+      form.append('reward_amount', String(params.rewardAmount));
+      form.append('reward_type',   params.rewardType);
       (form as any).append('proof_screenshot', proofBlob, 'proof.jpg');
       const res = await fetchWithTimeout(RAILWAY_ENDPOINT, { method: 'POST', body: form });
       const data = await res.json();
