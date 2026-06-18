@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   Modal, View, Text, StyleSheet,
-  TouchableOpacity, BackHandler, Platform, Alert, StatusBar,
+  TouchableOpacity, BackHandler, Platform, Alert, StatusBar, Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,11 +10,13 @@ import { useSecurity, SecurityBlockType } from '@/context/SecurityContext';
 
 // ── Block configuration ───────────────────────────────────────────────────────
 type BlockConfig = {
-  icon:     keyof typeof Ionicons.glyphMap;
-  title:    string;
-  subtitle: string;
-  message:  string;
-  canRetry: boolean;
+  icon:         keyof typeof Ionicons.glyphMap;
+  title:        string;
+  subtitle:     string;
+  message:      string;
+  canRetry:     boolean;
+  /** Show an "Open Settings" button that deep-links to Accessibility settings. */
+  openSettings?: boolean;
 };
 
 const BLOCK_CONFIG: Record<NonNullable<SecurityBlockType>, BlockConfig> = {
@@ -48,6 +50,17 @@ const BLOCK_CONFIG: Record<NonNullable<SecurityBlockType>, BlockConfig> = {
       'Please disable any automation tools, accessibility scripts, or macro ' +
       'apps and play the game manually to continue.',
     canRetry: false,
+  },
+  accessibility: {
+    icon:     'hand-left',
+    title:    'Security Alert',
+    subtitle: 'Auto-Clicker / Unauthorized Tapping Service Detected',
+    message:
+      'आपके डिवाइस में Auto-Clicker या अनधिकृत टैपिंग सर्विस एक्टिव है। ' +
+      'कृपया गेम खेलने के लिए पहले ऑटो-क्लिकर ऐप को पूरी तरह बंद (Force Stop) ' +
+      'या ऑफ करें, अन्यथा हमारी एप्लीकेशन चालू नहीं होगी।',
+    canRetry:     false,
+    openSettings: true,
   },
   integrity: {
     icon:     'shield',
@@ -84,16 +97,36 @@ function exitApp() {
   }
 }
 
+// ── Open Accessibility settings (Android) so the user can disable the service ──
+function openAccessibilitySettings() {
+  if (Platform.OS === 'android') {
+    Linking.sendIntent('android.settings.ACCESSIBILITY_SETTINGS').catch(() => {
+      Linking.openSettings().catch(() => {});
+    });
+  } else {
+    Linking.openSettings().catch(() => {});
+  }
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 export function SecurityModal() {
   const { blockType, isChecking, retryCheck } = useSecurity();
   const insets = useSafeAreaInsets();
 
+  // Suppress the Android hardware back button while a security block is active,
+  // so the user cannot dismiss / background the blocking modal.
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !blockType) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [blockType]);
+
   if (!blockType) return null;
 
-  const cfg    = BLOCK_CONFIG[blockType];
-  const topPad = Platform.OS === 'web' ? 67  : insets.top    + 16;
-  const botPad = Platform.OS === 'web' ? 34  : insets.bottom + 16;
+  const cfg          = BLOCK_CONFIG[blockType];
+  const topPad       = Platform.OS === 'web' ? 67  : insets.top    + 16;
+  const botPad       = Platform.OS === 'web' ? 34  : insets.bottom + 16;
+  const hasSecondary = cfg.canRetry || !!cfg.openSettings;
 
   return (
     <Modal
@@ -102,6 +135,7 @@ export function SecurityModal() {
       animationType="fade"
       statusBarTranslucent
       hardwareAccelerated
+      onRequestClose={() => { /* non-cancelable — back press is a no-op */ }}
     >
       <StatusBar backgroundColor="#0A0A0F" barStyle="light-content" />
 
@@ -123,11 +157,22 @@ export function SecurityModal() {
         </View>
 
         {/* Action buttons */}
-        <View style={[styles.btnRow, !cfg.canRetry && styles.btnRowSingle]}>
+        <View style={[styles.btnRow, !hasSecondary && styles.btnRowSingle]}>
           <TouchableOpacity style={styles.exitBtn} onPress={exitApp} activeOpacity={0.82}>
             <Ionicons name="close-circle" size={18} color="#fff" />
             <Text style={styles.exitBtnText}>Exit App</Text>
           </TouchableOpacity>
+
+          {cfg.openSettings && (
+            <TouchableOpacity
+              style={styles.retryBtn}
+              onPress={openAccessibilitySettings}
+              activeOpacity={0.82}
+            >
+              <Ionicons name="settings" size={18} color="#0A0A0F" />
+              <Text style={styles.retryBtnText}>Open Settings</Text>
+            </TouchableOpacity>
+          )}
 
           {cfg.canRetry && (
             <TouchableOpacity

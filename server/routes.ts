@@ -800,6 +800,36 @@ async function ensureIsFlaggedField() {
   }
 }
 
+// ─── Migrate users: add referral anti-cheat blacklist tiers ───────────────────
+// is_blacklist_1        (bool) — first soft offense (suspicious referral claim).
+// is_blacklist_2        (bool) — second offense while already on tier 1.
+// blacklist_1_notified  (bool) — guards the one-time warning notifications.
+// blacklist_1_notified_at (text) — ISO timestamp the warnings were sent.
+// All NON-blocking: the user keeps using the app; admin reviews/terminates.
+async function ensureBlacklistFields() {
+  try {
+    const token = await getAdminToken();
+    const coll  = await pbGet("/api/collections/users");
+    if (coll.code) return;
+    const existingNames: string[] = (coll.schema || coll.fields || []).map((f: any) => f.name);
+    if (existingNames.includes("is_blacklist_1")) {
+      console.log("[users] blacklist tier fields already present ✓");
+      return;
+    }
+    const updatedSchema = [
+      ...(coll.schema || coll.fields || []),
+      { name: "is_blacklist_1",          type: "bool", required: false },
+      { name: "is_blacklist_2",          type: "bool", required: false },
+      { name: "blacklist_1_notified",    type: "bool", required: false },
+      { name: "blacklist_1_notified_at", type: "text", required: false },
+    ];
+    await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: updatedSchema }, token);
+    console.log("[users] blacklist tier fields added ✓");
+  } catch (e: any) {
+    console.warn("[users] blacklist migration failed:", e.message);
+  }
+}
+
 // ─── Ensure referral_history collection exists in PocketBase ──────────────
 // One record per referral commission payment (admin analytics only — separate
 // from referral_earnings_log which drives the secure payout pipeline).
@@ -1436,6 +1466,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureGameLogsCollection())
     .then(() => ensureGameLogsFields())
     .then(() => ensureIsFlaggedField())
+    .then(() => ensureBlacklistFields())
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
@@ -3166,6 +3197,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }).catch((e: any) =>
             console.warn("[withdrawals/complete] Notification failed:", e.message)
           );
+
+          // Referral anti-cheat: if this user is on blacklist tier 1 and the
+          // one-time warning has not been sent yet, fire the two warning
+          // notifications EXACTLY ONCE on admin approval, then latch the guard.
+          try {
+            const flaggedUser = await pbGet(
+              `/api/collections/users/records/${updated.user}`,
+            );
+            if (
+              flaggedUser && !flaggedUser.code &&
+              flaggedUser.is_blacklist_1 && !flaggedUser.blacklist_1_notified
+            ) {
+              // Latch FIRST to prevent duplicate sends under concurrent approvals.
+              await pbPatch(`/api/collections/users/records/${updated.user}`, {
+                blacklist_1_notified: true,
+                blacklist_1_notified_at: new Date().toISOString(),
+              });
+              await pbPost("/api/collections/notifications/records", {
+                title: "Fraud activity detected",
+                message: "Some uneven activity detected like auto clicker. Don't use it.",
+                type: "personal",
+                target_user: updated.user,
+              }).catch(() => {});
+              await pbPost("/api/collections/notifications/records", {
+                title: "Account ban notification.",
+                message: "If you can do it again we will terminate your account permanently.",
+                type: "personal",
+                target_user: updated.user,
+              }).catch(() => {});
+            }
+          } catch (e: any) {
+            console.warn("[withdrawals/complete] Blacklist warning failed:", e.message);
+          }
         }
 
         // If rejected, refund the amount + create cancellation notification

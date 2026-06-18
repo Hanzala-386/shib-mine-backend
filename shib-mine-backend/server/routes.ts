@@ -736,6 +736,33 @@ async function ensureGameLogsCollection() {
   }
 }
 
+// ─── Migrate users: add referral anti-cheat blacklist tiers ───────────────────
+// is_blacklist_1 / is_blacklist_2 (bool) — soft offense tiers (non-blocking).
+// blacklist_1_notified (bool) + blacklist_1_notified_at (text) — one-time warning guard.
+async function ensureBlacklistFields() {
+  try {
+    const token = await getAdminToken();
+    const coll  = await pbGet("/api/collections/users");
+    if (coll.code) return;
+    const existingNames: string[] = (coll.schema || coll.fields || []).map((f: any) => f.name);
+    if (existingNames.includes("is_blacklist_1")) {
+      console.log("[users] blacklist tier fields already present ✓");
+      return;
+    }
+    const updatedSchema = [
+      ...(coll.schema || coll.fields || []),
+      { name: "is_blacklist_1",          type: "bool", required: false },
+      { name: "is_blacklist_2",          type: "bool", required: false },
+      { name: "blacklist_1_notified",    type: "bool", required: false },
+      { name: "blacklist_1_notified_at", type: "text", required: false },
+    ];
+    await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: updatedSchema }, token);
+    console.log("[users] blacklist tier fields added ✓");
+  } catch (e: any) {
+    console.warn("[users] blacklist migration failed:", e.message);
+  }
+}
+
 // ─── Ensure referral_history collection exists in PocketBase ──────────────
 // One record per referral commission payment (admin analytics only — separate
 // from referral_earnings_log which drives the secure payout pipeline).
@@ -1298,6 +1325,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureNotificationsCollection())
     .then(() => ensureSessionLogsCollection())
     .then(() => ensureGameLogsCollection())
+    .then(() => ensureBlacklistFields())
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
@@ -2921,6 +2949,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }).catch((e: any) =>
             console.warn("[withdrawals/complete] Notification failed:", e.message)
           );
+
+          // Referral anti-cheat: fire the one-time tier-1 warning on approval.
+          try {
+            const flaggedUser = await pbGet(
+              `/api/collections/users/records/${updated.user}`,
+            );
+            if (
+              flaggedUser && !flaggedUser.code &&
+              flaggedUser.is_blacklist_1 && !flaggedUser.blacklist_1_notified
+            ) {
+              // Latch FIRST to prevent duplicate sends under concurrent approvals.
+              await pbPatch(`/api/collections/users/records/${updated.user}`, {
+                blacklist_1_notified: true,
+                blacklist_1_notified_at: new Date().toISOString(),
+              });
+              await pbPost("/api/collections/notifications/records", {
+                title: "Fraud activity detected",
+                message: "Some uneven activity detected like auto clicker. Don't use it.",
+                type: "personal",
+                target_user: updated.user,
+              }).catch(() => {});
+              await pbPost("/api/collections/notifications/records", {
+                title: "Account ban notification.",
+                message: "If you can do it again we will terminate your account permanently.",
+                type: "personal",
+                target_user: updated.user,
+              }).catch(() => {});
+            }
+          } catch (e: any) {
+            console.warn("[withdrawals/complete] Blacklist warning failed:", e.message);
+          }
         }
 
         // If rejected, refund the amount

@@ -186,12 +186,57 @@ export default function ProfileScreen() {
     RNAnimated.timing(claimAnim, { toValue: 1, duration: 280, useNativeDriver: true }).start();
   }
 
+  // ── Referral anti-cheat (soft / non-blocking) ────────────────────────────────
+  // Reads the user's last 100 referral_earnings_log rows. Flags when any single
+  // commission is abnormally large (> 200) OR 5+ entries land in the exact same
+  // minute (scripted/auto-clicker pattern). First offense → is_blacklist_1;
+  // a further offense while already on tier 1 → is_blacklist_2. The claim ALWAYS
+  // proceeds — this only sets advisory flags admins review on withdrawal approval.
+  async function detectReferralInfraction(uid: string) {
+    try {
+      const logs = await pb.collection('referral_earnings_log').getList(1, 100, {
+        filter: `referrer_id="${uid}"`,
+        sort: '-created',
+      });
+      const items = logs?.items ?? [];
+      if (items.length === 0) return;
+
+      const bigAmount = items.some((r: any) => (Number(r.amount) || 0) > 200);
+
+      const minuteBuckets: Record<string, number> = {};
+      for (const r of items) {
+        const created: string = r.created || '';
+        const minuteKey = created.slice(0, 16); // "YYYY-MM-DD HH:MM"
+        if (!minuteKey) continue;
+        minuteBuckets[minuteKey] = (minuteBuckets[minuteKey] || 0) + 1;
+      }
+      const burst = Object.values(minuteBuckets).some((n) => n >= 5);
+
+      if (!bigAmount && !burst) return;
+
+      const me = await pb.collection('users').getOne(uid, {
+        fields: 'id,is_blacklist_1,is_blacklist_2',
+      });
+      if (me.is_blacklist_2) return; // already at the highest tier
+      if (me.is_blacklist_1) {
+        await pb.collection('users').update(uid, { is_blacklist_2: true });
+      } else {
+        await pb.collection('users').update(uid, { is_blacklist_1: true });
+      }
+    } catch {
+      // Non-blocking: detection failures must never stop a legitimate claim.
+    }
+  }
+
   function handleClaimReferral() {
     if (isClaiming || !pbId) return;
     setIsClaiming(true);
 
     const doTransfer = async () => {
       try {
+        // Soft anti-cheat scan BEFORE transfer — never blocks the claim.
+        await detectReferralInfraction(pbId);
+
         // PRIMARY: PocketBase SDK direct — api.webcod.in, works on APK + web preview
         let result: { success: boolean; claimed: number; newShibBalance: number };
         const userRec = await pb.collection('users').getOne(pbId, {

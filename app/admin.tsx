@@ -629,6 +629,14 @@ export default function AdminScreen() {
                       Current VIP {u.vipLevel}
                       {u.isAdminPromoted ? ` · floor ${u.adminPromotedLevel} (immune)` : ''}
                     </Text>
+                    {(u.isBlacklist1 || u.isBlacklist2) && (
+                      <View style={styles.blacklistBadge}>
+                        <MaterialCommunityIcons name="alert" size={11} color="#fff" />
+                        <Text style={styles.blacklistBadgeText}>
+                          {u.isBlacklist2 ? 'BLACKLIST 2 · repeat offender' : 'BLACKLIST 1 · flagged'}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                   {vipSavingId === u.pbId && <ActivityIndicator color={Colors.gold} size="small" />}
                 </View>
@@ -1033,6 +1041,8 @@ const styles = StyleSheet.create({
   vipUserCard: { marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: Colors.darkSurface, borderWidth: 1, borderColor: Colors.darkBorder },
   vipUserEmail: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: Colors.textPrimary },
   vipUserMeta: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  blacklistBadge: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 4, marginTop: 6, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: Colors.error },
+  blacklistBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#fff', letterSpacing: 0.4 },
   vipLevelRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   vipLevelChip: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.darkCard, borderWidth: 1, borderColor: Colors.darkBorder },
   vipLevelChipActive: { backgroundColor: Colors.gold, borderColor: Colors.gold },

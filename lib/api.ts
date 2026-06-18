@@ -573,6 +573,8 @@ function pbFormatUserLite(u: any): PBUser {
     vipLevel: normalizeVipLevel(u.vip_level),
     isAdminPromoted: !!u.is_admin_promoted,
     adminPromotedLevel: normalizeVipLevel(u.admin_promoted_level),
+    isBlacklist1: !!u.is_blacklist_1,
+    isBlacklist2: !!u.is_blacklist_2,
   };
 }
 
@@ -708,6 +710,8 @@ export interface PBUser {
   vipLevel: number;
   isAdminPromoted: boolean;
   adminPromotedLevel: number;
+  isBlacklist1?: boolean;
+  isBlacklist2?: boolean;
 }
 
 export interface AppSettings {

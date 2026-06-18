@@ -5,17 +5,23 @@ import React, {
 import { Platform } from 'react-native';
 import { getApiUrl } from '@/lib/query-client';
 import { requestIntegrityToken } from '@/lib/playIntegrity';
+import {
+  getEnabledAccessibilityServices,
+  isAutoClickerDetectorAvailable,
+} from '@/modules/auto-clicker-detector';
 
 // ── Block types ───────────────────────────────────────────────────────────────
-// 'root'        — rooted / jailbroken device detected (jail-monkey / expo-device)
-// 'emulator'    — running on an Android emulator or iOS simulator
-// 'autoclicker' — statistically uniform tap intervals detected by TapMonitor
-// 'integrity'   — Google Play Integrity API verdict: device does not meet integrity
-// 'adblock'     — DNS-level ad-blocker / filter detected
+// 'root'          — rooted / jailbroken device detected (jail-monkey / expo-device)
+// 'emulator'      — running on an Android emulator or iOS simulator
+// 'autoclicker'   — statistically uniform tap intervals detected by in-game TapMonitor
+// 'accessibility' — an auto-clicker / macro app is ENABLED as an accessibility service
+// 'integrity'     — Google Play Integrity API verdict: device does not meet integrity
+// 'adblock'       — DNS-level ad-blocker / filter detected
 export type SecurityBlockType =
   | 'root'
   | 'emulator'
   | 'autoclicker'
+  | 'accessibility'
   | 'integrity'
   | 'adblock'
   | null;
@@ -209,6 +215,49 @@ async function checkAdBlocker(): Promise<boolean> {
   return fastFailCount >= 2;
 }
 
+// ── LAYER 5: Accessibility-service auto-clicker scan (Android) ─────────────────
+// Auto-clicker / macro apps must register an Android AccessibilityService to
+// synthesize taps. We enumerate the user-ENABLED accessibility services (no
+// QUERY_ALL_PACKAGES needed → Play-Store compliant) and flag any whose package /
+// id / label / description matches a known clicker package or a suspicious word.
+const SUSPICIOUS_ACCESSIBILITY_STRINGS = [
+  'clicker', 'auto', 'tapping', 'macro', 'touch', 'automation',
+];
+const BLACKLIST_ACCESSIBILITY_PACKAGES = [
+  'com.truedevelopersstudio.automatictap.autoclicker',
+  'simplehat.clicker',
+  'com.p000ison.autoclicker',
+  'com.phonephreak.autoclicker',
+];
+
+function checkAccessibilityAutoClicker(): boolean {
+  // No-op unless the native module is compiled in (production Android APK).
+  if (!isAutoClickerDetectorAvailable()) return false;
+
+  const services = getEnabledAccessibilityServices();
+  for (const svc of services) {
+    const pkg   = (svc.packageName ?? '').toLowerCase();
+    const id    = (svc.id ?? '').toLowerCase();
+    const label = (svc.label ?? '').toLowerCase();
+    const desc  = (svc.description ?? '').toLowerCase();
+
+    // 1) Exact known auto-clicker packages
+    if (BLACKLIST_ACCESSIBILITY_PACKAGES.some(b => {
+      const bl = b.toLowerCase();
+      return pkg.includes(bl) || id.includes(bl);
+    })) {
+      return true;
+    }
+
+    // 2) Suspicious keyword anywhere in package / id / label / description
+    const haystack = `${pkg} ${id} ${label} ${desc}`;
+    if (SUSPICIOUS_ACCESSIBILITY_STRINGS.some(w => haystack.includes(w))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // ── Provider ──────────────────────────────────────────────────────────────────
 export function SecurityProvider({ children }: { children: React.ReactNode }) {
   const [blockType,  setBlockType]  = useState<SecurityBlockType>(null);
@@ -286,6 +335,31 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Accessibility auto-clicker watcher ───────────────────────────────────────
+  // Runs OUTSIDE the __DEV__ guard on purpose: the native module is only present
+  // in the production Android APK, so this effect no-ops in Expo Go / web / iOS
+  // (isAutoClickerDetectorAvailable() === false) and activates automatically in
+  // the real build. Scans on launch and every 5 s thereafter.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    if (!isAutoClickerDetectorAvailable()) return; // Expo Go / module absent → no-op
+
+    const scan = () => {
+      if (checkAccessibilityAutoClicker()) {
+        // Don't clobber a higher-severity block (root / emulator / integrity).
+        setBlockType(prev => prev ?? 'accessibility');
+        flagDeviceOnBackend(pbIdRef.current, 'accessibility_autoclicker').catch(() => {});
+      } else {
+        // Auto-clear once the offending service is turned off.
+        setBlockType(prev => (prev === 'accessibility' ? null : prev));
+      }
+    };
+
+    scan(); // immediate check on launch (well within the 3–5 s requirement)
+    const accId = setInterval(scan, 5_000);
+    return () => clearInterval(accId);
   }, []);
 
   return (

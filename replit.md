@@ -143,6 +143,19 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 - React Navigation measures the combined height and applies correct screen content paddingBottom automatically
 - `StickyBannerAd.tsx` exports `InlineBannerAd` (inline, no absolute positioning) and `BANNER_HEIGHT=50`
 
+## Anti-Cheat (Session 4)
+### PART 1 — Accessibility auto-clicker block (app-entry, Android)
+- Local Expo module `modules/auto-clicker-detector/` (Kotlin) — `getEnabledAccessibilityServices()` via `AccessibilityManager.getEnabledAccessibilityServiceList` (NO `QUERY_ALL_PACKAGES`, Play-compliant). `index.ts` uses `requireOptionalNativeModule` → safe no-op on web/iOS/Expo Go.
+- `SecurityContext.tsx` — new `'accessibility'` block type. `checkAccessibilityAutoClicker()` flags any enabled service whose package/id/label/description contains a SUSPICIOUS string (`clicker/auto/tapping/macro/touch/automation`) or matches BLACKLIST package. A dedicated `useEffect` runs OUTSIDE the `__DEV__` guard but gated by `Platform.OS==='android' && isAutoClickerDetectorAvailable()`; scans on launch + every 5s; `setBlockType(prev => prev ?? 'accessibility')` (never clobbers higher-severity block); auto-clears when service removed.
+- `SecurityModal.tsx` — `'accessibility'` BLOCK_CONFIG (Hindi copy). "Open Settings" button → `Linking.sendIntent('android.settings.ACCESSIBILITY_SETTINGS')` + "Exit App". Non-cancelable: `onRequestClose` no-op + BackHandler suppression while any block active.
+- **NOTE**: native module only verifiable in EAS/APK build — no-ops in this dev sandbox.
+
+### PART 2 — Referral-claim 3-tier soft anti-cheat (non-blocking)
+- `users` fields (both servers, `ensureBlacklistFields()` in init chain): `is_blacklist_1`, `is_blacklist_2`, `blacklist_1_notified` (bool), `blacklist_1_notified_at` (text).
+- `profile.tsx` `detectReferralInfraction(uid)` runs BEFORE the referral→shib transfer: reads last 100 `referral_earnings_log` (`referrer_id=uid`, `-created`); flags if `amount>200` OR 5+ entries in the same exact minute (`created.slice(0,16)`). First offense → `is_blacklist_1`; offense while already tier-1 → `is_blacklist_2`. Wrapped in try/catch — **claim ALWAYS proceeds**.
+- Withdrawal-approve route (both servers): on `status→completed`, if `is_blacklist_1 && !blacklist_1_notified` → latch `blacklist_1_notified`+`_at` FIRST (concurrency-safe), then create 2 warning notifications ONCE ("Fraud activity detected" / "Account ban notification.").
+- `lib/api.ts` PBUser gains `isBlacklist1`/`isBlacklist2` (from `is_blacklist_1`/`_2`); `admin.tsx` VIP search card shows a red blacklist badge.
+
 ## Ports
 - Frontend (Expo): 8081
 - Backend (Express): 5000
