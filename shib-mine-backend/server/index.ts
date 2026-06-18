@@ -17,14 +17,14 @@ declare module "http" {
 
 function setupCors(app: express.Application) {
   app.use((req, res, next) => {
-    // Public read-only app API endpoints — open to any origin (no credentials)
-    const isPublicRead =
-      (req.method === "GET" || req.method === "OPTIONS") &&
-      req.path.startsWith("/api/app/");
+    // All /api/app/ endpoints are open to any origin.
+    // They authenticate via pbId/token in the request body — not cookies —
+    // so wildcard CORS is safe. This is required for Expo web and APK.
+    const isAppApi = req.path.startsWith("/api/app/");
 
-    if (isPublicRead) {
+    if (isAppApi) {
       res.header("Access-Control-Allow-Origin", "*");
-      res.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
       res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
       if (req.method === "OPTIONS") return res.sendStatus(200);
       return next();

@@ -294,25 +294,98 @@ export const api = {
     pbId: string; taskId: string; uri: string; base64: string;
     taskTitle: string; userEmail: string; rewardAmount: number; rewardType: string;
   }): Promise<{ success: boolean; submissionId: string }> => {
-    const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
-    const form = new FormData();
-    form.append('pbId',   params.pbId);
-    form.append('taskId', params.taskId);
-    // Convert base64 → Uint8Array → Blob for reliable binary upload on all RN/web platforms.
-    // The { uri, name, type } FormData trick only works with the native RN fetch polyfill.
-    // globalThis.fetch / expo/fetch bypass that polyfill, so the file bytes are never sent.
-    // Using an explicit Blob avoids all polyfill ambiguity.
+    const RAILWAY_URL =
+      process.env.EXPO_PUBLIC_RAILWAY_URL ||
+      'https://shib-mine-backend-production.up.railway.app';
+    const RAILWAY_ENDPOINT = `${RAILWAY_URL}/api/app/tasks/submit`;
+    const PB_ENDPOINT = 'https://api.webcod.in/api/collections/task_submissions/records';
+
+    const fetchWithTimeout = (url: string, opts: RequestInit, ms = 30_000): Promise<Response> => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), ms);
+      return globalThis.fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+    };
+
+    // Build Blob from base64 — works on all platforms including web
     const binaryStr = atob(params.base64);
     const len = binaryStr.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
-    const blob = new Blob([bytes], { type: 'image/jpeg' });
-    form.append('proof_screenshot', blob, 'proof.jpg');
-    const res = await fetch(url, { method: 'POST', body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-    if (!data.submissionId) throw new Error('Upload failed — screenshot was not saved on the server');
-    return data;
+    const proofBlob = new Blob([bytes], { type: 'image/jpeg' });
+
+    const fetchExisting = async (): Promise<{ success: boolean; submissionId: string } | null> => {
+      try {
+        const filter = encodeURIComponent(`user_id="${params.pbId}" && task_id="${params.taskId}"`);
+        const existRes = await globalThis.fetch(`${PB_ENDPOINT}?filter=${filter}&perPage=1`);
+        const existData = await existRes.json();
+        const existing = existData?.items?.[0];
+        if (existing?.id) return { success: true, submissionId: existing.id };
+      } catch { /* ignore */ }
+      return null;
+    };
+
+    // PATH 1 — Railway (primary)
+    try {
+      const form = new FormData();
+      form.append('pbId',   params.pbId);
+      form.append('taskId', params.taskId);
+      (form as any).append('proof_screenshot', proofBlob, 'proof.jpg');
+      const res = await fetchWithTimeout(RAILWAY_ENDPOINT, { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.submissionId) return { success: true, submissionId: data.submissionId };
+      throw new Error(data?.error || `Railway ${res.status}`);
+    } catch (e1: any) {
+      console.warn('[submitTaskProof] railway failed:', e1?.message);
+    }
+
+    // PATH 2 — Direct PocketBase REST (fallback)
+    try {
+      const form = new FormData();
+      form.append('user_id',       params.pbId);
+      form.append('task_id',       params.taskId);
+      form.append('status',        'pending');
+      form.append('task_title',    params.taskTitle);
+      form.append('user_email',    params.userEmail);
+      form.append('reward_amount', String(params.rewardAmount));
+      form.append('reward_type',   params.rewardType);
+      (form as any).append('proof_screenshot', proofBlob, 'proof.jpg');
+      const res = await fetchWithTimeout(PB_ENDPOINT, { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.id) return { success: true, submissionId: data.id };
+      if (res.status === 400) {
+        const isUnique = data?.data && Object.values(data.data as Record<string, any>)
+          .some((v: any) => v?.code === 'validation_not_unique');
+        if (isUnique) {
+          const existing = await fetchExisting();
+          if (existing) return existing;
+        }
+      }
+      throw new Error(data?.message || `PB REST ${res.status}`);
+    } catch (e2: any) {
+      console.warn('[submitTaskProof] pb-rest failed:', e2?.message);
+    }
+
+    // PATH 3 — PocketBase SDK (last resort)
+    try {
+      const form = new FormData();
+      form.append('user_id',       params.pbId);
+      form.append('task_id',       params.taskId);
+      form.append('status',        'pending');
+      form.append('task_title',    params.taskTitle);
+      form.append('user_email',    params.userEmail);
+      form.append('reward_amount', String(params.rewardAmount));
+      form.append('reward_type',   params.rewardType);
+      (form as any).append('proof_screenshot', proofBlob, 'proof.jpg');
+      const rec = await pb.collection('task_submissions').create(form);
+      return { success: true, submissionId: rec.id };
+    } catch (e3: any) {
+      console.warn('[submitTaskProof] pb-sdk failed:', e3?.message);
+      if (e3?.status === 400 || e3?.message?.includes('Failed to create')) {
+        const existing = await fetchExisting();
+        if (existing) return existing;
+      }
+      throw e3;
+    }
   },
 
   // ── Admin: Tasks ──────────────────────────────────────────────────────

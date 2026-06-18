@@ -397,6 +397,28 @@ export const api = {
       console.warn('[submitTaskProof] railway failed:', e1?.message);
     }
 
+    // ── Helper: look up any existing submission for this user + task ─────
+    // Used by Paths 2 & 3 when PocketBase rejects with a unique-constraint
+    // violation — the user already submitted, so we return their existing
+    // record instead of hard-failing (idempotent behaviour).
+    const fetchExisting = async (): Promise<{ success: boolean; submissionId: string } | null> => {
+      try {
+        const pbToken = pb.authStore.token;
+        const filter = encodeURIComponent(`user_id="${params.pbId}" && task_id="${params.taskId}"`);
+        const existRes = await globalThis.fetch(
+          `${PB_ENDPOINT}?filter=${filter}&perPage=1`,
+          { headers: pbToken ? { Authorization: pbToken } : {} },
+        );
+        const existData = await existRes.json();
+        const existing = existData?.items?.[0];
+        if (existing?.id) {
+          console.log('[submitTaskProof] idempotent — returning existing submission:', existing.id);
+          return { success: true, submissionId: existing.id };
+        }
+      } catch { /* ignore — let the outer error propagate */ }
+      return null;
+    };
+
     // ── PATH 2 · Direct PocketBase REST (fallback) ────────────────────────
     // Client supplies all fields explicitly so no value is missing if Railway
     // is temporarily unreachable.
@@ -418,23 +440,42 @@ export const api = {
       });
       const data = await res.json();
       if (data.id) return { success: true, submissionId: data.id };
+      // Unique-constraint → return existing submission (idempotent)
+      if (res.status === 400) {
+        const isUnique = data?.data && Object.values(data.data as Record<string, any>)
+          .some((v: any) => v?.code === 'validation_not_unique');
+        if (isUnique) {
+          const existing = await fetchExisting();
+          if (existing) return existing;
+        }
+      }
       throw new Error(data?.message || `PB REST ${res.status}`);
     } catch (e2: any) {
       console.warn('[submitTaskProof] pb-rest failed:', e2?.message);
     }
 
     // ── PATH 3 · PocketBase SDK (last-resort fallback) ────────────────────
-    const form = new FormData();
-    form.append('user_id',       params.pbId);
-    form.append('task_id',       params.taskId);
-    form.append('status',        'pending');
-    form.append('task_title',    params.taskTitle);
-    form.append('user_email',    params.userEmail);
-    form.append('reward_amount', String(params.rewardAmount));
-    form.append('reward_type',   params.rewardType);
-    await appendProof(form, 'proof_screenshot');
-    const rec = await pb.collection('task_submissions').create(form);
-    return { success: true, submissionId: rec.id };
+    try {
+      const form = new FormData();
+      form.append('user_id',       params.pbId);
+      form.append('task_id',       params.taskId);
+      form.append('status',        'pending');
+      form.append('task_title',    params.taskTitle);
+      form.append('user_email',    params.userEmail);
+      form.append('reward_amount', String(params.rewardAmount));
+      form.append('reward_type',   params.rewardType);
+      await appendProof(form, 'proof_screenshot');
+      const rec = await pb.collection('task_submissions').create(form);
+      return { success: true, submissionId: rec.id };
+    } catch (e3: any) {
+      console.warn('[submitTaskProof] pb-sdk failed:', e3?.message);
+      // Unique-constraint from PB SDK → idempotent fallback
+      if (e3?.status === 400 || e3?.message?.includes('Failed to create')) {
+        const existing = await fetchExisting();
+        if (existing) return existing;
+      }
+      throw e3;
+    }
   },
 
   // ── Admin: Tasks ──────────────────────────────────────────────────────
