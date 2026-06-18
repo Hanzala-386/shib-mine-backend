@@ -1,1 +1,1 @@
-- [Backend trust model](backend-trust-model.md) — Shiba Hit endpoints trust client `pbId` + open PB self-CRUD by design; don't add auth to one endpoint in isolation.
+- [Shiba Hit display paths & deploy topology](shiba-hit-architecture.md) — mining yield renders via 2 paths (shibReward labels + startTimers rolling counter), both must apply VIP; shib-mine-backend/ is a full copy but Railway runs only its server/.

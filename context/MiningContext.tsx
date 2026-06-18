@@ -24,7 +24,7 @@ async function pbStartMining(
   pbId: string,
   multiplier: number,
   miningRatePerSec: number,
-): Promise<{ id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; expectedReward: number; newPowerTokens: number; serverTime: number; miningRatePerSec: number }> {
+): Promise<{ id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; expectedReward: number; vipLevel: number; newPowerTokens: number; serverTime: number; miningRatePerSec: number }> {
   // Fetch the authoritative mining cost from PocketBase settings — never rely on
   // the React state value (miningEntryCost) which may be stale or default (24) if
   // settings haven't loaded yet when the user taps Start.
@@ -78,13 +78,14 @@ async function pbStartMining(
     durationMs: PB_DURATION_MS,
     multiplier,
     expectedReward: effectiveRatePerSec(miningRatePerSec, lockedVip) * (PB_DURATION_MS / 1000) * multiplier,
+    vipLevel: lockedVip,
     newPowerTokens: currentPt - entryCost,
     serverTime: startTimeMs, // PB's timestamp = server time
     miningRatePerSec,
   };
 }
 
-async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; serverTime: number } }> {
+async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; vipLevel: number; serverTime: number } }> {
   try {
     const user = await pb.collection('users').getOne(pbId);
     const sessionId = user.current_mining_session;
@@ -109,6 +110,7 @@ async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: 
         endTimeMs: startTimeMs + PB_DURATION_MS,
         durationMs: PB_DURATION_MS,
         multiplier: Number(s.booster_multiplier) || 1,
+        vipLevel: normalizeVipLevel(s.vip_level),
         serverTime: startTimeMs,
       },
     };
@@ -324,7 +326,7 @@ async function pbActivateAndMine(
   miningRatePerSec: number,
   miningCost: number,
   boosterCost: number,
-): Promise<{ id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; boosterExpiresAt: number; expectedReward: number; newPowerTokens: number; serverTime: number; miningRatePerSec: number }> {
+): Promise<{ id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; boosterExpiresAt: number; expectedReward: number; vipLevel: number; newPowerTokens: number; serverTime: number; miningRatePerSec: number }> {
   const totalCost = miningCost + boosterCost;
   const user = await pb.collection('users').getOne(pbId);
   const currentPt = Number(user.power_tokens) || 0;
@@ -378,6 +380,7 @@ async function pbActivateAndMine(
     multiplier,
     boosterExpiresAt: expiresAt,
     expectedReward: effectiveRatePerSec(miningRatePerSec, lockedVip) * (PB_DURATION_MS / 1000) * multiplier,
+    vipLevel: lockedVip,
     newPowerTokens: currentPt - totalCost,
     serverTime: startTimeMs, // PB's timestamp = server time
     miningRatePerSec,
@@ -397,6 +400,7 @@ export interface MiningSession {
   durationMs: number;
   multiplier: number;
   status: MiningStatus;
+  vipLevel: number;
   expectedReward: number;
 }
 
@@ -684,6 +688,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
             endTimeMs: pbEnd,
             durationMs: pbDur,
             multiplier: res.session.multiplier,
+            vipLevel: normalizeVipLevel(res.session.vipLevel),
             expectedReward: 0,
           }),
           startTimeMs: pbStart,
@@ -709,6 +714,8 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         durationMs:  pbDur,
         multiplier:  res.session.multiplier,
         status:      'mining',
+        vipLevel:    normalizeVipLevel(res.session.vipLevel),
+        expectedReward: safe(current?.expectedReward, 0),
       };
       sessionRef.current = synced;
       setSession(synced);
@@ -748,6 +755,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         durationMs,
         multiplier: safe(s.multiplier, 1),
         status,
+        vipLevel: normalizeVipLevel(s.vipLevel),
         expectedReward: safe(miningRateRef.current * (durationMs / 1000), 0),
       };
 
@@ -816,7 +824,8 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         booster && booster.expiresAt > serverNow()
           ? safe(booster.multiplier, 1)
           : safe(s.multiplier, 1);
-      const rate = safe(miningRateRef.current, 0.01736) * effectiveMultiplier;
+      const sessionVip = normalizeVipLevel((s as Partial<MiningSession>).vipLevel ?? user?.vipLevel ?? 0);
+      const rate = effectiveRatePerSec(safe(miningRateRef.current, 0.01736), sessionVip) * effectiveMultiplier;
       setDisplayedShibBalance(safe(rate * (elapsed / 1000), 0));
     }, 100);
 
@@ -862,6 +871,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         durationMs,
         multiplier,
         status: 'mining',
+        vipLevel: normalizeVipLevel(res.vipLevel),
         expectedReward: safe(res.expectedReward, 0),
       };
 
@@ -1087,6 +1097,7 @@ export function MiningProvider({ children }: { children: ReactNode }) {
         durationMs,
         multiplier,
         status: 'mining',
+        vipLevel: normalizeVipLevel(res.vipLevel),
         expectedReward: safe(res.expectedReward, 0),
       };
 
@@ -1133,9 +1144,13 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       ? Math.min(1, safe(elapsedMs) / safe(session.durationMs, 1))
       : session?.status === 'ready_to_claim' ? 1 : 0;
 
+  const displayVip = normalizeVipLevel(
+    session ? ((session as Partial<MiningSession>).vipLevel ?? user?.vipLevel ?? 0) : (user?.vipLevel ?? 0),
+  );
+  const displayVipRate = effectiveRatePerSec(safe(miningRatePerSec), displayVip);
   const shibReward = session
-    ? safe(miningRatePerSec) * safe(session.multiplier, 1) * (safe(session.durationMs) / 1000)
-    : safe(miningRatePerSec) * durationMinutes * 60;
+    ? safe(displayVipRate) * safe(session.multiplier, 1) * (safe(session.durationMs) / 1000)
+    : safe(displayVipRate) * durationMinutes * 60;
 
   const value = useMemo<MiningContextValue>(() => ({
     session, status, timeRemaining, elapsedMs, progress,
