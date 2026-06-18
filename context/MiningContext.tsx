@@ -8,6 +8,11 @@ import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
 import { getApiUrl } from '@/lib/query-client';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
+import {
+  effectiveRatePerSec,
+  normalizeVipLevel,
+  highestBalanceEligibleTier,
+} from '@shared/vip';
 
 // ── PocketBase direct mining (fallback when Express is unreachable) ──────────
 // Mining sessions schema: user (relation), start_time (date),
@@ -36,6 +41,9 @@ async function pbStartMining(
   const currentPt = Number(user.power_tokens) || 0;
   if (currentPt < entryCost) throw new Error(`Not enough Power Tokens. Need ${entryCost} PT.`);
 
+  // Lock the user's CURRENT VIP level into this session (like booster_multiplier).
+  const lockedVip = normalizeVipLevel(user.vip_level);
+
   // Deduct PT
   await pb.collection('users').update(pbId, { power_tokens: currentPt - entryCost });
 
@@ -48,6 +56,7 @@ async function pbStartMining(
       booster_multiplier: multiplier,
       claimed_amount: 0,
       is_verified: false,
+      vip_level: lockedVip,
     });
   } catch (sessionErr: any) {
     await pb.collection('users').update(pbId, { power_tokens: currentPt }).catch(() => {});
@@ -68,7 +77,7 @@ async function pbStartMining(
     endTimeMs: startTimeMs + PB_DURATION_MS,
     durationMs: PB_DURATION_MS,
     multiplier,
-    expectedReward: miningRatePerSec * (PB_DURATION_MS / 1000) * multiplier,
+    expectedReward: effectiveRatePerSec(miningRatePerSec, lockedVip) * (PB_DURATION_MS / 1000) * multiplier,
     newPowerTokens: currentPt - entryCost,
     serverTime: startTimeMs, // PB's timestamp = server time
     miningRatePerSec,
@@ -210,7 +219,19 @@ async function pbClaimMining(
   }
 
   const multiplier = Number(s.booster_multiplier) || 1;
-  const reward = miningRatePerSec * (Math.min(elapsedMs, PB_DURATION_MS) / 1000) * multiplier;
+
+  // ── VIP reward: pay at the session-locked tier, capped by CURRENT balance
+  //    (anti-drain) and floored at admin_promoted_level. Admin-promoted users
+  //    are immune. Any demotion persists to the user record going forward.
+  const sessionVip = normalizeVipLevel(s.vip_level);
+  const currentVip = normalizeVipLevel(user.vip_level);
+  const promoted = !!user.is_admin_promoted;
+  const vipFloor = normalizeVipLevel(user.admin_promoted_level);
+  const balanceForTier = Number(user.shib_balance) || 0;
+  const claimVip = promoted ? sessionVip : highestBalanceEligibleTier(balanceForTier, sessionVip, vipFloor);
+  const newUserVip = promoted ? currentVip : highestBalanceEligibleTier(balanceForTier, currentVip, vipFloor);
+
+  const reward = effectiveRatePerSec(miningRatePerSec, claimVip) * (Math.min(elapsedMs, PB_DURATION_MS) / 1000) * multiplier;
 
   await pb.collection('mining_sessions').update(sessionId, {
     claimed_amount: reward,
@@ -225,6 +246,7 @@ async function pbClaimMining(
     shib_balance:            (Number(user.shib_balance) || 0) + reward,
     total_claims:            (Number(user.total_claims) || 0) + 1,
     current_mining_session:  null,
+    vip_level:               newUserVip,
   });
 
   // ── NON-CRITICAL: tournament points — server-side sync (ANTI-CHEAT) ────────
@@ -308,6 +330,9 @@ async function pbActivateAndMine(
   const currentPt = Number(user.power_tokens) || 0;
   if (currentPt < totalCost) throw new Error(`Not enough Power Tokens. Need ${totalCost} PT.`);
 
+  // Lock the user's CURRENT VIP level into this session (like booster_multiplier).
+  const lockedVip = normalizeVipLevel(user.vip_level);
+
   const expiresAt = Date.now() + 3600000; // booster active 1 hour
 
   // Deduct PT and activate booster
@@ -326,6 +351,7 @@ async function pbActivateAndMine(
       booster_multiplier: multiplier,
       claimed_amount: 0,
       is_verified: false,
+      vip_level: lockedVip,
     });
   } catch (sessionErr: any) {
     // Roll back: restore PT and remove booster fields so user can retry
@@ -351,7 +377,7 @@ async function pbActivateAndMine(
     durationMs: PB_DURATION_MS,
     multiplier,
     boosterExpiresAt: expiresAt,
-    expectedReward: miningRatePerSec * (PB_DURATION_MS / 1000) * multiplier,
+    expectedReward: effectiveRatePerSec(miningRatePerSec, lockedVip) * (PB_DURATION_MS / 1000) * multiplier,
     newPowerTokens: currentPt - totalCost,
     serverTime: startTimeMs, // PB's timestamp = server time
     miningRatePerSec,

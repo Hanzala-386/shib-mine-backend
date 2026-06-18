@@ -74,6 +74,7 @@ function RootLayoutNav() {
         <Stack.Screen name="verify-email" />
         <Stack.Screen name="forgot-password" />
         <Stack.Screen name="admin" options={{ presentation: "modal" }} />
+        <Stack.Screen name="vip" />
         <Stack.Screen name="notifications" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
         <Stack.Screen name="privacy" options={{ headerShown: false }} />
         <Stack.Screen name="terms" options={{ headerShown: false }} />

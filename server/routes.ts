@@ -6,6 +6,15 @@ import crypto from "node:crypto";
 import nodemailer from "nodemailer";
 import multer from "multer";
 import { WebSocketServer } from "ws";
+import {
+  effectiveRatePerSec,
+  normalizeVipLevel,
+  highestBalanceEligibleTier,
+  VIP_REQUIREMENTS,
+  meetsVipRequirements,
+  unmetVipRequirements,
+  MAX_VIP_LEVEL,
+} from "../shared/vip";
 
 // ─── Multer — memory storage for proof screenshot uploads ─────────────────
 const upload = multer({
@@ -568,6 +577,14 @@ async function ensureMiningSessionsRules() {
     if (col.code) {
       console.warn("[mining_sessions] Collection not found — skipping rules patch");
       return;
+    }
+    // Ensure the vip_level field exists — locked into each session at start
+    // (exactly like booster_multiplier) so mid-session upgrades never apply retroactively.
+    const sessSchema: any[] = col.schema || [];
+    if (!sessSchema.find((f: any) => f.name === "vip_level")) {
+      sessSchema.push({ name: "vip_level", type: "number", required: false });
+      await pbHttp("PATCH", `/api/collections/${col.id}`, { schema: sessSchema }, token);
+      console.log("[mining_sessions] Added vip_level field");
     }
     await pbHttp("PATCH", `/api/collections/${col.id}`, {
       // User can list/view only their own sessions
@@ -1265,6 +1282,10 @@ async function ensureUserSchema() {
     { name: "fraud_attempts",          type: "number" },
     { name: "status",                  type: "text"   },
     { name: "current_mining_session",  type: "text"   },
+    // VIP system
+    { name: "vip_level",               type: "number" }, // current VIP tier 0-8
+    { name: "is_admin_promoted",       type: "bool"   }, // true → immune to auto-downgrade
+    { name: "admin_promoted_level",    type: "number" }, // immutable demotion floor set by admin
   ];
 
   try {
@@ -2298,7 +2319,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 3. Create new mining session
       const rate = settings.mining_rate_per_sec || 0.01736;
       const dur = settings.mining_duration_minutes || 60;
-      const expectedReward = rate * dur * 60 * multiplier;
+      // Lock the user's CURRENT VIP level into this session (like booster_multiplier).
+      const lockedVip = normalizeVipLevel(user.vip_level);
+      const expectedReward = effectiveRatePerSec(rate, lockedVip) * dur * 60 * multiplier;
 
       const session = await pbPost("/api/collections/mining_sessions/records", {
         user: pbId,
@@ -2307,6 +2330,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         is_verified: false,
         ip_address: String(req.ip || req.socket?.remoteAddress || ""),
         booster_multiplier: multiplier,
+        vip_level: lockedVip,
       });
 
       if (session.code)
@@ -2334,6 +2358,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         multiplier,
         expectedReward,
         miningRatePerSec: rate,
+        vipLevel: lockedVip,
         boosterExpiresAt,
         ptDeducted: totalCost,
         newPowerTokens: currentPT - totalCost,
@@ -2469,7 +2494,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const rate = settings?.mining_rate_per_sec || 0.01736;
       const dur = settings?.mining_duration_minutes || 60;
-      const expectedReward = rate * dur * 60 * activeMultiplier;
+      // Lock the user's CURRENT VIP level into this session (like booster_multiplier)
+      // so a mid-session upgrade/downgrade never applies retroactively.
+      const lockedVip = normalizeVipLevel(userRecord.vip_level);
+      const expectedReward = effectiveRatePerSec(rate, lockedVip) * dur * 60 * activeMultiplier;
 
       const session = await pbPost("/api/collections/mining_sessions/records", {
         user: pbId,
@@ -2478,6 +2506,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         is_verified: false,
         ip_address: String(req.ip || req.socket?.remoteAddress || ""),
         booster_multiplier: activeMultiplier,
+        vip_level: lockedVip,
       });
 
       if (session.code)
@@ -2508,6 +2537,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         multiplier: activeMultiplier,
         expectedReward,
         miningRatePerSec: rate,
+        vipLevel: lockedVip,
         ptDeducted: ptCost,
         newPowerTokens: currentPT - ptCost,
         status: "mining",
@@ -2712,7 +2742,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Server-side reward — 100% authoritative, no client value accepted
       const boosterMultiplier = session.booster_multiplier || 1;
       const miningRate = settings.mining_rate_per_sec || 0.01736;
-      const serverReward = miningRate * durationSec * boosterMultiplier;
+
+      // ── VIP reward: pay at the session-locked tier, capped by CURRENT balance
+      //    (anti-drain) and floored at admin_promoted_level. Admin-promoted users
+      //    are immune from the cap. Never block the claim — adjust and demote.
+      const sessionVip = normalizeVipLevel(session.vip_level);
+      const currentVip = normalizeVipLevel(user.vip_level);
+      const promoted = !!user.is_admin_promoted;
+      const vipFloor = normalizeVipLevel(user.admin_promoted_level);
+      const balanceForTier = user.shib_balance || 0;
+
+      let claimVip = sessionVip;
+      let newUserVip = currentVip;
+      let vipAdjusted = false;
+      if (!promoted) {
+        claimVip = highestBalanceEligibleTier(balanceForTier, sessionVip, vipFloor);
+        newUserVip = highestBalanceEligibleTier(balanceForTier, currentVip, vipFloor);
+        vipAdjusted = newUserVip < currentVip;
+      }
+
+      const serverReward = effectiveRatePerSec(miningRate, claimVip) * durationSec * boosterMultiplier;
 
       // Mark session claimed FIRST — any duplicate request now hits Guard 2
       // IMPORTANT: use session.id (from the fetched record), NOT the client-provided sessionId
@@ -2732,6 +2781,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         total_claims: newClaims,
         current_mining_session: "",   // nullify — user can now start a fresh session
         fraud_attempts: 0,            // reset strike counter after a legitimate claim
+        vip_level: newUserVip,        // persist any anti-drain demotion going forward
       });
 
       // Log completed session for admin analytics
@@ -2779,7 +2829,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         })();
       }
 
-      res.json({ success: true, newShibBalance: newShib, reward: serverReward });
+      res.json({ success: true, newShibBalance: newShib, reward: serverReward, vipLevel: newUserVip, vipAdjusted });
     } catch (e: any) {
       console.error("[/api/app/mine/claim]", e.message);
       res.status(500).json({ error: "Failed to claim reward" });
@@ -3915,6 +3965,133 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // VIP TIER SYSTEM
+  // VIP adds a SHIB/hr increment on top of the admin base rate. Upgrades are
+  // sequential (current+1) and gated by LIVE metrics (refs, balance, approved
+  // tasks, completed withdrawals). Admins can override a user's tier, which sets
+  // a permanent floor (admin_promoted_level) and immunity flag (is_admin_promoted).
+  // ───────────────────────────────────────────────────────────────────────────
+  async function computeVipMetrics(userRecord: any) {
+    const pbId = userRecord.id;
+    const referralCode = userRecord.referral_code || "";
+    const balance = Number(userRecord.shib_balance) || 0;
+
+    // Referrals: users whose referred_by points at this user's referral code OR id.
+    let refs = 0;
+    try {
+      const filter = referralCode
+        ? `referred_by="${referralCode}" || referred_by="${pbId}"`
+        : `referred_by="${pbId}"`;
+      const r = await pbGet(`/api/collections/users/records?filter=${encodeURIComponent(filter)}&perPage=1`);
+      refs = Number(r.totalItems) || 0;
+    } catch { /* metric stays 0 */ }
+
+    // Approved task submissions.
+    let tasks = 0;
+    try {
+      const r = await pbGet(`/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${pbId}" && status="approved"`)}&perPage=1`);
+      tasks = Number(r.totalItems) || 0;
+    } catch { /* metric stays 0 */ }
+
+    // Completed withdrawals.
+    let withdrawals = 0;
+    try {
+      const r = await pbGet(`/api/collections/withdrawals/records?filter=${encodeURIComponent(`user="${pbId}" && status="completed"`)}&perPage=1`);
+      withdrawals = Number(r.totalItems) || 0;
+    } catch { /* metric stays 0 */ }
+
+    return { refs, balance, tasks, withdrawals };
+  }
+
+  // GET current VIP state + live metrics
+  app.get("/api/app/vip/status/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      const metrics = await computeVipMetrics(user);
+      res.json({
+        vipLevel: normalizeVipLevel(user.vip_level),
+        isAdminPromoted: !!user.is_admin_promoted,
+        adminPromotedLevel: normalizeVipLevel(user.admin_promoted_level),
+        metrics,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/vip/status]", e.message);
+      res.status(500).json({ error: "Failed to load VIP status" });
+    }
+  });
+
+  // POST sequential upgrade — current+1, gated by live metrics
+  app.post("/api/app/vip/upgrade", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.body || {};
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      const current = normalizeVipLevel(user.vip_level);
+      const target = current + 1;
+      if (target > MAX_VIP_LEVEL) {
+        return res.status(400).json({ error: "Already at maximum VIP level", vipLevel: current });
+      }
+
+      const metrics = await computeVipMetrics(user);
+      if (!meetsVipRequirements(target, metrics)) {
+        return res.status(400).json({
+          error: "Requirements not met",
+          unmet: unmetVipRequirements(target, metrics),
+          metrics,
+          vipLevel: current,
+        });
+      }
+
+      const updated = await pbPatch(`/api/collections/users/records/${pbId}`, { vip_level: target });
+      if (updated.code) return res.status(500).json({ error: "Failed to upgrade VIP" });
+      res.json({ success: true, vipLevel: target, metrics });
+    } catch (e: any) {
+      console.error("[/api/app/vip/upgrade]", e.message);
+      res.status(500).json({ error: "Failed to upgrade VIP" });
+    }
+  });
+
+  // POST admin override — sets level + permanent floor + immunity from auto-demote
+  app.post("/api/admin/users/vip", async (req: Request, res: Response) => {
+    try {
+      const { pbId, level } = req.body || {};
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+      const lvl = normalizeVipLevel(level);
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
+        vip_level: lvl,
+        is_admin_promoted: true,
+        admin_promoted_level: lvl,
+      });
+      if (updated.code) return res.status(500).json({ error: "Failed to set VIP" });
+      res.json(formatUser(updated));
+    } catch (e: any) {
+      console.error("[/api/admin/users/vip]", e.message);
+      res.status(500).json({ error: "Failed to set VIP" });
+    }
+  });
+
+  // GET admin user search by email / referral code / display name
+  app.get("/api/admin/users/search", async (req: Request, res: Response) => {
+    try {
+      const q = String(req.query.q || "").trim();
+      if (!q) return res.json({ items: [] });
+      const filter = `email~"${q}" || referral_code~"${q}" || display_name~"${q}"`;
+      const r = await pbGet(`/api/collections/users/records?filter=${encodeURIComponent(filter)}&perPage=20&sort=-created`);
+      res.json({ items: (r.items || []).map(formatUser) });
+    } catch (e: any) {
+      console.error("[/api/admin/users/search]", e.message);
+      res.status(500).json({ error: "Failed to search users" });
+    }
+  });
+
   const httpServer = createServer(app);
   // ── Daily Rewards: Status ────────────────────────────────────────────────
   app.get("/api/app/daily/status/:pbId", async (req: Request, res: Response) => {
@@ -4201,5 +4378,8 @@ function formatUser(u: any) {
     fraudAttempts: u.fraud_attempts || 0,
     status: u.status || "",
     created: u.created,
+    vipLevel: normalizeVipLevel(u.vip_level),
+    isAdminPromoted: !!u.is_admin_promoted,
+    adminPromotedLevel: normalizeVipLevel(u.admin_promoted_level),
   };
 }

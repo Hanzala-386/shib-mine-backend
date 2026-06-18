@@ -14,6 +14,7 @@ import {
 } from '@/lib/firebase';
 import { api, type PBUser } from '@/lib/api';
 import { pb, POCKETBASE_URL, processPendingReferralEarnings } from '@/lib/pocketbase';
+import { normalizeVipLevel } from '@shared/vip';
 
 export interface UserProfile {
   uid: string;
@@ -25,6 +26,9 @@ export interface UserProfile {
   referralEarnings: number;
   createdAt: number;
   is_verified: boolean;
+  vipLevel: number;
+  isAdminPromoted: boolean;
+  adminPromotedLevel: number;
 }
 
 const ADMIN_EMAIL = 'hanzala386@gmail.com';
@@ -63,6 +67,9 @@ function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
     referralEarnings: u.referralEarnings || 0,
     createdAt: new Date(u.created).getTime(),
     is_verified: u.is_verified,
+    vipLevel: normalizeVipLevel(u.vipLevel),
+    isAdminPromoted: !!u.isAdminPromoted,
+    adminPromotedLevel: normalizeVipLevel(u.adminPromotedLevel),
   };
 }
 
@@ -93,6 +100,9 @@ function formatRawPbUser(u: any): PBUser {
     fraudAttempts: u.fraud_attempts || 0,
     status: u.status || 'active',
     created: u.created,
+    vipLevel: normalizeVipLevel(u.vip_level),
+    isAdminPromoted: !!u.is_admin_promoted,
+    adminPromotedLevel: normalizeVipLevel(u.admin_promoted_level),
   } as PBUser;
 }
 

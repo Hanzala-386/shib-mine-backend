@@ -25,6 +25,7 @@ import { useMining } from '@/context/MiningContext';
 import { useAdmin } from '@/context/AdminContext';
 import { useAds } from '@/context/AdContext';
 import { useNotifications } from '@/context/NotificationsContext';
+import { vipIncrementPerHr } from '@shared/vip';
 import Colors from '@/constants/colors';
 
 // ── Press 3D hook — spring physics for any interactive element ─────────────────
@@ -791,6 +792,30 @@ export default function HomeScreen() {
           </Animated.View>
         )}
 
+        {/* VIP badge — tappable, routes to the VIP screen */}
+        <Animated.View entering={FadeInDown.delay(150).springify()}>
+          <Pressable
+            onPress={() => router.push('/vip' as any)}
+            style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
+          >
+            <LinearGradient
+              colors={['rgba(244,196,48,0.18)', 'rgba(255,107,0,0.10)']}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+              style={styles.vipBadge}
+            >
+              <MaterialCommunityIcons name="crown" size={16} color={Colors.gold} />
+              <Text style={styles.vipBadgeText}>VIP {user?.vipLevel ?? 0}</Text>
+              <View style={styles.vipBadgeDivider} />
+              <Text style={styles.vipBadgeBonus}>
+                {(user?.vipLevel ?? 0) > 0
+                  ? `+${vipIncrementPerHr(user?.vipLevel ?? 0)} SHIB/hr`
+                  : 'Tap to upgrade'}
+              </Text>
+              <Ionicons name="chevron-forward" size={14} color={Colors.gold} />
+            </LinearGradient>
+          </Pressable>
+        </Animated.View>
+
         {/* Mining Core — multi-ring orbital */}
         <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.miningCore}>
 
@@ -1190,6 +1215,17 @@ const styles = StyleSheet.create({
   liveLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, marginBottom: 4 },
   liveValue: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.gold },
   liveBoostLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.neonOrange, marginTop: 4 },
+  vipBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    alignSelf: 'center',
+    paddingVertical: 8, paddingHorizontal: 16,
+    borderRadius: 22,
+    borderWidth: 1, borderColor: 'rgba(244,196,48,0.35)',
+    marginBottom: 10,
+  },
+  vipBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: Colors.gold, letterSpacing: 0.5 },
+  vipBadgeDivider: { width: 1, height: 14, backgroundColor: 'rgba(244,196,48,0.3)' },
+  vipBadgeBonus: { fontFamily: 'Inter_500Medium', fontSize: 12, color: Colors.textSecondary },
   miningCore: { alignItems: 'center', justifyContent: 'center', height: 295, marginBottom: 16 },
   ambientGlow: {
     position: 'absolute', width: 268, height: 268, borderRadius: 134,

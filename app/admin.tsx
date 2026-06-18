@@ -12,8 +12,9 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useAdmin, type AppSettings } from '@/context/AdminContext';
 import { useAuth } from '@/context/AuthContext';
-import { api, type AdminTask, type AdminTaskSubmission, type SupportTicketRecord } from '@/lib/api';
+import { api, type AdminTask, type AdminTaskSubmission, type SupportTicketRecord, type PBUser } from '@/lib/api';
 import { pb } from '@/lib/pocketbase';
+import { MAX_VIP_LEVEL } from '@shared/vip';
 import Colors from '@/constants/colors';
 
 // Build a PocketBase file URL for a given collection record and filename
@@ -29,6 +30,39 @@ export default function AdminScreen() {
   const [local, setLocal] = useState<AppSettings | null>(settings);
   const [saving, setSaving] = useState(false);
   const [stats, setStats] = useState<{ totalUsers: number; totalSessions: number; pendingWithdrawals: number } | null>(null);
+
+  // ── VIP override state ──
+  const [vipQuery, setVipQuery]       = useState('');
+  const [vipResults, setVipResults]   = useState<PBUser[]>([]);
+  const [vipSearching, setVipSearching] = useState(false);
+  const [vipSavingId, setVipSavingId] = useState<string | null>(null);
+
+  const handleVipSearch = async () => {
+    const q = vipQuery.trim();
+    if (!q) return;
+    setVipSearching(true);
+    try {
+      const users = await api.adminSearchUsers(q);
+      setVipResults(users);
+    } catch {
+      setVipResults([]);
+    } finally {
+      setVipSearching(false);
+    }
+  };
+
+  const handleSetVip = async (pbId: string, level: number) => {
+    setVipSavingId(pbId);
+    try {
+      const updated = await api.adminSetUserVip(pbId, level);
+      setVipResults((prev) => prev.map((u) => (u.pbId === pbId ? updated : u)));
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to set VIP level');
+    } finally {
+      setVipSavingId(null);
+    }
+  };
 
   // ── Task management state ──
   const [tasks, setTasks]                   = useState<AdminTask[]>([]);
@@ -556,6 +590,66 @@ export default function AdminScreen() {
             <AdminField label="Minimum App Version (Force Update)" value={(local as any).minimumVersion || ''} onChangeText={(v) => setField('minimumVersion' as any, v)} placeholder="e.g. 1.0.2 — leave empty to disable" />
           </AdminSection>
 
+          {/* ── VIP Override ────────────────────────────────────────────── */}
+          <AdminSection title="VIP Override" icon="crown">
+            <Text style={styles.fieldLabel}>Search user (email / referral code / name)</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+              <TextInput
+                style={[styles.fieldInput, { flex: 1 }]}
+                value={vipQuery}
+                onChangeText={setVipQuery}
+                placeholder="user@email.com"
+                placeholderTextColor={Colors.textMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                onSubmitEditing={handleVipSearch}
+                returnKeyType="search"
+              />
+              <Pressable onPress={handleVipSearch} style={styles.vipSearchBtn} disabled={vipSearching}>
+                {vipSearching
+                  ? <ActivityIndicator color="#1a1200" size="small" />
+                  : <Ionicons name="search" size={18} color="#1a1200" />}
+              </Pressable>
+            </View>
+
+            {!vipSearching && vipResults.length === 0 && (
+              <Text style={[styles.fieldLabel, { marginTop: 12 }]}>
+                No users found yet — search above to override a VIP level.
+              </Text>
+            )}
+
+            {vipResults.map((u) => (
+              <View key={u.pbId} style={styles.vipUserCard}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.vipUserEmail} numberOfLines={1}>
+                      {u.email || u.displayName || u.pbId}
+                    </Text>
+                    <Text style={styles.vipUserMeta}>
+                      Current VIP {u.vipLevel}
+                      {u.isAdminPromoted ? ` · floor ${u.adminPromotedLevel} (immune)` : ''}
+                    </Text>
+                  </View>
+                  {vipSavingId === u.pbId && <ActivityIndicator color={Colors.gold} size="small" />}
+                </View>
+                <View style={styles.vipLevelRow}>
+                  {Array.from({ length: MAX_VIP_LEVEL + 1 }, (_, lvl) => (
+                    <Pressable
+                      key={lvl}
+                      onPress={() => handleSetVip(u.pbId, lvl)}
+                      disabled={vipSavingId === u.pbId}
+                      style={[styles.vipLevelChip, u.vipLevel === lvl && styles.vipLevelChipActive]}
+                    >
+                      <Text style={[styles.vipLevelChipText, u.vipLevel === lvl && styles.vipLevelChipTextActive]}>
+                        {lvl}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            ))}
+          </AdminSection>
+
           {/* ── Create Task ─────────────────────────────────────────────── */}
           <AdminSection title="Create Task" icon="clipboard-plus">
             <AdminField label="Title *" value={newTask.title} onChangeText={v => setNewTask(p => ({ ...p, title: v }))} placeholder="e.g. Follow us on X" />
@@ -935,6 +1029,15 @@ function AdminField({ label, value, onChangeText, keyboardType, placeholder }: {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  vipSearchBtn: { width: 46, height: 44, borderRadius: 12, backgroundColor: Colors.gold, alignItems: 'center', justifyContent: 'center' },
+  vipUserCard: { marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: Colors.darkSurface, borderWidth: 1, borderColor: Colors.darkBorder },
+  vipUserEmail: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: Colors.textPrimary },
+  vipUserMeta: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  vipLevelRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
+  vipLevelChip: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.darkCard, borderWidth: 1, borderColor: Colors.darkBorder },
+  vipLevelChipActive: { backgroundColor: Colors.gold, borderColor: Colors.gold },
+  vipLevelChipText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: Colors.textSecondary },
+  vipLevelChipTextActive: { color: '#1a1200' },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 16, gap: 12 },
   backBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   title: { flex: 1, fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.textPrimary },

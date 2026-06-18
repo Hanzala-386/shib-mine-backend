@@ -28,6 +28,7 @@ import { useWallet } from '@/context/WalletContext';
 import { useAds } from '@/context/AdContext';
 import { InlineBannerAd, BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import { getApiUrl } from '@/lib/query-client';
+import { vipIncrementPerHr } from '@shared/vip';
 import Colors from '@/constants/colors';
 
 const AVATAR_KEY = 'profile_avatar2_uri'; // "Avatar 2.0" — fresh key, no stale data
@@ -499,6 +500,36 @@ export default function ProfileScreen() {
           paddingBottom: insets.bottom + BANNER_HEIGHT + 90,
         }]}
       >
+        {/* ── VIP Levels (absolute top) ── */}
+        <Animated.View entering={FadeInDown.delay(80).springify()}>
+          <Pressable
+            onPress={() => router.push('/vip' as any)}
+            style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
+          >
+            <LinearGradient
+              colors={['rgba(244,196,48,0.18)', 'rgba(255,107,0,0.10)']}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+              style={styles.vipRow}
+            >
+              <View style={styles.vipRowIcon}>
+                <MaterialCommunityIcons name="crown" size={20} color={Colors.gold} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.vipRowTitle}>VIP Levels</Text>
+                <Text style={styles.vipRowSub}>
+                  {(user?.vipLevel ?? 0) > 0
+                    ? `Level ${user?.vipLevel} · +${vipIncrementPerHr(user?.vipLevel ?? 0)} SHIB/hr bonus`
+                    : 'Boost your mining speed — tap to upgrade'}
+                </Text>
+              </View>
+              <View style={styles.vipRowBadge}>
+                <Text style={styles.vipRowBadgeText}>{user?.vipLevel ?? 0}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.gold} />
+            </LinearGradient>
+          </Pressable>
+        </Animated.View>
+
         {/* ── Avatar + name header ── */}
         <Animated.View entering={FadeInDown.delay(100).springify()} style={styles.profileCard}>
           <Pressable onPress={handlePickAvatar} style={styles.avatarWrap}>
@@ -1096,6 +1127,26 @@ const styles = StyleSheet.create({
   },
   displayName: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.textPrimary },
   emailText:   { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary },
+  vipRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 14, paddingHorizontal: 16,
+    borderRadius: 18,
+    borderWidth: 1, borderColor: 'rgba(244,196,48,0.35)',
+    marginBottom: 16,
+  },
+  vipRowIcon: {
+    width: 40, height: 40, borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(244,196,48,0.15)',
+  },
+  vipRowTitle: { fontFamily: 'Inter_700Bold', fontSize: 15, color: Colors.textPrimary },
+  vipRowSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  vipRowBadge: {
+    minWidth: 26, height: 26, borderRadius: 13, paddingHorizontal: 6,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Colors.gold,
+  },
+  vipRowBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#1a1200' },
   joinDate:    { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted },
   adminBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 5,

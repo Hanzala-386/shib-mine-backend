@@ -1,6 +1,13 @@
 import { Platform } from 'react-native';
 import { getApiUrl } from '@/lib/query-client';
 import { pb } from '@/lib/pocketbase';
+import {
+  normalizeVipLevel,
+  meetsVipRequirements,
+  unmetVipRequirements,
+  MAX_VIP_LEVEL,
+  type VipMetrics,
+} from '@shared/vip';
 
 async function request<T = any>(
   method: string,
@@ -518,7 +525,164 @@ export const api = {
 
   adminReplySupportTicket: (id: string, reply: string) =>
     request<{ success: boolean }>('PUT', `/api/admin/support-tickets/${id}/reply`, { reply }),
+
+  // ── VIP Tier System ────────────────────────────────────────────────────
+  getVipStatus: (pbId: string) => getVipStatusImpl(pbId),
+  vipUpgrade: (pbId: string) => vipUpgradeImpl(pbId),
+  adminSetUserVip: (pbId: string, level: number) => adminSetUserVipImpl(pbId, level),
+  adminSearchUsers: (q: string) => adminSearchUsersImpl(q),
 };
+
+// ── VIP wrappers: try Express/Railway first, fall back to PocketBase SDK ──────
+export interface VipStatusResult {
+  vipLevel: number;
+  isAdminPromoted: boolean;
+  adminPromotedLevel: number;
+  metrics: VipMetrics;
+}
+
+export interface VipUpgradeResult {
+  success: boolean;
+  vipLevel: number;
+  metrics?: VipMetrics;
+  unmet?: string[];
+  error?: string;
+}
+
+function pbFormatUserLite(u: any): PBUser {
+  return {
+    pbId: u.id,
+    firebaseUid: u.firebase_uid,
+    email: u.email,
+    displayName: u.display_name || u.name || '',
+    referralCode: u.referral_code || '',
+    referredBy: u.referred_by || '',
+    referralEarnings: u.referral_earnings || 0,
+    shibBalance: u.shib_balance || 0,
+    powerTokens: u.power_tokens ?? 10,
+    totalClaims: u.total_claims || 0,
+    totalWins: u.total_wins || 0,
+    is_verified: !!u.is_verified,
+    isVerified: !!u.is_verified,
+    created: u.created,
+    activeBoosterMultiplier: u.active_booster_multiplier || 1,
+    boosterExpires: u.booster_expires || '',
+    referralBalance: u.referral_balance || 0,
+    fraudAttempts: u.fraud_attempts || 0,
+    status: u.status || 'active',
+    vipLevel: normalizeVipLevel(u.vip_level),
+    isAdminPromoted: !!u.is_admin_promoted,
+    adminPromotedLevel: normalizeVipLevel(u.admin_promoted_level),
+  };
+}
+
+async function pbComputeVipMetrics(user: any): Promise<VipMetrics> {
+  const pbId = user.id;
+  const code = user.referral_code || '';
+  const balance = Number(user.shib_balance) || 0;
+  let refs = 0, tasks = 0, withdrawals = 0;
+  try {
+    const filter = code
+      ? `referred_by="${code}" || referred_by="${pbId}"`
+      : `referred_by="${pbId}"`;
+    refs = (await pb.collection('users').getList(1, 1, { filter })).totalItems;
+  } catch { /* metric stays 0 */ }
+  try {
+    tasks = (await pb.collection('task_submissions').getList(1, 1, {
+      filter: `user_id="${pbId}" && status="approved"`,
+    })).totalItems;
+  } catch { /* metric stays 0 */ }
+  try {
+    withdrawals = (await pb.collection('withdrawals').getList(1, 1, {
+      filter: `user="${pbId}" && status="completed"`,
+    })).totalItems;
+  } catch { /* metric stays 0 */ }
+  return { refs, balance, tasks, withdrawals };
+}
+
+async function getVipStatusImpl(pbId: string): Promise<VipStatusResult> {
+  try {
+    return await request<VipStatusResult>('GET', `/api/app/vip/status/${pbId}`);
+  } catch {
+    const user = await pb.collection('users').getOne(pbId);
+    const metrics = await pbComputeVipMetrics(user);
+    return {
+      vipLevel: normalizeVipLevel(user.vip_level),
+      isAdminPromoted: !!user.is_admin_promoted,
+      adminPromotedLevel: normalizeVipLevel(user.admin_promoted_level),
+      metrics,
+    };
+  }
+}
+
+async function vipUpgradeImpl(pbId: string): Promise<VipUpgradeResult> {
+  try {
+    return await request<VipUpgradeResult>('POST', '/api/app/vip/upgrade', { pbId });
+  } catch (err: any) {
+    // Server explicitly rejected (e.g. requirements not met) — surface it; do NOT
+    // silently retry via PB-direct, which would re-check and reject identically.
+    if (err?.status === 400 && err?.data) {
+      return {
+        success: false,
+        vipLevel: err.data.vipLevel ?? 0,
+        metrics: err.data.metrics,
+        unmet: err.data.unmet,
+        error: err.data.error,
+      };
+    }
+    // Network/unreachable → PB-direct fallback with the SAME gating logic.
+    const user = await pb.collection('users').getOne(pbId);
+    const current = normalizeVipLevel(user.vip_level);
+    const target = current + 1;
+    if (target > MAX_VIP_LEVEL) {
+      return { success: false, vipLevel: current, error: 'Already at maximum VIP level' };
+    }
+    const metrics = await pbComputeVipMetrics(user);
+    if (!meetsVipRequirements(target, metrics)) {
+      return {
+        success: false,
+        vipLevel: current,
+        metrics,
+        unmet: unmetVipRequirements(target, metrics) as string[],
+        error: 'Requirements not met',
+      };
+    }
+    await pb.collection('users').update(pbId, { vip_level: target });
+    return { success: true, vipLevel: target, metrics };
+  }
+}
+
+async function adminSetUserVipImpl(pbId: string, level: number): Promise<PBUser> {
+  const lvl = normalizeVipLevel(level);
+  try {
+    return await request<PBUser>('POST', '/api/admin/users/vip', { pbId, level: lvl });
+  } catch {
+    const updated = await pb.collection('users').update(pbId, {
+      vip_level: lvl,
+      is_admin_promoted: true,
+      admin_promoted_level: lvl,
+    });
+    return pbFormatUserLite(updated);
+  }
+}
+
+async function adminSearchUsersImpl(q: string): Promise<PBUser[]> {
+  const query = (q || '').trim();
+  if (!query) return [];
+  try {
+    const r = await request<{ items: PBUser[] }>(
+      'GET',
+      `/api/admin/users/search?q=${encodeURIComponent(query)}`,
+    );
+    return r.items || [];
+  } catch {
+    const r = await pb.collection('users').getList(1, 20, {
+      filter: `email~"${query}" || referral_code~"${query}" || display_name~"${query}"`,
+      sort: '-created',
+    });
+    return (r.items || []).map(pbFormatUserLite);
+  }
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 export interface PBUser {
@@ -541,6 +705,9 @@ export interface PBUser {
   referralBalance: number;
   fraudAttempts: number;
   status: string;
+  vipLevel: number;
+  isAdminPromoted: boolean;
+  adminPromotedLevel: number;
 }
 
 export interface AppSettings {
