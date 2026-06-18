@@ -344,42 +344,62 @@ export const api = {
     taskId: string;
     uri: string;
     base64: string;
-    // Contextual fields that must be stored on the record so the admin panel
-    // shows meaningful data without having to join back to the tasks collection.
     taskTitle: string;
     userEmail: string;
     rewardAmount: number;
     rewardType: string;
   }): Promise<{ success: boolean; submissionId: string }> => {
+    // Primary production endpoint — Railway server fetches task/user metadata as
+    // PocketBase admin on the server side, so no field can collapse to 0 or null.
+    const RAILWAY_URL =
+      process.env.EXPO_PUBLIC_RAILWAY_URL ||
+      'https://shib-mine-backend-production.up.railway.app';
+    const RAILWAY_ENDPOINT = `${RAILWAY_URL}/api/app/tasks/submit`;
     const PB_ENDPOINT = 'https://api.webcod.in/api/collections/task_submissions/records';
 
-    // Fetch with a 30-second hard timeout — prevents infinite spinner
     const fetchWithTimeout = (url: string, opts: RequestInit, ms = 30_000): Promise<Response> => {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), ms);
       return globalThis.fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
     };
 
-    // Platform-aware file appender:
-    //   • Web (browser): fetch the data: URI to get a real Blob — the only valid
-    //     file type browsers accept in FormData. { uri, name, type } is RN-only
-    //     and causes "invalid formatting" in every browser.
-    //   • Native (iOS/Android): use the RN { uri, name, type } object which the
-    //     native bridge reads as a binary file attachment.
-    const appendProof = async (form: FormData, base64: string, fileUri: string): Promise<void> => {
+    // Platform-aware file appender.
+    // Web: real Blob required — { uri, name, type } is RN-only and breaks in browsers.
+    // Native: { uri, name, type } object is read as binary by the RN bridge.
+    const appendProof = async (form: FormData, fieldName: string): Promise<void> => {
       if (Platform.OS === 'web') {
-        const blob = await globalThis.fetch(`data:image/jpeg;base64,${base64}`).then(r => r.blob());
-        (form as any).append('proof_screenshot', blob, 'proof.jpg');
+        const blob = await globalThis.fetch(`data:image/jpeg;base64,${params.base64}`).then(r => r.blob());
+        (form as any).append(fieldName, blob, 'proof.jpg');
       } else {
-        (form as any).append('proof_screenshot', {
-          uri:  `data:image/jpeg;base64,${base64}`,
+        (form as any).append(fieldName, {
+          uri:  `data:image/jpeg;base64,${params.base64}`,
           name: 'proof.jpg',
           type: 'image/jpeg',
         });
       }
     };
 
-    // PATH 1 — direct PB REST + explicit Authorization (bypasses pb.authStore staleness)
+    // ── PATH 1 · Railway (PRIMARY — production server) ────────────────────
+    // The Railway Express handler receives pbId + taskId + the image, then
+    // fetches task_title / user_email / reward_amount / reward_type from
+    // PocketBase as admin before writing the record. Field population is
+    // 100% server-side — the client cannot accidentally send 0 or null.
+    try {
+      const form = new FormData();
+      form.append('pbId',   params.pbId);
+      form.append('taskId', params.taskId);
+      await appendProof(form, 'proof_screenshot');
+      const res = await fetchWithTimeout(RAILWAY_ENDPOINT, { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.submissionId) return { success: true, submissionId: data.submissionId };
+      throw new Error(data?.error || `Railway ${res.status}`);
+    } catch (e1: any) {
+      console.warn('[submitTaskProof] railway failed:', e1?.message);
+    }
+
+    // ── PATH 2 · Direct PocketBase REST (fallback) ────────────────────────
+    // Client supplies all fields explicitly so no value is missing if Railway
+    // is temporarily unreachable.
     try {
       const form = new FormData();
       form.append('user_id',       params.pbId);
@@ -389,7 +409,7 @@ export const api = {
       form.append('user_email',    params.userEmail);
       form.append('reward_amount', String(params.rewardAmount));
       form.append('reward_type',   params.rewardType);
-      await appendProof(form, params.base64, params.uri);
+      await appendProof(form, 'proof_screenshot');
       const pbToken = pb.authStore.token;
       const res = await fetchWithTimeout(PB_ENDPOINT, {
         method:  'POST',
@@ -398,39 +418,23 @@ export const api = {
       });
       const data = await res.json();
       if (data.id) return { success: true, submissionId: data.id };
-      throw new Error(data?.message || `PB ${res.status}`);
-    } catch (e1: any) {
-      console.warn('[submitTaskProof] path1 failed:', e1?.message);
-    }
-
-    // PATH 2 — PB SDK (also gets the platform-correct file attachment)
-    try {
-      const form = new FormData();
-      form.append('user_id',       params.pbId);
-      form.append('task_id',       params.taskId);
-      form.append('status',        'pending');
-      form.append('task_title',    params.taskTitle);
-      form.append('user_email',    params.userEmail);
-      form.append('reward_amount', String(params.rewardAmount));
-      form.append('reward_type',   params.rewardType);
-      await appendProof(form, params.base64, params.uri);
-      const rec = await pb.collection('task_submissions').create(form);
-      return { success: true, submissionId: rec.id };
+      throw new Error(data?.message || `PB REST ${res.status}`);
     } catch (e2: any) {
-      console.warn('[submitTaskProof] path2 failed:', e2?.message);
+      console.warn('[submitTaskProof] pb-rest failed:', e2?.message);
     }
 
-    // PATH 3 — Express server (dev only; 404s on APK)
-    const url = new URL('/api/app/tasks/submit', getApiUrl()).toString();
+    // ── PATH 3 · PocketBase SDK (last-resort fallback) ────────────────────
     const form = new FormData();
-    form.append('pbId',   params.pbId);
-    form.append('taskId', params.taskId);
-    await appendProof(form, params.base64, params.uri);
-    const res = await fetchWithTimeout(url, { method: 'POST', body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-    if (!data.submissionId) throw new Error('Upload failed — no record created');
-    return data;
+    form.append('user_id',       params.pbId);
+    form.append('task_id',       params.taskId);
+    form.append('status',        'pending');
+    form.append('task_title',    params.taskTitle);
+    form.append('user_email',    params.userEmail);
+    form.append('reward_amount', String(params.rewardAmount));
+    form.append('reward_type',   params.rewardType);
+    await appendProof(form, 'proof_screenshot');
+    const rec = await pb.collection('task_submissions').create(form);
+    return { success: true, submissionId: rec.id };
   },
 
   // ── Admin: Tasks ──────────────────────────────────────────────────────
