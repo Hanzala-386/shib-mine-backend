@@ -1359,6 +1359,43 @@ async function ensureAppConfigCollection() {
   }
 }
 
+// ─── Ensure announcements (Banner Modal) collection ───────────────────────
+// Admin-managed banner popups. Public read so the APK can fetch unauthenticated.
+async function ensureAnnouncementsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/announcements");
+    if (!check.code) {
+      // Re-lock public read + admin-only writes on every boot (guards against a
+      // pre-existing collection created with permissive write rules).
+      await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule: "", viewRule: "", createRule: null, updateRule: null, deleteRule: null,
+      }, token);
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "announcements",
+      type: "base",
+      schema: [
+        { name: "poster_image",    type: "file",   required: false, options: { maxSelect: 1, maxSize: 10485760, mimeTypes: ["image/jpeg","image/png","image/webp","image/gif"], thumbs: [], protected: false } },
+        { name: "redirect_url",    type: "text",   required: false },
+        { name: "frequency_limit", type: "number", required: false, options: { min: 0, max: null } },
+        { name: "is_active",       type: "bool",   required: false },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[announcements] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule: "", viewRule: "", createRule: null, updateRule: null, deleteRule: null,
+    }, token);
+    console.log("[announcements] Collection created (public read)");
+  } catch (e: any) {
+    console.warn("[announcements] Could not setup collection:", e.message);
+  }
+}
+
 // ─── Routes ────────────────────────────────────────────────────────────────
 export async function registerRoutes(app: Express): Promise<Server> {
   // Validate environment variables on startup — catches Railway misconfiguration immediately
@@ -1376,6 +1413,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureMiningSessionsRules())
     .then(() => ensureReferralEarningsLogCollection())
     .then(() => ensureAppConfigCollection())
+    .then(() => ensureAnnouncementsCollection())
     .then(() => ensureBrevoKeyInSettings())
     .then(() => backfillWithdrawalMaskedNames())
     .then(() => ensureNotificationsCollection())

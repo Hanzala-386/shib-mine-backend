@@ -249,6 +249,9 @@ export async function setupTournamentSchema(): Promise<void> {
     // ── app_config (Force Update gate) ──────────────────────────────────
     await ensureAppConfigCollection();
 
+    // ── announcements (banner modal) ────────────────────────────────────
+    await ensureAnnouncementsCollection();
+
     console.log('[tournament] setupTournamentSchema complete ✓');
   } catch (e: any) {
     console.warn('[tournament] setupTournamentSchema error:', e.message);
@@ -292,6 +295,36 @@ async function ensureAppConfigCollection(): Promise<void> {
     }
   } catch (e: any) {
     console.warn('[app_config] ensureAppConfigCollection:', e.message);
+  }
+}
+
+// ── announcements (Banner Modal) collection ────────────────────────────────
+// Admin-managed banner popups. Public read so the APK can fetch without auth.
+async function ensureAnnouncementsCollection(): Promise<void> {
+  try {
+    const existing = await pbGet('/api/collections/announcements').catch(() => null);
+    if (!existing?.id) {
+      await pbPost('/api/collections', {
+        name: 'announcements', type: 'base',
+        schema: [
+          { name: 'poster_image',    type: 'file',   required: false, options: { maxSelect: 1, maxSize: 10485760, mimeTypes: ['image/jpeg','image/png','image/webp','image/gif'], thumbs: [], protected: false } },
+          { name: 'redirect_url',    type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
+          { name: 'frequency_limit', type: 'number', required: false, options: { min: 0, max: null } },
+          { name: 'is_active',       type: 'bool',   required: false },
+        ],
+        listRule: '', viewRule: '', createRule: null, updateRule: null, deleteRule: null,
+      });
+      console.log('[announcements] Created announcements ✓');
+    } else {
+      // Ensure public read + admin-only writes on every boot (re-lock in case a
+      // pre-existing collection was created with permissive write rules).
+      await pbPatch(`/api/collections/${existing.id}`, {
+        listRule: '', viewRule: '', createRule: null, updateRule: null, deleteRule: null,
+      }).catch(() => {});
+      console.log('[announcements] announcements ✓');
+    }
+  } catch (e: any) {
+    console.warn('[announcements] ensureAnnouncementsCollection:', e.message);
   }
 }
 

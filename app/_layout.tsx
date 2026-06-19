@@ -8,7 +8,7 @@ import {
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -25,6 +25,7 @@ import { TermsGateModal } from "@/components/TermsGateModal";
 import { SecurityProvider } from "@/context/SecurityContext";
 import { SecurityModal } from "@/components/SecurityModal";
 import { ForceUpdateModal } from "@/components/ForceUpdateModal";
+import { AnnouncementModal, useAnnouncementGate } from "@/components/AnnouncementModal";
 import { SupportWidget } from "@/components/SupportWidget";
 import { TournamentProvider } from "@/context/TournamentContext";
 import { TournamentBannerPopup } from "@/components/TournamentBannerPopup";
@@ -36,15 +37,23 @@ SplashScreen.preventAutoHideAsync();
 
 function RootLayoutNav() {
   const { isLoading, user, firebaseUser } = useAuth();
+  // Boot-time announcement audit (PocketBase fetch + AsyncStorage frequency check).
+  const { resolved: announcementResolved, announcement } = useAnnouncementGate();
+  const [announcementClosed, setAnnouncementClosed] = useState(false);
 
   // Request notification permission once when app loads
   useEffect(() => {
     requestNotificationPermission().catch(() => {});
   }, []);
 
-  // On app startup: once isLoading resolves, navigate to the right screen
+  // BOOT INTERCEPTION: hold the splash until BOTH auth AND the announcement audit
+  // resolve, so the banner can never pop over a live screen due to a slow API.
+  const booting = isLoading || !announcementResolved;
+
+  // On app startup: once booting resolves, navigate to the right screen.
+  // (Gated on `booting` so the navigator is mounted before we replace the route.)
   useEffect(() => {
-    if (isLoading) return;
+    if (booting) return;
     if (!firebaseUser) {
       // No Firebase user → auth screen
       router.replace("/auth" as any);
@@ -55,10 +64,10 @@ function RootLayoutNav() {
       // Logged in but not verified → OTP screen
       router.replace("/verify-email" as any);
     }
-  }, [isLoading]);
+  }, [booting]);
 
-  // Splash while loading
-  if (isLoading) {
+  // Splash while loading auth state and/or resolving the announcement audit
+  if (booting) {
     return (
       <View style={splashStyles.container}>
         <SpinningCoin size={140} spinning speed="normal" />
@@ -80,6 +89,13 @@ function RootLayoutNav() {
         <Stack.Screen name="terms" options={{ headerShown: false }} />
       </Stack>
       <TermsGateModal />
+      {/* Announcement banner — resolved at boot; mounted on top from the first frame */}
+      {announcement && !announcementClosed && (
+        <AnnouncementModal
+          announcement={announcement}
+          onClose={() => setAnnouncementClosed(true)}
+        />
+      )}
     </>
   );
 }
