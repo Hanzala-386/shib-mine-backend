@@ -56,9 +56,10 @@ const BLOCK_CONFIG: Record<NonNullable<SecurityBlockType>, BlockConfig> = {
     title:    'Security Alert',
     subtitle: 'Auto-Clicker / Unauthorized Tapping Service Detected',
     message:
-      'आपके डिवाइस में Auto-Clicker या अनधिकृत टैपिंग सर्विस एक्टिव है। ' +
-      'कृपया गेम खेलने के लिए पहले ऑटो-क्लिकर ऐप को पूरी तरह बंद (Force Stop) ' +
-      'या ऑफ करें, अन्यथा हमारी एप्लीकेशन चालू नहीं होगी।',
+      'Security Alert: An active Auto-Clicker or unauthorized tapping service ' +
+      'has been detected on your device. To continue playing, please completely ' +
+      'turn off or Force Stop the auto-clicker application, otherwise our ' +
+      'application will not open.',
     canRetry:     false,
     openSettings: true,
   },

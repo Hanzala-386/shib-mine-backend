@@ -20,17 +20,31 @@ VIP (`session.vipLevel`, sourced from `mining_sessions.vip_level`), and current
 `user.vipLevel` only for the idle preview. Don't reuse `session.expectedReward` as a
 UI source — restore paths set it without VIP, so it's unreliable.
 
-# shib-mine-backend/ is a full app copy, but only its server/ ships
-`shib-mine-backend/` contains a complete duplicate of the Expo app (its own `app/`,
-`app.json`, package name "expo-app"), but Railway deploys/runs only its `server/`.
-The shipped APK and the Replit dev workflows both build from the repository ROOT.
+# shib-mine-backend/ is a full app copy — which server/ Railway actually deploys is UNCONFIRMED
+`shib-mine-backend/` is a complete in-repo duplicate of the whole project (its own
+`app/`, `app.json`, `server/`, `shared/`, package name "expo-app"). It IS git-tracked
+(~470 files), so it ships to the GitHub repo Railway pulls from. The shipped APK and
+the Replit dev workflows build from the repository ROOT.
 
-**Why:** It looks like you must mirror frontend edits into the copy, but its
-`context/`, `app/`, etc. are dead code at runtime — Railway never bundles the RN
-frontend.
-**How to apply:** Frontend changes go in the ROOT only. The thing that genuinely must
-stay mirrored across locations is the backend REWARD/VIP logic: `server/routes.ts`
-(local Express), `shib-mine-backend/server/routes.ts` (Railway), the PB-direct
-fallback in root `context/MiningContext.tsx`, and `shared/vip.ts` in both roots. Only
-mirror frontend context into shib-mine-backend/ if a future build actually targets
-that directory.
+Production API base: `getApiUrl()` (lib/query-client.ts) → `PRODUCTION_URL =
+https://backend.webcod.in` in BOTH dev and the EAS APK (host is empty / a *.replit.dev
+tunnel, so it never uses the local host). `backend.webcod.in` is a CNAME →
+`shib-mine-backend-production.up.railway.app` (Railway). So the APK talks to Railway in
+production — NOT PocketBase-only. The git remote is `github.com/Hanzala-386/shib-mine-backend`
+(repo name == Railway service name == the subdirectory name → genuinely ambiguous).
+
+**UNRESOLVED:** whether Railway builds from the repo ROOT `server/` or the nested
+`shib-mine-backend/server/`. Can't be determined from the repo — it's the Railway
+dashboard "Root Directory" + custom build/start command (both package.json `start`
+scripts are `npx expo start`, so a custom start is definitely set there). Contradicting
+evidence: root `server/` has the full tournament system (tournament.ts + routes + CRON);
+the subdirectory has ZERO tournament refs. If the subdirectory were prod, tournaments
+would 404 in the APK. An earlier note here asserted "Railway runs the subdirectory" —
+treat that as unverified.
+**How to apply:** Do NOT delete either server copy or recommend doing so until the
+Railway dashboard Root Directory is confirmed. Until then keep mirroring backend
+REWARD/VIP logic across `server/routes.ts`, `shib-mine-backend/server/routes.ts`, the
+PB-direct fallback in root contexts, and `shared/vip.ts` in both roots. Frontend
+changes still go in ROOT only.
+**Stale doc:** replit.md still claims "Express runs ONLY in Replit dev / APK 404s on
+/api/app/*" — that's outdated; the APK hits Railway via backend.webcod.in.
