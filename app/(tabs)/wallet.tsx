@@ -395,7 +395,7 @@ export default function WalletScreen() {
               <View style={styles.bep20LockNotice}>
                 <Ionicons name="lock-closed-outline" size={13} color="#ff5252" />
                 <Text style={styles.bep20LockText}>
-                  This withdrawal method unlocks automatically once your balance exceeds 50,000 coins.
+                  BEP20 withdrawal method unlock automatically once your balance exceed 50000 coins.
                 </Text>
               </View>
             )}

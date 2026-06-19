@@ -310,19 +310,17 @@ export default function ProfileScreen() {
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.6,
-      base64: true,   // request raw bytes — avoids all file:// / ph:// URI serialization issues
     });
     if (!result.canceled && result.assets[0]) {
       const asset    = result.assets[0];
       const localUri = asset.uri;
       const mimeType = asset.mimeType || 'image/jpeg';
-      const ext      = mimeType.split('/')[1] || 'jpg';
-      const b64      = asset.base64;
+      const ext      = (mimeType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
 
       // Show the picked image immediately
       setAvatarUri(localUri);
 
-      if (!b64 || !user?.pbId) {
+      if (!localUri || !user?.pbId) {
         setUploadStatus('idle');
         await AsyncStorage.removeItem(AVATAR_KEY);
         return;
@@ -346,25 +344,32 @@ export default function ProfileScreen() {
         const token = pb.authStore.token;
         console.log('[Avatar2] token valid:', pb.authStore.isValid, 'token len:', token?.length ?? 0);
 
-        // ── Step 2: Convert base64 → Blob via fetch(data URI) ──────────────
-        // new Blob([Uint8Array]) creates a ZERO-BYTE blob in React Native's
-        // NativeBlobModule — bytes are silently dropped. Using fetch() on a
-        // data: URI forces the platform's own network layer to decode the
-        // base64 and produce a proper typed Blob, exactly like a browser does.
-        const dataUri  = `data:${mimeType};base64,${b64}`;
-        const blobResp = await fetch(dataUri);
-        const blob     = await blobResp.blob();
-        console.log('[Avatar2] blob size:', blob.size, 'type:', blob.type);
-
-        if (blob.size === 0) {
-          throw new Error('Blob is 0 bytes — base64 data may be empty');
+        // ── Step 2: Build the multipart payload ────────────────────────────
+        // The standalone release APK throws "Network request failed" when we
+        // fetch() a data: URI to build a Blob (release OkHttp stack rejects it).
+        // The reliable React Native pattern is to append the raw file object
+        // { uri, name, type } so RN's own networking layer streams the file.
+        const filenameLocal = `av2_${Date.now()}.${ext}`;
+        const fd = new FormData();
+        if (Platform.OS === 'web') {
+          // Web FormData requires a real Blob/File, not a { uri } object.
+          const blobResp = await fetch(localUri);
+          const blob     = await blobResp.blob();
+          fd.append('avatar2', blob, filenameLocal);
+        } else {
+          // Android keeps the file:// scheme; iOS strips it. Always send a
+          // MIME type so PocketBase accepts the part (default image/jpeg).
+          const uploadUri = Platform.OS === 'android' ? localUri : localUri.replace('file://', '');
+          fd.append('avatar2', {
+            uri:  uploadUri,
+            name: filenameLocal,
+            type: mimeType || 'image/jpeg',
+          } as any);
         }
 
         // ── Step 3: Upload via XHR multipart PATCH ─────────────────────────
         const filename = await new Promise<string | null>((resolve) => {
           const xhr = new XMLHttpRequest();
-          const fd  = new FormData();
-          fd.append('avatar2', blob, `av2_${Date.now()}.${ext}`);
 
           xhr.open('PATCH', `${POCKETBASE_URL}/api/collections/users/records/${user.pbId}`);
           if (token) xhr.setRequestHeader('Authorization', token);

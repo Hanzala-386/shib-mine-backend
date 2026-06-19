@@ -31,3 +31,8 @@ description: 7-day streak daily reward — floating widget + auto-popup architec
 - Orange badge dot (!) shown on float when reward ready
 
 **Why no nav tab:** User explicitly requires premium UX — floating widget avoids cluttering the tab bar.
+
+## Reward-amount source of truth (single)
+- The amount the grid DISPLAYS and the amount a claim PAYS must come from ONE object (`effectiveRewards`): prefer `claimSettings` (the `daily_claim_settings` collection, admin-set per-day amounts) → `status.rewards` → `fallbackRewards`.
+- **Why:** the APK direct-claim fallback (`claimDirect`) previously received `fallbackRewards` (the `settings` collection / hardcoded `?? 3000`) while the grid rendered `daily_claim_settings`. Result: grid showed Day 3 = 200 SHIB but the claim paid 3000. The Express `/api/app/daily/claim` route already reads `daily_claim_settings` first, but the published APK 404s on `/api/app/*` and always hits `claimDirect`, so the client fallback is the real payout on production.
+- **How to apply:** never pass the hardcoded `fallbackRewards` into a payout path; pass the same derived object the UI renders.

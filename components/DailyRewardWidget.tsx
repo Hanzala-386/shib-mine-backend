@@ -17,7 +17,7 @@
  */
 
 import React, {
-  useState, useEffect, useRef, useCallback, memo,
+  useState, useEffect, useRef, useCallback, useMemo, memo,
 } from 'react';
 import {
   View, Text, StyleSheet, Modal, Pressable, Animated,
@@ -756,6 +756,25 @@ function DailyRewardWidgetInner() {
   // Re-run only when the server provides a fresh nextClaimAt timestamp
   }, [status?.nextClaimAt, status?.serverTime]);
 
+  // ── Effective reward amounts — SINGLE source of truth for BOTH the grid
+  //    display and the claim payout. Prefers admin-configured daily_claim_settings
+  //    (claimSettings), then server status rewards, then local fallback.
+  //    The claim MUST award exactly what the grid renders, so claimDirect() uses
+  //    this — never the hardcoded `fallbackRewards` defaults (BUG: Day 3 grid showed
+  //    200 SHIB but the direct claim paid the 3000 fallback).
+  const effectiveRewards: DailyRewards = useMemo(() => (
+    claimSettings ? {
+      day1Shib: claimSettings.day1Amount,
+      day2Pt:   claimSettings.day2Amount,
+      day3Shib: claimSettings.day3Amount,
+      day4Pt:   claimSettings.day4Amount,
+      day5Shib: claimSettings.day5Amount,
+      day6Pt:   claimSettings.day6Amount,
+      day7Shib: claimSettings.day7ShibAmount,
+      day7Pt:   claimSettings.day7PowerAmount,
+    } : (status?.rewards ?? fallbackRewards)
+  ), [claimSettings, status?.rewards, settings]);
+
   // ── Claim handler ──
   const handleClaim = useCallback(async () => {
     if (!user?.pbId || claiming || !status?.canClaim) return;
@@ -766,7 +785,7 @@ function DailyRewardWidgetInner() {
       try {
         result = await api.claimDailyReward(user.pbId);
       } catch {
-        result = await claimDirect(user.pbId, fallbackRewards);
+        result = await claimDirect(user.pbId, effectiveRewards);
       }
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setClaimDone({ shib: result.rewardShib, pt: result.rewardPt });
@@ -786,7 +805,7 @@ function DailyRewardWidgetInner() {
     } finally {
       setClaiming(false);
     }
-  }, [user?.pbId, claiming, status?.canClaim, fallbackRewards, loadStatus, closePopup]);
+  }, [user?.pbId, claiming, status?.canClaim, effectiveRewards, loadStatus, closePopup]);
 
   // ── Countdown display ──
   const hh = Math.floor(countdownMs / 3_600_000);
@@ -798,17 +817,8 @@ function DailyRewardWidgetInner() {
   const activeDay = status?.activeDay ?? 1;
   const canClaim  = status?.canClaim  ?? false;
   const streak    = status?.streak    ?? 0;
-  // Use claimSettings amounts when available (admin-configured), else server status rewards
-  const rewards = claimSettings ? {
-    day1Shib: claimSettings.day1Amount,
-    day2Pt:   claimSettings.day2Amount,
-    day3Shib: claimSettings.day3Amount,
-    day4Pt:   claimSettings.day4Amount,
-    day5Shib: claimSettings.day5Amount,
-    day6Pt:   claimSettings.day6Amount,
-    day7Shib: claimSettings.day7ShibAmount,
-    day7Pt:   claimSettings.day7PowerAmount,
-  } : (status?.rewards ?? fallbackRewards);
+  // Single source of truth (see effectiveRewards) — grid display matches claim payout
+  const rewards = effectiveRewards;
 
   function getImgUrl(d: number): string | null {
     if (!claimSettings) return null;
