@@ -1357,7 +1357,7 @@ async function ensureAppConfigCollection() {
     const recs = await pbGet("/api/collections/app_config/records?perPage=1&sort=created");
     if (!recs.items?.length) {
       await pbPost("/api/collections/app_config/records", {
-        current_version:      "1.0.1",
+        current_version:      "1.0.2",
         min_required_version: "1.0.1", // SAFE: matches live build so nobody is locked out
         play_store_url:       "https://play.google.com/store/apps/details?id=com.hanzalasha.shibmine",
         update_message:       "A critical new update is available. Please update to continue playing!",
