@@ -726,6 +726,8 @@ export interface AppSettings {
   minWithdrawal2: number;
   minWithdrawal3: number;
   showAds: boolean;
+  /* Master ad-network override — when true, bypass AdMob and serve Unity Ads only */
+  forceUnityOnly: boolean;
   activeAdNetwork: string;
   admobUnitId: string;
   admobBannerUnitId: string;

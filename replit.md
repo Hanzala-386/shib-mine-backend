@@ -34,6 +34,14 @@ A gold & neon orange glassmorphism React Native mobile app for mining SHIB crypt
    - PocketBase settings fields: `admob_unit_id` (interstitial), `admob_banner_unit_id`, `admob_rewarded_id`, `unity_game_id`, `unity_rewarded_id`, `applovin_sdk_key`, `applovin_rewarded_id`
    - Mediation waterfall: AdMob primary → Unity Ads → AppLovin MAX (configured via AdMob dashboard mediation groups)
    - app.json plugin: `react-native-google-mobile-ads` with test App IDs (update to production IDs before release)
+   - **Direct Unity Ads fallback (ANDROID-ONLY)** — independent of AdMob mediation; remote `force_unity_only` bool toggle in PB `settings` (default false), surfaced as `forceUnityOnly` (settings mapper both servers + `lib/api.ts` AppSettings + `AdContext`/`AdminContext` + `admin.tsx` toggle):
+     - **Phase A** (`force_unity_only=true`): Unity-only, AdMob fully bypassed.
+     - **Phase B** (default false): AdMob first; if it can't PRESENT within `ADMOB_RACE_MS` (3s) or errors, instant Unity fallback; both networks preloaded. Race hinges on AdMob LOADED/present (NOT completion) so a normal AdMob ad watched >3s never triggers a second Unity ad.
+     - iOS always AdMob (`isUnityAvailable()=false` off Android/native); on web/iOS/Expo Go all Unity helpers no-op so default-false behavior is unchanged.
+     - Race-guard invariants in `_routeInterstitial`/`_routeRewarded`: `goUnity()` is idempotent (`fallbackStarted` + `adMobPresented` guards) so a late AdMob `ERROR` after the timeout can never start a 2nd Unity show; once AdMob has presented, a late error settles instead of falling back. Rewarded resolves true only on Unity COMPLETED.
+     - `lib/unityAds.ts`: JS wrapper (Game ID `6061517`; placements `Shib_Interstitial_Android`/`Shib_Rewarded_Android`/`Shib_Banner_Android`; `UNITY_TEST_MODE=false`); `modules/unity-ads/` local Expo module (Kotlin, `unity-ads:4.13.0`, `requireOptionalNativeModule` → no-op off-device).
+     - Banner (`components/StickyBannerAd.tsx`): Phase A → Unity banner; else AdMob banner that swaps to Unity on `onAdFailedToLoad`.
+     - **APK-only verification**: native Unity SDK + Kotlin module + banner native view are UNTESTABLE in the Replit sandbox — only the JS Metro bundle is verifiable here (confirmed clean android+web). Verify real Unity behavior in an EAS build.
 8. **Admin Panel** — Restricted to hanzala386@gmail.com, controls all economic settings
 9. **Wallet** — SHIB balance & Power Token tracking (BEP-20 + Binance Email withdrawal)
 10. **Invite** — Referral code sharing, 10% commission via deferred referral_earnings_log pipeline

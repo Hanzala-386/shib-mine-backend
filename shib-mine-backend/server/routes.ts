@@ -1236,14 +1236,24 @@ async function ensureBrevoKeyInSettings(): Promise<void> {
       return;
     }
     const schema: any[] = settingsCol.schema || [];
-    const exists = schema.find((f: any) => f.name === "brevo_api_key");
-    if (exists) {
+    let changed = false;
+    if (!schema.find((f: any) => f.name === "brevo_api_key")) {
+      schema.push({ name: "brevo_api_key", type: "text", required: false });
+      changed = true;
+      console.log(`[${settingsCol.name}] brevo_api_key field added — set value in PocketBase admin panel`);
+    } else {
       console.log(`[${settingsCol.name}] brevo_api_key field already present ✓`);
-      return;
     }
-    schema.push({ name: "brevo_api_key", type: "text", required: false });
-    await pbHttp("PATCH", `/api/collections/${settingsCol.id}`, { schema }, token);
-    console.log(`[${settingsCol.name}] brevo_api_key field added — set value in PocketBase admin panel`);
+    if (!schema.find((f: any) => f.name === "force_unity_only")) {
+      schema.push({ name: "force_unity_only", type: "bool", required: false });
+      changed = true;
+      console.log(`[${settingsCol.name}] force_unity_only field added (default false) ✓`);
+    } else {
+      console.log(`[${settingsCol.name}] force_unity_only field already present ✓`);
+    }
+    if (changed) {
+      await pbHttp("PATCH", `/api/collections/${settingsCol.id}`, { schema }, token);
+    }
   } catch (e: any) {
     console.warn("[settings] brevo_api_key patch skipped:", e.message);
   }
@@ -1581,6 +1591,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         admobUnitId: s.admob_unit_id,
         admobBannerUnitId: s.admob_banner_unit_id,
         admobRewardedId: s.admob_rewarded_id,
+        forceUnityOnly: s.force_unity_only ?? false,
         applovinSdkKey: s.applovin_sdk_key,
         applovinRewardedId: s.applovin_rewarded_id,
         unityGameId: s.unity_game_id,
@@ -3141,6 +3152,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (body.minWithdrawal3 !== undefined)
           pbUpdate.min_withdrawal_3 = body.minWithdrawal3;
         if (body.showAds !== undefined) pbUpdate.show_ads = body.showAds;
+        if (body.forceUnityOnly !== undefined)
+          pbUpdate.force_unity_only = !!body.forceUnityOnly;
         if (body.activeAdNetwork !== undefined)
           pbUpdate.active_ad_network = body.activeAdNetwork;
         if (body.admobUnitId !== undefined)

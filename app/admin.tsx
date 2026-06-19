@@ -578,6 +578,15 @@ export default function AdminScreen() {
                 thumbColor={local.showAds ? Colors.gold : Colors.textMuted}
               />
             </View>
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Force Unity Only</Text>
+              <Switch
+                value={local.forceUnityOnly}
+                onValueChange={(v) => setField('forceUnityOnly', v)}
+                trackColor={{ false: Colors.darkSurface, true: Colors.gold + '60' }}
+                thumbColor={local.forceUnityOnly ? Colors.gold : Colors.textMuted}
+              />
+            </View>
             <AdminField label="Active Ad Network" value={local.activeAdNetwork} onChangeText={(v) => setField('activeAdNetwork', v)} placeholder="admob | applovin | unity" />
             <AdminField label="AdMob Interstitial ID" value={local.admobUnitId} onChangeText={(v) => setField('admobUnitId', v)} placeholder="ca-app-pub-.../..." />
             <AdminField label="AdMob Banner ID" value={local.admobBannerUnitId} onChangeText={(v) => setField('admobBannerUnitId', v)} placeholder="ca-app-pub-.../..." />
