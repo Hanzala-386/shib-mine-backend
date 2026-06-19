@@ -81,7 +81,7 @@ function MiningHistoryItem({ item }: { item: MiningHistoryRecord }) {
 
 export default function WalletScreen() {
   const insets = useSafeAreaInsets();
-  const { shibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
+  const { shibBalance, lockedShibBalance, availableShibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
   const { pbUser } = useAuth();
   const { showMiningInterstitial } = useAds();
   const [showWithdraw, setShowWithdraw] = useState(false);
@@ -151,7 +151,7 @@ export default function WalletScreen() {
   const fee      = method === 'BEP-20' ? BEP20_FEE : 0;
   const netAmt   = Math.max(0, grossAmt - fee);
 
-  const hasEnoughBalance    = grossAmt > 0 && grossAmt <= shibBalance;
+  const hasEnoughBalance    = grossAmt > 0 && grossAmt <= availableShibBalance;
   const netMeetsMinimum     = netAmt >= minWithdrawalAmount;
   const showInsufficientMsg = grossAmt > 0 && fee > 0 && !netMeetsMinimum;
   const canSubmit           = !hasPendingWithdrawal && grossAmt > 0 && hasEnoughBalance && netMeetsMinimum && !!trimmedAddr && isValidEmail && isValidAddress && !submitting;
@@ -165,8 +165,13 @@ export default function WalletScreen() {
       Alert.alert('Invalid Amount', 'Please enter a valid amount.');
       return;
     }
-    if (grossAmt > shibBalance) {
-      Alert.alert('Insufficient Balance', `You only have ${formatShib(shibBalance)} SHIB.`);
+    if (grossAmt > availableShibBalance) {
+      Alert.alert(
+        lockedShibBalance > 0 ? 'Amount Exceeds Available Balance' : 'Insufficient Balance',
+        lockedShibBalance > 0
+          ? `Your active VIP tier locks ${formatShib(lockedShibBalance)} SHIB in your wallet. You can withdraw up to ${formatShib(availableShibBalance)} SHIB. Contact support@shibahit.com to remove your VIP tier.`
+          : `You only have ${formatShib(shibBalance)} SHIB.`
+      );
       return;
     }
     if (!netMeetsMinimum) {
@@ -245,6 +250,18 @@ export default function WalletScreen() {
             </View>
             <Text style={styles.mainBalance}>{formatShib(shibBalance)}</Text>
             <Text style={styles.mainBalanceFull}>{shibBalance.toLocaleString()} SHIB</Text>
+            {lockedShibBalance > 0 && (
+              <View style={styles.lockRow}>
+                <View style={styles.lockChip}>
+                  <Ionicons name="lock-closed" size={11} color={Colors.gold} />
+                  <Text style={styles.lockChipText}>VIP Locked {formatShib(lockedShibBalance)}</Text>
+                </View>
+                <View style={styles.lockChip}>
+                  <Ionicons name="wallet-outline" size={11} color={Colors.success} />
+                  <Text style={[styles.lockChipText, { color: Colors.success }]}>Available {formatShib(availableShibBalance)}</Text>
+                </View>
+              </View>
+            )}
             {hasPendingWithdrawal && (
               <View style={styles.pendingBanner}>
                 <Ionicons name="time-outline" size={13} color={Colors.gold} />
@@ -344,6 +361,11 @@ export default function WalletScreen() {
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>Withdraw SHIB</Text>
             <Text style={styles.modalSub}>Tier {withdrawalTier} · Min {formatShib(minWithdrawalAmount)} SHIB (net)</Text>
+            {lockedShibBalance > 0 && (
+              <Text style={styles.modalLockNote}>
+                Available to withdraw: {formatShib(availableShibBalance)} SHIB · {formatShib(lockedShibBalance)} locked by VIP
+              </Text>
+            )}
 
             {/* ── Method selector ── */}
             <Text style={styles.fieldLabel}>Withdrawal Method</Text>
@@ -567,6 +589,10 @@ const styles = StyleSheet.create({
   withdrawBtn: { marginTop: 8, width: '100%' },
   withdrawBtnGradient: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(244,196,48,0.3)' },
   withdrawBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: Colors.gold },
+  lockRow: { flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap', justifyContent: 'center' },
+  lockChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(0,0,0,0.28)', borderRadius: 10, paddingVertical: 5, paddingHorizontal: 9 },
+  lockChipText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.gold },
+  modalLockNote: { fontFamily: 'Inter_500Medium', fontSize: 12, color: Colors.gold, marginTop: 6 },
 
   tierCard: { backgroundColor: Colors.darkCard, borderRadius: 14, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: Colors.darkBorder },
   tierRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },

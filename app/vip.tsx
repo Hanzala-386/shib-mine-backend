@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, ScrollView, Platform, ActivityIndicator, Alert,
+  View, Text, StyleSheet, Pressable, ScrollView, Platform, ActivityIndicator, Alert, Modal,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,12 +17,14 @@ import {
   vipIncrementPerHr,
   normalizeVipLevel,
   meetsVipRequirements,
+  lockedBalanceForVipLevel,
   type VipMetrics,
 } from '@shared/vip';
 import Colors from '@/constants/colors';
 
 const REQ_META: { key: keyof VipMetrics; label: string; icon: string }[] = [
   { key: 'refs',        label: 'Referrals',     icon: 'account-multiple' },
+  { key: 'refIncome',   label: 'Ref Income',    icon: 'cash-multiple' },
   { key: 'balance',     label: 'SHIB Balance',  icon: 'wallet' },
   { key: 'tasks',       label: 'Tasks Done',    icon: 'check-decagram' },
   { key: 'withdrawals', label: 'Withdrawals',   icon: 'bank-transfer-out' },
@@ -39,6 +41,7 @@ export default function VipScreen() {
   const { user, refreshUser } = useAuth();
   const pbId = user?.pbId;
   const [upgrading, setUpgrading] = useState(false);
+  const [showAgreement, setShowAgreement] = useState(false);
 
   const { data, isLoading, refetch } = useQuery<VipStatusResult>({
     queryKey: ['vip-status', pbId],
@@ -47,11 +50,12 @@ export default function VipScreen() {
   });
 
   const currentLevel   = data ? normalizeVipLevel(data.vipLevel) : (user?.vipLevel ?? 0);
-  const metrics: VipMetrics = data?.metrics ?? { refs: 0, balance: 0, tasks: 0, withdrawals: 0 };
+  const metrics: VipMetrics = data?.metrics ?? { refs: 0, refIncome: 0, balance: 0, tasks: 0, withdrawals: 0 };
   const isAdminPromoted = data?.isAdminPromoted ?? user?.isAdminPromoted ?? false;
 
   const nextLevel  = currentLevel + 1;
   const canUpgrade = nextLevel <= MAX_VIP_LEVEL && meetsVipRequirements(nextLevel, metrics);
+  const nextLockedBalance = lockedBalanceForVipLevel(nextLevel);
 
   const handleUpgrade = async () => {
     if (!pbId || upgrading || nextLevel > MAX_VIP_LEVEL) return;
@@ -186,7 +190,7 @@ export default function VipScreen() {
 
               {isNext && (
                 <Pressable
-                  onPress={handleUpgrade}
+                  onPress={() => setShowAgreement(true)}
                   disabled={!canUpgrade || upgrading}
                   style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1, marginTop: 12 }]}
                 >
@@ -209,6 +213,59 @@ export default function VipScreen() {
           );
         })}
       </ScrollView>
+
+      {/* ══ VIP LOCK-IN AGREEMENT — non-cancelable ════════════════════════ */}
+      <Modal
+        visible={showAgreement}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { /* non-cancelable: hardware back does nothing */ }}
+      >
+        <View style={styles.agreeOverlay}>
+          <View style={styles.agreeCard}>
+            <View style={styles.agreeIconWrap}>
+              <MaterialCommunityIcons name="lock-check" size={30} color={Colors.gold} />
+            </View>
+            <Text style={styles.agreeTitle}>VIP Lock-In Agreement</Text>
+            <Text style={styles.agreeBody}>
+              By activating VIP {nextLevel}, you agree that{' '}
+              <Text style={styles.agreeStrong}>{fmt(nextLockedBalance)} SHIB</Text> — the required
+              balance for this VIP tier — will be locked in your wallet and cannot be withdrawn for
+              as long as you hold this tier.
+              {'\n\n'}
+              Only your available balance (total balance minus the locked amount) can be withdrawn.
+              To remove your VIP tier and unlock these funds, you must contact{' '}
+              <Text style={styles.agreeStrong}>support@shibahit.com</Text>.
+              {'\n\n'}
+              This action cannot be undone from within the app.
+            </Text>
+            <Pressable
+              onPress={() => { setShowAgreement(false); handleUpgrade(); }}
+              disabled={upgrading}
+              style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1, width: '100%' }]}
+            >
+              <LinearGradient
+                colors={[Colors.gold, Colors.neonOrange]}
+                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                style={styles.agreeAgreeBtn}
+              >
+                {upgrading ? (
+                  <ActivityIndicator color="#1a1200" size="small" />
+                ) : (
+                  <Text style={styles.agreeAgreeText}>I Agree, Activate VIP</Text>
+                )}
+              </LinearGradient>
+            </Pressable>
+            <Pressable
+              onPress={() => setShowAgreement(false)}
+              disabled={upgrading}
+              style={({ pressed }) => [styles.agreeCancelBtn, { opacity: pressed ? 0.7 : 1 }]}
+            >
+              <Text style={styles.agreeCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -269,4 +326,21 @@ const styles = StyleSheet.create({
 
   upgradeBtn: { paddingVertical: 13, alignItems: 'center', borderRadius: 12 },
   upgradeBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#1a1200' },
+
+  agreeOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.78)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  agreeCard: {
+    width: '100%', maxWidth: 380, borderRadius: 22, padding: 22, alignItems: 'center',
+    backgroundColor: Colors.darkCard, borderWidth: 1, borderColor: 'rgba(244,196,48,0.4)',
+  },
+  agreeIconWrap: {
+    width: 60, height: 60, borderRadius: 30, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(244,196,48,0.15)', marginBottom: 14,
+  },
+  agreeTitle: { fontFamily: 'Inter_700Bold', fontSize: 20, color: Colors.gold, textAlign: 'center', marginBottom: 12 },
+  agreeBody: { fontFamily: 'Inter_400Regular', fontSize: 13.5, lineHeight: 21, color: Colors.textSecondary, textAlign: 'left', marginBottom: 20 },
+  agreeStrong: { fontFamily: 'Inter_700Bold', color: Colors.gold },
+  agreeAgreeBtn: { paddingVertical: 14, alignItems: 'center', borderRadius: 12, width: '100%' },
+  agreeAgreeText: { fontFamily: 'Inter_700Bold', fontSize: 15, color: '#1a1200' },
+  agreeCancelBtn: { paddingVertical: 13, alignItems: 'center', width: '100%', marginTop: 4 },
+  agreeCancelText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: Colors.textMuted },
 });

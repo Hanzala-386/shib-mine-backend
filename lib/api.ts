@@ -599,7 +599,8 @@ async function pbComputeVipMetrics(user: any): Promise<VipMetrics> {
       filter: `user="${pbId}" && status="completed"`,
     })).totalItems;
   } catch { /* metric stays 0 */ }
-  return { refs, balance, tasks, withdrawals };
+  const refIncome = Number(user.referral_earnings) || 0;
+  return { refs, balance, refIncome, tasks, withdrawals };
 }
 
 async function getVipStatusImpl(pbId: string): Promise<VipStatusResult> {

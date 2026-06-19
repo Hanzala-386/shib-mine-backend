@@ -4,6 +4,7 @@ import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
 import { pb } from '@/lib/pocketbase';
 import { notifyWithdrawalCancelled } from '@/lib/notifications';
+import { lockedBalanceForVipLevel, availableBalanceAfterVipLock, normalizeVipLevel } from '@shared/vip';
 
 export interface WithdrawalRecord {
   id: string;
@@ -16,6 +17,8 @@ export interface WithdrawalRecord {
 
 interface WalletContextValue {
   shibBalance: number;
+  lockedShibBalance: number;
+  availableShibBalance: number;
   powerTokens: number;
   withdrawals: WithdrawalRecord[];
   withdrawalTier: number;
@@ -58,6 +61,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const rawPT = pbUser?.powerTokens;
   const shibBalance = typeof rawShib === 'number' && isFinite(rawShib) ? rawShib : 0;
   const powerTokens = typeof rawPT === 'number' && isFinite(rawPT) ? rawPT : 10;
+  // VIP wallet lock: the active tier's required SHIB balance is locked; only the
+  // remainder is withdrawable. Mirrors the server-side withdrawal gate.
+  const vipLevel = normalizeVipLevel(pbUser?.vipLevel);
+  const lockedShibBalance = lockedBalanceForVipLevel(vipLevel);
+  const availableShibBalance = availableBalanceAfterVipLock(shibBalance, vipLevel);
 
   useEffect(() => {
     if (pbId) fetchWalletData();
@@ -218,6 +226,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     netAmount: number,
   ): Promise<{ success: boolean; error?: string }> {
     if (!pbId) return { success: false, error: 'Not authenticated' };
+    if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: 'Invalid withdrawal amount' };
     try {
       await api.createWithdrawal({ pbId, method, addressOrEmail, amount, netAmount });
       await refreshBalance();
@@ -227,12 +236,22 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       // PB SDK fallback — write directly to PocketBase
       try {
         const userRec = await pb.collection('users').getOne(pbId, {
-          fields: 'id,shib_balance',
+          fields: 'id,shib_balance,vip_level',
         });
         const currentBalance = userRec.shib_balance || 0;
 
         if (currentBalance < amount) {
           return { success: false, error: 'Insufficient balance' };
+        }
+
+        // VIP wallet lock: required SHIB balance for the active tier cannot be withdrawn.
+        const locked = lockedBalanceForVipLevel(userRec.vip_level);
+        const available = Math.max(0, currentBalance - locked);
+        if (amount > available) {
+          return {
+            success: false,
+            error: `VIP ${normalizeVipLevel(userRec.vip_level)} locks ${locked} SHIB in your wallet. You can withdraw up to ${available} SHIB. Contact support@shibahit.com to remove your VIP tier.`,
+          };
         }
 
         const completedRes = await pb.collection('withdrawals').getList(1, 200, {
@@ -277,6 +296,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({
     shibBalance,
+    lockedShibBalance,
+    availableShibBalance,
     powerTokens,
     withdrawals,
     withdrawalTier,
@@ -286,7 +307,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     addPowerTokens,
     createWithdrawal,
     refetch: fetchWalletData,
-  }), [shibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, isLoading, pbId]);
+  }), [shibBalance, lockedShibBalance, availableShibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, isLoading, pbId]);
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }

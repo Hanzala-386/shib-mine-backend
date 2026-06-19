@@ -32,6 +32,7 @@ export const VIP_INCREMENTS_SHIB_PER_HR: Record<number, number> = {
 export interface VipRequirement {
   refs: number;        // count of users referred by this user
   balance: number;     // shib_balance
+  refIncome: number;   // accumulated referral commission (users.referral_earnings)
   tasks: number;       // approved task_submissions
   withdrawals: number; // completed withdrawals
 }
@@ -40,19 +41,20 @@ export interface VipRequirement {
 // Balance requirements are monotonically increasing — relied upon by
 // highestBalanceEligibleTier() below.
 export const VIP_REQUIREMENTS: Record<number, VipRequirement> = {
-  1: { refs: 2,  balance: 2000,    tasks: 0,  withdrawals: 0  },
-  2: { refs: 5,  balance: 50000,   tasks: 5,  withdrawals: 0  },
-  3: { refs: 10, balance: 100000,  tasks: 10, withdrawals: 2  },
-  4: { refs: 15, balance: 200000,  tasks: 15, withdrawals: 5  },
-  5: { refs: 20, balance: 400000,  tasks: 25, withdrawals: 10 },
-  6: { refs: 30, balance: 600000,  tasks: 35, withdrawals: 15 },
-  7: { refs: 40, balance: 800000,  tasks: 45, withdrawals: 20 },
-  8: { refs: 50, balance: 1000000, tasks: 50, withdrawals: 20 },
+  1: { refs: 2,  balance: 2000,    refIncome: 2000,   tasks: 0,  withdrawals: 0  },
+  2: { refs: 5,  balance: 50000,   refIncome: 5000,   tasks: 5,  withdrawals: 0  },
+  3: { refs: 10, balance: 100000,  refIncome: 10000,  tasks: 10, withdrawals: 2  },
+  4: { refs: 15, balance: 200000,  refIncome: 15000,  tasks: 15, withdrawals: 5  },
+  5: { refs: 20, balance: 400000,  refIncome: 25000,  tasks: 25, withdrawals: 10 },
+  6: { refs: 30, balance: 600000,  refIncome: 40000,  tasks: 35, withdrawals: 15 },
+  7: { refs: 40, balance: 800000,  refIncome: 70000,  tasks: 45, withdrawals: 20 },
+  8: { refs: 50, balance: 1000000, refIncome: 100000, tasks: 50, withdrawals: 20 },
 };
 
 export interface VipMetrics {
   refs: number;
   balance: number;
+  refIncome: number;
   tasks: number;
   withdrawals: number;
 }
@@ -91,6 +93,7 @@ export function meetsVipRequirements(targetLevel: number, m: VipMetrics): boolea
   return (
     m.refs >= req.refs &&
     m.balance >= req.balance &&
+    m.refIncome >= req.refIncome &&
     m.tasks >= req.tasks &&
     m.withdrawals >= req.withdrawals
   );
@@ -103,6 +106,7 @@ export function unmetVipRequirements(targetLevel: number, m: VipMetrics): Array<
   const unmet: Array<keyof VipRequirement> = [];
   if (m.refs < req.refs) unmet.push('refs');
   if (m.balance < req.balance) unmet.push('balance');
+  if (m.refIncome < req.refIncome) unmet.push('refIncome');
   if (m.tasks < req.tasks) unmet.push('tasks');
   if (m.withdrawals < req.withdrawals) unmet.push('withdrawals');
   return unmet;
@@ -122,4 +126,18 @@ export function highestBalanceEligibleTier(balance: number, cap: number, floor: 
     else break;
   }
   return Math.max(eligible, floorLvl);
+}
+
+// ── VIP wallet lock ──────────────────────────────────────────────────────────
+// When a user holds VIP level N, the BALANCE requirement of level N is locked in
+// their wallet to maintain their premium mining velocity. Level 0 locks nothing.
+// withdrawable Available Balance = shib_balance − lockedBalanceForVipLevel(level).
+export function lockedBalanceForVipLevel(level: any): number {
+  const lvl = normalizeVipLevel(level);
+  return lvl > 0 ? (VIP_REQUIREMENTS[lvl]?.balance || 0) : 0;
+}
+
+// Convenience: withdrawable balance after subtracting the VIP lock (never < 0).
+export function availableBalanceAfterVipLock(balance: number, level: any): number {
+  return Math.max(0, (Number(balance) || 0) - lockedBalanceForVipLevel(level));
 }

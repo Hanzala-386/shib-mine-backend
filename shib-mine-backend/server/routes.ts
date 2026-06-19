@@ -13,6 +13,7 @@ import {
   VIP_REQUIREMENTS,
   meetsVipRequirements,
   unmetVipRequirements,
+  lockedBalanceForVipLevel,
   MAX_VIP_LEVEL,
 } from "../shared/vip";
 
@@ -2678,6 +2679,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!pbId || !method || !addressOrEmail || !amount)
         return res.status(400).json({ error: "pbId, method, addressOrEmail, amount required" });
       const grossAmount = Number(amount);
+      if (!Number.isFinite(grossAmount) || grossAmount <= 0)
+        return res.status(400).json({ error: "Invalid withdrawal amount" });
       const resolvedNet = typeof netAmount === 'number' && netAmount > 0 ? netAmount : grossAmount;
 
       // Verify user has sufficient balance
@@ -2685,6 +2688,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (user.code) return res.status(404).json({ error: "User not found" });
       if ((user.shib_balance || 0) < amount)
         return res.status(400).json({ error: "Insufficient balance" });
+
+      // VIP wallet lock: the active VIP tier's required SHIB balance is locked and
+      // cannot be withdrawn. Available = balance − lockedBalanceForVipLevel(level).
+      const lockedBalance = lockedBalanceForVipLevel(user.vip_level);
+      const availableBalance = Math.max(0, (Number(user.shib_balance) || 0) - lockedBalance);
+      if (grossAmount > availableBalance)
+        return res.status(400).json({
+          error: `VIP ${normalizeVipLevel(user.vip_level)} locks ${lockedBalance} SHIB in your wallet. You can withdraw up to ${availableBalance} SHIB. Contact support@shibahit.com to remove your VIP tier.`,
+        });
 
       // Get withdrawal tier minimum
       const tierRes = await pbGet(
@@ -3725,7 +3737,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       withdrawals = Number(r.totalItems) || 0;
     } catch { /* metric stays 0 */ }
 
-    return { refs, balance, tasks, withdrawals };
+    // Accumulated referral commission (monotonic; credited via referral pipeline).
+    const refIncome = Number(userRecord.referral_earnings) || 0;
+
+    return { refs, balance, refIncome, tasks, withdrawals };
   }
 
   // GET current VIP state + live metrics
