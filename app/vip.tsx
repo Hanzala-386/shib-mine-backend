@@ -21,6 +21,7 @@ import {
   type VipMetrics,
 } from '@shared/vip';
 import Colors from '@/constants/colors';
+import { InlineBannerAd } from '@/components/StickyBannerAd';
 
 const REQ_META: { key: keyof VipMetrics; label: string; icon: string }[] = [
   { key: 'refs',        label: 'Referrals',     icon: 'account-multiple' },
@@ -145,8 +146,8 @@ export default function VipScreen() {
           const achieved = currentLevel >= lvl;
           const isNext   = lvl === nextLevel;
           return (
+            <React.Fragment key={lvl}>
             <Animated.View
-              key={lvl}
               entering={FadeInDown.delay(120 + lvl * 30).springify()}
               style={[
                 styles.levelCard,
@@ -210,6 +211,9 @@ export default function VipScreen() {
                 </Pressable>
               )}
             </Animated.View>
+            {/* Banner ad after every 2nd VIP tier card (no trailing banner). */}
+            {lvl % 2 === 0 && lvl < MAX_VIP_LEVEL && <InlineBannerAd />}
+            </React.Fragment>
           );
         })}
       </ScrollView>

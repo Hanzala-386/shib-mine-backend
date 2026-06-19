@@ -11,6 +11,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useAds } from '@/context/AdContext';
 import Colors from '@/constants/colors';
 import SpinningCoin from '@/components/SpinningCoin';
+import { InlineBannerAd } from '@/components/StickyBannerAd';
 import { pb } from '@/lib/pocketbase';
 import type { MiningHistoryRecord } from '@/lib/api';
 
@@ -317,26 +318,8 @@ export default function WalletScreen() {
           </LinearGradient>
         </Animated.View>
 
-        {/* ── Mining History ── */}
+        {/* ── Withdrawal History (moved ABOVE Mining History) ── */}
         <Animated.View entering={FadeInDown.delay(400).springify()} style={{ marginBottom: 28 }}>
-          <Text style={styles.sectionTitle}>Mining History</Text>
-          {miningHistory.length === 0 ? (
-            <View style={styles.emptyState}>
-              <MaterialCommunityIcons name="pickaxe" size={40} color={Colors.textMuted} />
-              <Text style={styles.emptyTitle}>No claims yet</Text>
-              <Text style={styles.emptyDesc}>Your completed mining sessions will appear here</Text>
-            </View>
-          ) : (
-            <View style={styles.txList}>
-              {miningHistory.map((item) => (
-                <MiningHistoryItem key={item.id} item={item} />
-              ))}
-            </View>
-          )}
-        </Animated.View>
-
-        {/* ── Withdrawal History ── */}
-        <Animated.View entering={FadeInDown.delay(500).springify()}>
           <Text style={styles.sectionTitle}>Withdrawal History</Text>
           {withdrawals.length === 0 ? (
             <View style={styles.emptyState}>
@@ -346,8 +329,34 @@ export default function WalletScreen() {
             </View>
           ) : (
             <View style={styles.txList}>
-              {withdrawals.map((w) => (
-                <WithdrawalItem key={w.id} w={w} />
+              {withdrawals.map((w, idx) => (
+                <React.Fragment key={w.id}>
+                  <WithdrawalItem w={w} />
+                  {/* Banner ad after every 2nd withdrawal log (no trailing banner). */}
+                  {(idx + 1) % 2 === 0 && idx < withdrawals.length - 1 && <InlineBannerAd />}
+                </React.Fragment>
+              ))}
+            </View>
+          )}
+        </Animated.View>
+
+        {/* ── Mining History (moved BELOW Withdrawal History) ── */}
+        <Animated.View entering={FadeInDown.delay(500).springify()}>
+          <Text style={styles.sectionTitle}>Mining History</Text>
+          {miningHistory.length === 0 ? (
+            <View style={styles.emptyState}>
+              <MaterialCommunityIcons name="pickaxe" size={40} color={Colors.textMuted} />
+              <Text style={styles.emptyTitle}>No claims yet</Text>
+              <Text style={styles.emptyDesc}>Your completed mining sessions will appear here</Text>
+            </View>
+          ) : (
+            <View style={styles.txList}>
+              {miningHistory.map((item, idx) => (
+                <React.Fragment key={item.id}>
+                  <MiningHistoryItem item={item} />
+                  {/* Banner ad after every 2nd mining log (no trailing banner). */}
+                  {(idx + 1) % 2 === 0 && idx < miningHistory.length - 1 && <InlineBannerAd />}
+                </React.Fragment>
               ))}
             </View>
           )}

@@ -14,6 +14,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { api, TaskItem } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import Colors from '@/constants/colors';
+import { InlineBannerAd } from '@/components/StickyBannerAd';
 
 // 2 MB hard limit checked against compressed file size (manipulator gives us the URI)
 const MAX_PROOF_BYTES = 2 * 1024 * 1024;
@@ -299,12 +300,16 @@ export default function TasksScreen() {
               colors={[Colors.gold]}
             />
           }
-          renderItem={({ item }) => (
-            <TaskCard
-              item={item}
-              pbId={user?.pbId || ''}
-              onProofSelected={handleProofSelected}
-            />
+          renderItem={({ item, index }) => (
+            <>
+              <TaskCard
+                item={item}
+                pbId={user?.pbId || ''}
+                onProofSelected={handleProofSelected}
+              />
+              {/* Banner ad after every 2nd task (no trailing banner). */}
+              {(index + 1) % 2 === 0 && index < tasks.length - 1 && <InlineBannerAd />}
+            </>
           )}
         />
       )}
