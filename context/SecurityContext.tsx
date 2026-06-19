@@ -7,6 +7,7 @@ import { getApiUrl } from '@/lib/query-client';
 import { requestIntegrityToken } from '@/lib/playIntegrity';
 import {
   getEnabledAccessibilityServices,
+  getInstalledBlacklistedPackages,
   isAutoClickerDetectorAvailable,
 } from '@/modules/auto-clicker-detector';
 
@@ -234,6 +235,13 @@ function checkAccessibilityAutoClicker(): boolean {
   // No-op unless the native module is compiled in (production Android APK).
   if (!isAutoClickerDetectorAvailable()) return false;
 
+  // (A) INSTALLED known auto-clicker apps — exact package match only, restricted to
+  // the IDs declared in the module's <queries> manifest (no QUERY_ALL_PACKAGES →
+  // Play compliant). Catches floating-overlay clickers that synthesize taps without
+  // ever appearing as an enabled accessibility service.
+  if (getInstalledBlacklistedPackages().length > 0) return true;
+
+  // (B) ENABLED accessibility services matching a known clicker package / keyword.
   const services = getEnabledAccessibilityServices();
   for (const svc of services) {
     const pkg   = (svc.packageName ?? '').toLowerCase();

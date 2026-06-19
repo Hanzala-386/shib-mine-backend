@@ -5,6 +5,7 @@ import React, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
+import { useSecurity } from './SecurityContext';
 import { api } from '@/lib/api';
 import { getApiUrl } from '@/lib/query-client';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
@@ -454,6 +455,7 @@ function resolveEndMs(e?: number, s?: number, dur = 0): number {
 
 export function MiningProvider({ children }: { children: ReactNode }) {
   const { user, pbUser, refreshBalance, optimisticUpdatePt } = useAuth();
+  const { blockType } = useSecurity();
 
   const [session, setSession] = useState<MiningSession | null>(null);
   const [timeRemaining, setTimeRemaining] = useState(0);
@@ -593,6 +595,16 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     if (shibIntervalRef.current) { clearInterval(shibIntervalRef.current); shibIntervalRef.current = null; }
     if (driftSyncRef.current) { clearInterval(driftSyncRef.current); driftSyncRef.current = null; }
   }
+
+  // Anti-cheat: freeze the local mining session whenever a security block is active
+  // (auto-clicker / accessibility tap service detected). The full-screen SecurityModal
+  // already blocks claiming; this stops the visible timer + SHIB counter from
+  // advancing while blocked. Inert in dev (__DEV__ skips all security checks, so
+  // blockType stays null) — only engages in a production APK build.
+  useEffect(() => {
+    if (blockType) clearAllTimers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blockType]);
 
   async function loadSession() {
     const currentPbId = pbIdRef.current;

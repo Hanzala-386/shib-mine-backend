@@ -192,6 +192,21 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         setUserJoined(!!u.tournament_joined);
         setUserPoints(Number(u.weekly_tournament_points) || 0);
       }
+      // Mirror the authoritative points into the user's OWN participant row so
+      // tournament_participants.points stays in sync even if the Express sync route
+      // is unreachable in production. Cosmetic field; self-update (updateRule) allows
+      // this. One row per user per week (weekly wipe) → match by user_id, latest.
+      if (u.tournament_joined) {
+        try {
+          const participant = await pb
+            .collection('tournament_participants')
+            .getFirstListItem(`user_id = "${user.pbId}"`, { sort: '-created' });
+          const pts = Number(u.weekly_tournament_points) || 0;
+          if (participant?.id && Number(participant.points) !== pts) {
+            await pb.collection('tournament_participants').update(participant.id, { points: pts });
+          }
+        } catch { /* no participant row yet / not permitted — non-critical */ }
+      }
     } catch {
       if (mounted.current) setUserJoined(false);
     } finally {

@@ -164,6 +164,23 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 - Withdrawal-approve route (both servers): on `status→completed`, if `is_blacklist_1 && !blacklist_1_notified` → latch `blacklist_1_notified`+`_at` FIRST (concurrency-safe), then create 2 warning notifications ONCE ("Fraud activity detected" / "Account ban notification.").
 - `lib/api.ts` PBUser gains `isBlacklist1`/`isBlacklist2` (from `is_blacklist_1`/`_2`); `admin.tsx` VIP search card shows a red blacklist badge.
 
+## Session 5 — Three Bug Fixes
+### Bug 1 — Tournament points desync (`tournament_participants.points` stuck at 0)
+- `tournament_participants.points` is now mirrored from the authoritative `users.weekly_tournament_points`. It is **cosmetic/admin-display only** — leaderboard + `runEndOfWeek` winner selection still read `weekly_tournament_points` (server-computed from `mining_sessions`).
+- `tournament_participants.updateRule` relaxed `null → user_id = @request.auth.id` (self-update) so the client can mirror its own points. Safe because the field is non-authoritative. Applied to the shared PB on backend boot via `setupTournamentSchema` (create + else-branch patch of the existing collection). Confirm boot log: `tournament_participants.updateRule → self-update ✓`.
+- Server: `syncUserTournamentPoints` patches the user's latest participant row after writing `weekly_tournament_points` (match by `user_id`; one row/user/week after the weekly wipe). Client: `TournamentContext.refreshUserStats` mirrors via PB SDK `getFirstListItem(user_id, sort:-created)` — guaranteed prod path.
+
+### Bug 2 — Auto-clicker hardening
+- Added installed-package detection: Kotlin `getInstalledBlacklistedPackages()` (`PackageManager.getPackageInfo`) + module `android/src/main/AndroidManifest.xml` `<queries>` declaring 4 known clicker package IDs (no `QUERY_ALL_PACKAGES` → Play-compliant). The `<queries>` list MUST stay in sync with `BLACKLISTED_AUTOCLICKER_PACKAGES` in `modules/auto-clicker-detector/index.ts`.
+- `SecurityContext.checkAccessibilityAutoClicker` now flags an installed blacklisted package (check A) in addition to enabled accessibility services (check B); scans on launch + every 5s (covers gameplay).
+- `MiningContext` consumes `useSecurity().blockType` and freezes all mining timers (interval/shib/drift) when any block is active. This is a **UI freeze** (claim is already blocked by `SecurityModal`), NOT a destructive server-side session abort — conservative to avoid false-positive harm. Inert in dev (`__DEV__` skips all security checks).
+- Native pieces are **APK-only/untestable in the sandbox** — verify in an EAS build with a real auto-clicker (e.g. `com.truedevelopersstudio.automatictap.autoclicker`) installed.
+
+### Bug 3 — `force_unity_only` ignored (still showed AdMob)
+- `AdContext._routeInterstitial`/`_routeRewarded` now check `forceUnityOnly && Platform.OS === 'android'` **BEFORE** the `!isUnityAvailable()` AdMob bailout → route to Unity directly, AdMob fully bypassed. The old redundant `forceUnityOnly` block (which sat after the bailout) was removed. The early return exits before any AdMob race/timer state starts, so race guards are preserved.
+- `StickyBannerAd` BannerSlot renders `<UnityBanner/>` under the same condition (no AdMob fallback).
+- When the Unity native module is absent, forced-Unity no-ops → **NO ad shown** (intended "AdMob bypassed"), never AdMob. iOS is unchanged (always AdMob; Unity helpers no-op off Android).
+
 ## Ports
 - Frontend (Expo): 8081
 - Backend (Express): 5000

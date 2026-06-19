@@ -379,13 +379,17 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
    * The race hinges on AdMob PRESENTING (LOADED→show), not completing, so a normal
    * AdMob ad the user watches for >3s never wrongly triggers a second Unity ad. */
   function _routeInterstitial(unitId: string, onDone: (shown: boolean) => void) {
-    if (!isUnityAvailable()) { _showAdMobInterstitial(unitId, onDone); return; }
-
-    if (settingsRef.current.forceUnityOnly) {
-      console.log('[AdContext] forceUnityOnly → Unity interstitial');
+    // Phase A — forced Unity (Android only): bypass AdMob ENTIRELY. Checked BEFORE
+    // the isUnityAvailable() bailout so the toggle is honored even on a build where
+    // the Unity native module is absent (then showUnityInterstitial no-ops →
+    // onDone(false), i.e. no ad — which is the explicit "AdMob bypassed" intent).
+    if (settingsRef.current.forceUnityOnly && Platform.OS === 'android') {
+      console.log('[AdContext] forceUnityOnly (Android) → Unity interstitial, AdMob bypassed');
       showUnityInterstitial().then(onDone);
       return;
     }
+    if (!isUnityAvailable()) { _showAdMobInterstitial(unitId, onDone); return; }
+
     if (!nativeSdkAvailable || !sdkReady) {
       showUnityInterstitial().then(onDone);
       return;
@@ -421,13 +425,17 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
   }
 
   function _routeRewarded(unitId: string, onDone: (watched: boolean) => void) {
-    if (!isUnityAvailable()) { _showAdMobRewarded(unitId, onDone); return; }
-
-    if (settingsRef.current.forceUnityOnly) {
-      console.log('[AdContext] forceUnityOnly → Unity rewarded');
+    // Phase A — forced Unity (Android only): bypass AdMob ENTIRELY. Checked BEFORE
+    // the isUnityAvailable() bailout so the toggle is honored even on a build where
+    // the Unity native module is absent (then showUnityRewarded no-ops →
+    // onDone(false), i.e. no reward — the explicit "AdMob bypassed" intent).
+    if (settingsRef.current.forceUnityOnly && Platform.OS === 'android') {
+      console.log('[AdContext] forceUnityOnly (Android) → Unity rewarded, AdMob bypassed');
       showUnityRewarded().then(onDone);
       return;
     }
+    if (!isUnityAvailable()) { _showAdMobRewarded(unitId, onDone); return; }
+
     if (!nativeSdkAvailable || !sdkReady) {
       showUnityRewarded().then(onDone);
       return;

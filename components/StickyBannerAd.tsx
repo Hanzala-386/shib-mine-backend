@@ -95,7 +95,12 @@ function BannerSlot() {
   const unityOK = isUnityAvailable();
   const [useUnity, setUseUnity] = useState(false);
 
-  if (unityOK && (settings.forceUnityOnly || useUnity)) return <UnityBanner />;
+  // Phase A — forced Unity (Android only): bypass AdMob ENTIRELY. UnityBanner
+  // renders null when the native module is absent (so no banner until an EAS
+  // build) rather than ever falling back to an AdMob banner.
+  if (settings.forceUnityOnly && Platform.OS === 'android') return <UnityBanner />;
+
+  if (unityOK && useUnity) return <UnityBanner />;
 
   const unitId = settings.admobBannerUnitId || TEST_IDS.BANNER;
   return (

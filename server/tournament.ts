@@ -225,11 +225,22 @@ export async function setupTournamentSchema(): Promise<void> {
           { name: 'points',                      type: 'number', required: false, options: { min: null, max: null } },
           { name: 'registered_during_intermission', type: 'bool', required: false, options: {} },
         ],
-        listRule: '', viewRule: '', createRule: '@request.auth.id != ""', updateRule: null, deleteRule: null,
+        // points is NON-AUTHORITATIVE (leaderboard + winners read users.weekly_tournament_points).
+        // Self-update lets a client mirror its OWN points into this cosmetic row.
+        listRule: '', viewRule: '', createRule: '@request.auth.id != ""',
+        updateRule: 'user_id = @request.auth.id', deleteRule: null,
       });
       console.log('[tournament] tournament_participants created ✓');
     } else {
       await ensureField('tournament_participants', 'registered_during_intermission', userBoolOpt);
+      // Migrate the existing (shared-PB) collection: allow self-update so clients can
+      // mirror their own points. Cosmetic field — authoritative points live on users.
+      try {
+        await pbPatch(`/api/collections/${tpExisting.id}`, { updateRule: 'user_id = @request.auth.id' });
+        console.log('[tournament] tournament_participants.updateRule → self-update ✓');
+      } catch (e: any) {
+        console.warn('[tournament] could not patch tournament_participants.updateRule:', e?.message);
+      }
     }
 
     // ── tournament_history collection (permanent winners log) ────────────
@@ -426,6 +437,26 @@ export async function syncUserTournamentPoints(pbId: string): Promise<number> {
     await pbPatch(`/api/collections/users/records/${pbId}`, {
       weekly_tournament_points: totalPoints,
     });
+
+    // 5b. Mirror into the user's tournament_participants row so the column the admin
+    //     panel / DB shows matches the leaderboard. Secondary/cosmetic — leaderboard +
+    //     winners read users.weekly_tournament_points. runEndOfWeek wipes participant
+    //     rows weekly, so each user has exactly one row per week → match by user_id.
+    try {
+      const pRes = await pbGet(
+        `/api/collections/tournament_participants/records?filter=${encodeURIComponent(
+          `user_id = "${pbId}"`,
+        )}&sort=-created&perPage=1`,
+      );
+      const participant = pRes?.items?.[0];
+      if (participant?.id) {
+        await pbPatch(`/api/collections/tournament_participants/records/${participant.id}`, {
+          points: totalPoints,
+        });
+      }
+    } catch (e: any) {
+      console.warn('[tournament] participant points mirror failed:', e?.message);
+    }
 
     console.log(`[tournament] sync-points ${pbId}: ${sessions.length} sessions → ${totalPoints.toFixed(2)} pts`);
     return totalPoints;

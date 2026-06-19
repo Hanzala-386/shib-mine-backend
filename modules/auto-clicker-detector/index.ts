@@ -35,3 +35,32 @@ export function getEnabledAccessibilityServices(): EnabledAccessibilityService[]
     return [];
   }
 }
+
+/**
+ * Known high-confidence auto-clicker / macro package IDs. MUST stay in sync with the
+ * <queries> entries in android/src/main/AndroidManifest.xml — on Android 11+ only
+ * these specific packages are visible to getPackageInfo (no QUERY_ALL_PACKAGES →
+ * Play-Store compliant). Keep this list to EXACT, high-confidence IDs only.
+ */
+export const BLACKLISTED_AUTOCLICKER_PACKAGES = [
+  'com.truedevelopersstudio.automatictap.autoclicker',
+  'simplehat.clicker',
+  'com.p000ison.autoclicker',
+  'com.phonephreak.autoclicker',
+];
+
+/**
+ * Returns the subset of `packages` that are currently INSTALLED on the device.
+ * Catches floating-overlay auto-clickers even when they are not registered as an
+ * enabled accessibility service. Safe no-op ([]) off-device / module absent.
+ */
+export function getInstalledBlacklistedPackages(
+  packages: string[] = BLACKLISTED_AUTOCLICKER_PACKAGES,
+): string[] {
+  if (!AutoClickerDetectorModule) return [];
+  try {
+    return (AutoClickerDetectorModule.getInstalledBlacklistedPackages(packages) ?? []) as string[];
+  } catch {
+    return [];
+  }
+}
