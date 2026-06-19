@@ -246,9 +246,52 @@ export async function setupTournamentSchema(): Promise<void> {
     await ensureDailyClaimSettingsCollection();
     await ensureDailyClaimsCollection();
 
+    // ── app_config (Force Update gate) ──────────────────────────────────
+    await ensureAppConfigCollection();
+
     console.log('[tournament] setupTournamentSchema complete ✓');
   } catch (e: any) {
     console.warn('[tournament] setupTournamentSchema error:', e.message);
+  }
+}
+
+// ── app_config (Force Update) collection ───────────────────────────────────
+// Single-row system config that drives the non-bypassable force-update gate.
+// Public read (listRule/viewRule = '') so the APK can fetch it without auth.
+async function ensureAppConfigCollection(): Promise<void> {
+  try {
+    const existing = await pbGet('/api/collections/app_config').catch(() => null);
+    if (!existing?.id) {
+      await pbPost('/api/collections', {
+        name: 'app_config', type: 'base',
+        schema: [
+          { name: 'current_version',      type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
+          { name: 'min_required_version', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
+          { name: 'play_store_url',       type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
+          { name: 'update_message',       type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
+        ],
+        listRule: '', viewRule: '', createRule: null, updateRule: null, deleteRule: null,
+      });
+      console.log('[app_config] Created app_config ✓');
+    } else {
+      console.log('[app_config] app_config ✓');
+    }
+
+    // Seed the single config row ONCE. NEVER overwrite — the admin edits
+    // min_required_version directly in PB to trigger the force update, and a
+    // server restart must not reset it back to the safe default.
+    const recs = await pbGet('/api/collections/app_config/records?perPage=1');
+    if (!recs?.items?.length) {
+      await pbPost('/api/collections/app_config/records', {
+        current_version:      '1.0.1',
+        min_required_version: '1.0.1', // SAFE: matches the live build so nobody is locked out
+        play_store_url:       'https://play.google.com/store/apps/details?id=com.hanzalasha.shibmine',
+        update_message:       'A critical new update is available. Please update to continue playing!',
+      });
+      console.log('[app_config] Seeded app_config row (min_required_version=1.0.1) ✓');
+    }
+  } catch (e: any) {
+    console.warn('[app_config] ensureAppConfigCollection:', e.message);
   }
 }
 

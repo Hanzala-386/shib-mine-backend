@@ -48,3 +48,14 @@ PB-direct fallback in root contexts, and `shared/vip.ts` in both roots. Frontend
 changes still go in ROOT only.
 **Stale doc:** replit.md still claims "Express runs ONLY in Replit dev / APK 404s on
 /api/app/*" — that's outdated; the APK hits Railway via backend.webcod.in.
+
+# One shared PocketBase + collection-creation uses `schema:` not `fields:`
+All servers (root dev Express, root Railway, subdir Railway) point at the SAME
+PocketBase, `https://api.webcod.in`. So a collection/seed provisioned by ANY server's
+boot exists for ALL of them — mirroring schema-provisioning code into both servers is
+defensive only; restarting the local root "Start Backend" already creates the
+collection in production PB. **Gotcha:** this PB version's REST collection-create API
+expects the legacy `schema:` array key (NOT `fields:`) and rejects rules inline — set
+listRule/viewRule/etc. in a SEPARATE PATCH after create. The subdir routes.ts mixes
+both styles (some ensure* use `fields:`); trust `schema:` — it's the confirmed-working
+one (root tournament.ts creates with `schema:` successfully against api.webcod.in).

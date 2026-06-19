@@ -1,0 +1,51 @@
+IMPLEMENT STRICT, NON-BYPASSABLE FORCE UPDATE (MANDATORY UPDATE) SYSTEM
+
+We need to implement a full-screen Force Update mechanism in our Shiba Hit application using React Native, PocketBase, and Railway. 
+
+CRITICAL SAFETY DEPLOYMENT RULE:
+Our currently live app is version "1.0.1". The next update will be version "1.0.2". When you write this code, we must ensure that current live users on "1.0.1" do NOT get locked out instantly. The app should only block them when we manually update the version string inside PocketBase to "1.0.2" after the Play Store approval.
+
+Please follow this exact structural architecture layout provided below:
+
+---
+
+### 1. DATABASE CONFIGURATION (PocketBase Setup)
+Create a new single-row system configuration collection named `app_config` with the following schema:
+- `current_version` (text/string) -> Example: "1.0.2"
+- `min_required_version` (text/string) -> INITIAL VALUE MUST BE SET TO "1.0.1" TO PREVENT INSTANT LOCKOUT.
+- `play_store_url` (text/string) -> Value: "https://play.google.com/store/apps/details?id=com.hanzalasha.shibmine"
+- `update_message` (text/string) -> Value: "A critical new update is available. Please update to continue playing!"
+
+---
+
+### 2. FRONTEND ENGINE IMPLEMENTATION (React Native)
+
+A. Version Constants:
+In a centralized constants file, export the native hardcoded app version for the current compilation bundle:
+export const INSTALLED_APP_VERSION = "1.0.1"; // (Note: We will change this to "1.0.2" when building the final production APK bundle).
+
+B. Semantic Version Comparison (Semver helper):
+Implement a clean string split mapping method to accurately compare decimals (e.g., handling jumps like "1.10.0" vs "1.2.0" correctly without basic number casting breaks).
+function isVersionLower(current, minimum) {
+    const currParts = current.split('.').map(Number);
+    const minParts = minimum.split('.').map(Number);
+    for (let i = 0; i < Math.max(currParts.length, minParts.length); i++) {
+        const currNum = currParts[i] || 0;
+        const minNum = minParts[i] || 0;
+        if (currNum < minNum) return true;
+        if (currNum > minNum) return false;
+    }
+    return false;
+}
+
+C. Root App Initialization Blocking Layout (App.js Interception):
+- Fetch the `app_config` collection item right at the application boot loader phase before mounting main navigation stacks.
+- If `isVersionLower(INSTALLED_APP_VERSION, configRecord.min_required_version)` resolves to true, completely halt navigation mounting.
+- Render a absolute full-screen blocking overlay UI with the custom message and an "UPDATE NOW" button linking directly via React Native `Linking.openURL` to the Play Store link.
+
+D. Anti-Bypass OS Hooks:
+- Disable Android's physical back hardware button interaction using `BackHandler.addEventListener('hardwareBackPress')` by returning true to trap the outdated client session safely on the blocking screen layout view. Make the overlay modal non-dismissible.
+
+---
+
+Please integrate this lifecycle interception into the root architecture of Shiba Hit now, keeping the fallback configurations safe so we can change the version strings dynamically later.

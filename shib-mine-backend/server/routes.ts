@@ -1305,6 +1305,60 @@ function validateEnv() {
   }
 }
 
+// ─── Ensure app_config (Force Update gate) collection ─────────────────────
+// Single-row config that drives the non-bypassable force-update gate.
+// Public read (listRule/viewRule = "") so the APK can fetch it without auth.
+// NOTE: the shared root server also provisions this collection in the same
+// PocketBase (api.webcod.in); this mirror keeps the subdir deploy self-sufficient.
+async function ensureAppConfigCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/app_config");
+    if (!check.code) {
+      // Already exists — ensure public read rules are set.
+      await pbHttp("PATCH", `/api/collections/${check.id}`, {
+        listRule: "", viewRule: "", createRule: null, updateRule: null, deleteRule: null,
+      }, token);
+    } else {
+      // Create without rules (this PB version uses `schema`, rules patched separately).
+      const created = await pbHttp("POST", "/api/collections", {
+        name: "app_config",
+        type: "base",
+        schema: [
+          { name: "current_version",      type: "text", required: false },
+          { name: "min_required_version", type: "text", required: false },
+          { name: "play_store_url",       type: "text", required: false },
+          { name: "update_message",       type: "text", required: false },
+        ],
+      }, token);
+      if (created.code) {
+        console.warn("[app_config] Could not create collection:", JSON.stringify(created).slice(0, 200));
+        return;
+      }
+      await pbHttp("PATCH", `/api/collections/${created.id}`, {
+        listRule: "", viewRule: "", createRule: null, updateRule: null, deleteRule: null,
+      }, token);
+      console.log("[app_config] Collection created (public read)");
+    }
+
+    // Seed the single config row ONCE — NEVER overwrite. The admin edits
+    // min_required_version directly in PB to trigger the update; a restart must
+    // not reset it back to the safe default.
+    const recs = await pbGet("/api/collections/app_config/records?perPage=1&sort=created");
+    if (!recs.items?.length) {
+      await pbPost("/api/collections/app_config/records", {
+        current_version:      "1.0.1",
+        min_required_version: "1.0.1", // SAFE: matches live build so nobody is locked out
+        play_store_url:       "https://play.google.com/store/apps/details?id=com.hanzalasha.shibmine",
+        update_message:       "A critical new update is available. Please update to continue playing!",
+      });
+      console.log("[app_config] Seeded app_config row (min_required_version=1.0.1)");
+    }
+  } catch (e: any) {
+    console.warn("[app_config] Could not setup collection:", e.message);
+  }
+}
+
 // ─── Routes ────────────────────────────────────────────────────────────────
 export async function registerRoutes(app: Express): Promise<Server> {
   // Validate environment variables on startup — catches Railway misconfiguration immediately
@@ -1321,6 +1375,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensurePublicReferralsCollection())
     .then(() => ensureMiningSessionsRules())
     .then(() => ensureReferralEarningsLogCollection())
+    .then(() => ensureAppConfigCollection())
     .then(() => ensureBrevoKeyInSettings())
     .then(() => backfillWithdrawalMaskedNames())
     .then(() => ensureNotificationsCollection())

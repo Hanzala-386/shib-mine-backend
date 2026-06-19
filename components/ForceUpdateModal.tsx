@@ -1,56 +1,54 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Modal, View, Text, StyleSheet, Pressable, Linking, Platform,
+  Modal, View, Text, StyleSheet, Pressable, Linking, Platform, BackHandler,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import Constants from 'expo-constants';
 import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
+import { INSTALLED_APP_VERSION, isVersionLower } from '@/constants/version';
 
-// ── Semantic version comparison ───────────────────────────────────────────────
-// Returns true when `current` is strictly less than `minimum`.
-function isVersionBehind(current: string, minimum: string): boolean {
-  if (!minimum || minimum.trim() === '') return false;
-  const parse = (v: string) =>
-    v.trim().split('.').map((n) => parseInt(n, 10) || 0);
-  const c = parse(current);
-  const m = parse(minimum);
-  const len = Math.max(c.length, m.length);
-  for (let i = 0; i < len; i++) {
-    const cv = c[i] ?? 0;
-    const mv = m[i] ?? 0;
-    if (cv < mv) return true;
-    if (cv > mv) return false;
-  }
-  return false;
-}
+const DEFAULT_MESSAGE =
+  'A critical new update is available. Please update to continue playing!';
 
 export function ForceUpdateModal() {
   const [visible, setVisible] = useState(false);
   const [playStoreUrl, setPlayStoreUrl] = useState('');
+  const [message, setMessage] = useState(DEFAULT_MESSAGE);
 
+  // Fetch the force-update gate from PocketBase `app_config` at boot.
   useEffect(() => {
-    if (__DEV__) return; // Skip in development
+    // The Play Store force-update only applies to the native app — never block the
+    // web preview (it has no Play Store update path).
+    if (Platform.OS === 'web') return;
     (async () => {
       try {
-        const res = await pb.collection('settings').getList(1, 1, {
-          fields: 'minimum_version,play_store_url,app_store_link',
+        // Deterministically read the original seeded config row (oldest first),
+        // so an accidental extra row can never silently change the gate.
+        const res = await pb.collection('app_config').getList(1, 1, {
+          sort: 'created',
+          fields: 'min_required_version,play_store_url,update_message',
         });
-        const s = res.items[0];
-        if (!s) return;
-        const minVer: string = s.minimum_version || '';
-        const storeUrl: string = s.play_store_url || s.app_store_link || '';
-        const currentVer: string = Constants.expoConfig?.version ?? '0.0.0';
-        if (isVersionBehind(currentVer, minVer)) {
-          setPlayStoreUrl(storeUrl);
+        const c = res.items[0];
+        if (!c) return;
+        const minVer: string = c.min_required_version || '';
+        if (isVersionLower(INSTALLED_APP_VERSION, minVer)) {
+          setPlayStoreUrl(c.play_store_url || '');
+          if (c.update_message) setMessage(c.update_message);
           setVisible(true);
         }
       } catch {
-        // Silently ignore — never block the app due to a settings fetch failure
+        // Fail-open: never block the app because the config fetch failed.
       }
     })();
   }, []);
+
+  // Anti-bypass: trap the Android hardware back button while the gate is shown.
+  useEffect(() => {
+    if (!visible || Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [visible]);
 
   const handleUpdate = () => {
     if (playStoreUrl) {
@@ -86,9 +84,7 @@ export function ForceUpdateModal() {
             <Ionicons name="arrow-up-circle" size={38} color="#000" />
           </View>
           <Text style={styles.title}>Update Required</Text>
-          <Text style={styles.subtitle}>
-            A new version of Shiba Hit is available. Please update the app to continue mining.
-          </Text>
+          <Text style={styles.subtitle}>{message}</Text>
           <Pressable
             style={({ pressed }) => [styles.updateBtn, { opacity: pressed ? 0.85 : 1 }]}
             onPress={handleUpdate}
@@ -100,7 +96,7 @@ export function ForceUpdateModal() {
               end={{ x: 1, y: 0 }}
             >
               <Ionicons name="download-outline" size={18} color="#000" />
-              <Text style={styles.updateBtnText}>Update Now</Text>
+              <Text style={styles.updateBtnText}>UPDATE NOW</Text>
             </LinearGradient>
           </Pressable>
           <Text style={styles.hint}>

@@ -108,7 +108,7 @@ function ProvidedApp() {
       </AdProvider>
       {/* SecurityModal renders on top of all navigation — blocks the entire UI when triggered */}
       <SecurityModal />
-      {/* ForceUpdateModal — non-dismissible; shown when app version < minimum_version in settings */}
+      {/* ForceUpdateModal — non-dismissible; shown when INSTALLED_APP_VERSION < app_config.min_required_version (PocketBase) */}
       <ForceUpdateModal />
     </SecurityProvider>
   );
