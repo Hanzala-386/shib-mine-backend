@@ -1,0 +1,88 @@
+CRITICAL ARCHITECTURAL REFACTOR: TOURNAMENT LIFECYCLE & ANTI-CHEAT FIX
+Hey Developer,
+
+We have discovered major critical flaws in the tournament execution, point calculations, and anti-cheat implementation. Users with 0 scores are getting 10,000 coins just by registering, while actual players with 1K+ points are seeing 0 in the database. This is completely unacceptable and breaks the entire application economy.
+
+You must drop whatever custom logic you wrote and refactor the system exactly according to the lifecycle states, database relationships, and strict logic rules laid out below. This is a one-time permanent fix.
+
+🔍 WHERE YOU WENT WRONG (Developer Errors)
+No Unique Tournament Scoping: You are not scoping participants by a dynamic tournament_id. Old users and old points are bleeding into new tournaments.
+
+Local UI vs. Database Desync: The frontend UI displays accumulated points, but you are failing to write or batch those updates via API to the points/score field in the database.
+
+No Local State Cache Flush: When a tournament ends, you aren't clearing out the local state array/cache. The app keeps rendering cached values from the last session.
+
+Passive Security & Anti-Cheat Failure: The background accessibility and package checks are completely ignoring running third-party auto-clickers overlaying the screen.
+
+🛠️ SPECIFIC ARCHITECTURAL INSTRUCTIONS
+STEP 1: POCKETBASE SCHEMA ALIGNMENT
+You must scope everything by a unique, dynamic instance. Update and enforce the collections exactly like this:
+
+tournament_config: Must have id, status (active, intermission), banner (File/URL), start_time, end_time (ISO DateTime Strings), and admin_comment (Text).
+
+tournament_participants: Must include tournament_id (Relation pointing to active tournament_config.id), user_id (Relation to users), and score/points (Number, default: 0).
+
+tournament_history: Archive containing tournament_id, user_id, display_name, rank, points, and prize.
+
+STEP 2: STATE MACHINE & LIFECYCLE RUNNER (EXPRESS BACKEND)
+🟢 STATE A: LIVE TOURNAMENT ACTIVE
+Trigger: tournament_config.status == "active" AND Server Time is between start_time and end_time.
+
+Frontend Handling:
+
+Only pull and render users from tournament_participants where tournament_id == current_active_id.
+
+Real-time Sync: Every mining or tap point calculation must trigger a backend API request to update/increment the score field of that specific user row inside tournament_participants. Do not leave it inside local component state.
+
+The Settlement Engine (Timer Hits 00:00:00):
+
+Execute an atomic transaction on the backend.
+
+Switch tournament_config.status to "intermission".
+
+Query participants matching the ended ID: WHERE tournament_id == just_ended_id ORDER BY score DESC.
+
+Strict Security Guardrail: Run a validation check. If score <= 0, filter them out entirely. A user with 0 points must never pass through the reward allocation pipeline or receive payouts, regardless of their position.
+
+Bulk write the true winners into tournament_history and update their balances in the users collection.
+
+🟡 STATE B: INTERMISSION & REGISTRATION PHASE (NEW TOURNAMENT)
+Trigger: tournament_config.status == "intermission" AND start_time is in the future.
+
+Frontend State Overhaul (Mandatory Flush):
+
+You must completely clear/flush the local state arrays and leaderboard cache. No past score data should linger in local state.
+
+UI Render Order (Top to Bottom):
+
+Top: Countdown timer to the next match (Next Tournament Starts In: [MM:SS]) based on the upcoming start_time.
+
+Middle: Render the dynamic tournament_config.banner uploaded by the admin. Directly underneath, place a mandatory action button: [ REGISTER FOR NEXT TOURNAMENT ].
+
+Logic: Clicking this creates a clean row in tournament_participants with the new tournament_id, user_id, and score: 0.
+
+If already registered, freeze the button to read [ Registered ✓ - Waiting for Start ].
+
+Enforcement: If a user does not manually click this button during intermission, they cannot accumulate points when the tournament goes live.
+
+Bottom: "Hall of Fame" section displaying the immediate past winners fetched from tournament_history.
+
+STEP 3: SECURITY & MONETIZATION PATCHES
+1. Anti-Cheat (Auto-Clicker Block)
+Implement a strict background loop check during active mining/gameplay sessions.
+
+Check active Android Accessibility Services and package lists for known auto-clicking apps (e.g., com.truedevelopersstudio.automatictap.autoclicker).
+
+If detected, freeze the game session instantly, display a blocking popup modal saying: "Auto-Clicker Detected. Disable or uninstall the tool to continue playing.", and terminate point recording.
+
+2. Forced Unity Ads Execution
+Review the global ad controller routing logic.
+
+Fix the priority override: If the management switch or config dictates forced_network == 'unity', bypass the AdMob loading architecture completely and explicitly invoke the Unity Ads Rewarded Video SDK wrapper instance.
+
+🧪 VERIFICATION CHECKLIST
+Write a unit test ensuring a score: 0 row inside tournament_participants throws an error if it hits the payout processing script.
+
+Verify that changing state from State A to State B instantly clears out old leaderboard views on the mobile client.
+
+Refactor this systematically. Do not bypass database integrity with lazy local state shortcuts. Let me know once these modifications are pushed to the staging environment for verification.
