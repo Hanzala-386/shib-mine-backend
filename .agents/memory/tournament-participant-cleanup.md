@@ -23,5 +23,5 @@ Bucketing = normalize any ISO ts to its UTC ISO-week Monday (`YYYY-MM-DD`). The 
 ## Known limitation (not a bug)
 Admin same-UTC-week test cycles ("start in X hours") share ONE Monday bucket, so mid-week back-to-back admin cycles aren't auto-distinguished by bucket. Production tournaments are weekly, so this only affects manual same-week testing. The freeze-wipe + one-time boot recovery cover the real weekly flow.
 
-## Still open (out of scope of the cleanup fix — flag, don't silently fix)
-`runEndOfWeek` payout has no per-cycle finalized marker → a retry/concurrent run after prizes are patched but before reset completes can double-pay. Fixing needs an idempotent guard (e.g. `payout_processed_for_bucket`/`finalized_at` on config) keyed by cycle bucket BEFORE awarding. It is money-sensitive and pre-existing — treat as a separate, deliberate change, not part of participant cleanup.
+## Payout idempotency (RESOLVED — see tournament-payout-idempotency.md)
+`runEndOfWeek` now has a per-cycle finalized marker (`tournament_config.payout_finalized_bucket`) + an in-process lock so a retry/concurrent run can't double-pay. The guard gates ONLY payout/history — the participant wipe + points reset still always run when already-finalized.

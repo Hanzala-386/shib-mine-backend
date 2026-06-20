@@ -254,6 +254,7 @@ export async function setupTournamentSchema(): Promise<void> {
           { name: 'start_time',       type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
           { name: 'end_time',         type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
           { name: 'is_active',        type: 'bool',   required: false, options: {} },
+          { name: 'payout_finalized_bucket', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
         ],
         listRule: '', viewRule: '', createRule: null, updateRule: null, deleteRule: null,
       });
@@ -271,6 +272,7 @@ export async function setupTournamentSchema(): Promise<void> {
       await ensureField('tournament_config', 'start_time', userTextOpt);
       await ensureField('tournament_config', 'end_time',   userTextOpt);
       await ensureField('tournament_config', 'banner',     { type: 'file', required: false, options: { maxSelect: 1, maxSize: 10485760, mimeTypes: ['image/jpeg','image/png','image/gif','image/webp'], thumbs: [], protected: false } });
+      await ensureField('tournament_config', 'payout_finalized_bucket', userTextOpt);
 
       // Back-fill end_time if missing on existing config record
       const recs = await pbGet('/api/collections/tournament_config/records?sort=-created&perPage=1');
@@ -548,7 +550,24 @@ export async function syncUserTournamentPoints(pbId: string): Promise<number> {
  * 4. Resets all participants' points + joined flags.
  * 5. Wipes tournament_participants ready for next-week registration.
  */
+// In-process concurrency lock. The ONLY callers of runEndOfWeek are the Sunday
+// freeze cron and the boot catch-up — both run inside this single Node process
+// (the admin "start" path writes tournament_config directly via PB and never
+// calls this). Serializing them here makes the payout finalization atomic: two
+// overlapping runs can NEVER both pass the marker check before it is written, so
+// winners can never be double-credited even under a cron + manual-trigger race.
+let endOfWeekInFlight: Promise<void> | null = null;
+
 export async function runEndOfWeek(): Promise<void> {
+  if (endOfWeekInFlight) {
+    console.log('[tournament] runEndOfWeek already running — joining in-flight run (concurrency lock) ✓');
+    return endOfWeekInFlight;
+  }
+  endOfWeekInFlight = runEndOfWeekImpl().finally(() => { endOfWeekInFlight = null; });
+  return endOfWeekInFlight;
+}
+
+async function runEndOfWeekImpl(): Promise<void> {
   console.log('[tournament] ── Running end-of-week: freeze → payout → history → reset ──');
 
   // 1. Load config (hard requirement — without it there is nothing to finalize)
@@ -570,49 +589,79 @@ export async function runEndOfWeek(): Promise<void> {
     console.error('[tournament] runEndOfWeek: freeze failed (continuing):', e.message);
   }
 
-  // 3-6. Payout + history. Wrapped so a failure here can NEVER skip the
-  //      participant wipe (steps 7-8) — that skip was the root cause of stale
-  //      participant rows surviving across cycles.
-  try {
-    let rewardMap: Record<string, number> = {};
-    try { rewardMap = JSON.parse(cfg.reward_structure || '{}'); } catch {}
-    const winnersCount = Math.max(Number(cfg.winners_count) || 3, 1);
+  // 3-6. Payout + history — guarded by a ONE-TIME finalization lock so the same
+  //      cycle can NEVER be paid twice (a retry, or an overlapping cron/manual
+  //      run). The lock is a self-contained check on tournament_config — it does
+  //      NOT touch points calculation, mining tracking, the participant wipe, or
+  //      any DB hook. Still wrapped in try/catch so a failure here can never skip
+  //      the participant wipe (steps 7-8).
+  //
+  //      Cycle key = the UTC ISO-week Monday of this config's start_time, i.e.
+  //      the same per-cycle "bucket" the rest of the tournament already uses.
+  //      Storing the PAID bucket string (not a plain bool) means next week's
+  //      different bucket naturally re-arms payout with no separate reset step.
+  const cycleBucketMs    = mondayBucketMs(cfg.start_time || cfg.week_start);
+  const cycleKey         = Number.isFinite(cycleBucketMs)
+    ? new Date(cycleBucketMs).toISOString().slice(0, 10)
+    : '';
+  const alreadyFinalized = !!cycleKey && cfg.payout_finalized_bucket === cycleKey;
 
-    const filter  = encodeURIComponent('tournament_joined=true&&weekly_tournament_points>0');
-    const perPage = Math.min(Math.max(winnersCount, 10), 100);
-    const usersRes = await pbGet(
-      `/api/collections/users/records?sort=-weekly_tournament_points&filter=${filter}&perPage=${perPage}&fields=id,display_name,weekly_tournament_points,shib_balance`,
-    );
-    const topUsers: any[] = (usersRes?.items ?? []).slice(0, winnersCount);
-    const weekEnd = new Date().toISOString();
+  if (alreadyFinalized) {
+    console.log(`[tournament] Payout already finalized for cycle ${cycleKey} — skipping distribution (double-credit guard) ✓`);
+  } else {
+    try {
+      let rewardMap: Record<string, number> = {};
+      try { rewardMap = JSON.parse(cfg.reward_structure || '{}'); } catch {}
+      const winnersCount = Math.max(Number(cfg.winners_count) || 3, 1);
 
-    for (let i = 0; i < topUsers.length; i++) {
-      const u     = topUsers[i];
-      const rank  = i + 1;
-      const prize = Number(rewardMap[String(rank)]) || 0;
-      await pbPost('/api/collections/tournament_history/records', {
-        week_end:     weekEnd,
-        rank,
-        user_id:      u.id,
-        display_name: u.display_name || 'Miner',
-        points:       Number(u.weekly_tournament_points) || 0,
-        prize,
-      }).catch(() => {}); // non-fatal
-    }
-    console.log(`[tournament] History exported: ${topUsers.length} winners ✓`);
+      const filter  = encodeURIComponent('tournament_joined=true&&weekly_tournament_points>0');
+      const perPage = Math.min(Math.max(winnersCount, 10), 100);
+      const usersRes = await pbGet(
+        `/api/collections/users/records?sort=-weekly_tournament_points&filter=${filter}&perPage=${perPage}&fields=id,display_name,weekly_tournament_points,shib_balance`,
+      );
+      const topUsers: any[] = (usersRes?.items ?? []).slice(0, winnersCount);
+      const weekEnd = new Date().toISOString();
 
-    for (let i = 0; i < topUsers.length; i++) {
-      const u     = topUsers[i];
-      const prize = Number(rewardMap[String(i + 1)]) || 0;
-      if (prize > 0) {
-        await pbPatch(`/api/collections/users/records/${u.id}`, {
-          shib_balance: (Number(u.shib_balance) || 0) + prize,
-        });
-        console.log(`[tournament] Rank #${i + 1} (${u.display_name || u.id}): +${prize.toLocaleString()} SHIB`);
+      for (let i = 0; i < topUsers.length; i++) {
+        const u     = topUsers[i];
+        const rank  = i + 1;
+        const prize = Number(rewardMap[String(rank)]) || 0;
+        await pbPost('/api/collections/tournament_history/records', {
+          week_end:     weekEnd,
+          rank,
+          user_id:      u.id,
+          display_name: u.display_name || 'Miner',
+          points:       Number(u.weekly_tournament_points) || 0,
+          prize,
+        }).catch(() => {}); // non-fatal
       }
+      console.log(`[tournament] History exported: ${topUsers.length} winners ✓`);
+
+      for (let i = 0; i < topUsers.length; i++) {
+        const u     = topUsers[i];
+        const prize = Number(rewardMap[String(i + 1)]) || 0;
+        if (prize > 0) {
+          await pbPatch(`/api/collections/users/records/${u.id}`, {
+            shib_balance: (Number(u.shib_balance) || 0) + prize,
+          });
+          console.log(`[tournament] Rank #${i + 1} (${u.display_name || u.id}): +${prize.toLocaleString()} SHIB`);
+        }
+      }
+
+      // Loop completed successfully → commit the finalization lock immediately.
+      // From this instant any re-entry for this cycle short-circuits above, so
+      // winners can never be credited a second time.
+      if (cycleKey) {
+        await pbPatch(`/api/collections/tournament_config/records/${cfg.id}`, {
+          payout_finalized_bucket: cycleKey,
+        });
+        console.log(`[tournament] Payout finalized + locked for cycle ${cycleKey} ✓`);
+      } else {
+        console.warn('[tournament] Payout ran but cycle key was unresolvable — lock NOT written (config missing start_time/week_start).');
+      }
+    } catch (e: any) {
+      console.error('[tournament] runEndOfWeek payout/history error (continuing to cleanup):', e.message);
     }
-  } catch (e: any) {
-    console.error('[tournament] runEndOfWeek payout/history error (continuing to cleanup):', e.message);
   }
 
   // 7. Reset ALL joined users (best-effort — must not abort the wipe)
