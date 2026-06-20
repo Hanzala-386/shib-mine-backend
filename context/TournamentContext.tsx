@@ -1,16 +1,19 @@
 /**
- * TournamentContext — Zero-Trust Weekly Tournament state management
+ * TournamentContext — Zero-Trust MANUAL-CYCLE Tournament state management
  *
- * Security additions over v1:
- *  - Server time offset: fetches `GET /api/app/server-time` on init; all
- *    countdown math uses `Date.now() + serverOffset` so device-clock
- *    manipulation doesn't affect the displayed deadline.
- *  - isIntermission: derived from server-authoritative is_active flag.
- *    True during the Sunday 18:00 → Monday 00:00 UTC gap.
- *  - end_time: populated by the server (next Sunday 18:00 UTC);
- *    the popup and leaderboard countdown to this instead of week_start + 7d.
+ * Fully-manual model (NO weekly calendar):
+ *  - A tournament exists ONLY while the admin has one running. Each launch mints
+ *    a unique `cycle_id`. When the cycle's end_time passes the server finalizes
+ *    it (payout + wipe) and stays inactive until the admin starts a new one.
+ *  - Phase is derived client-side (see getTournamentPhase): none / prestart /
+ *    live. There is NO intermission state.
+ *  - isRegistered is keyed to `cycle_id`: a participant row only unlocks the
+ *    board when its cycle_id equals the active config's cycle_id. A row left
+ *    over from a previous cycle can never unlock the current one.
+ *  - Server time offset: countdown math uses `Date.now() + serverOffset` so a
+ *    manipulated device clock can't affect the displayed deadline.
  *
- * All write operations still use PB SDK directly (APK-compatible).
+ * All write operations use the PB SDK directly (APK-compatible).
  */
 import React, {
   createContext, useContext, useState, useEffect,
@@ -20,51 +23,18 @@ import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 import { getApiUrl } from '@/lib/query-client';
 import { useAuth } from './AuthContext';
 
-// ── Cycle helpers ────────────────────────────────────────────────────────────
-// Normalize any ISO timestamp to the UTC date (YYYY-MM-DD) of THAT week's Monday.
-// This is the per-cycle "bucket". The server stamps week_start/start_time with a
-// precise timestamp at every Monday reset, so exact string equality is fragile —
-// bucketing to the week's Monday makes a participant row's cycle comparable to the
-// active config's cycle regardless of sub-second/scheduling differences, and also
-// folds a mid-week admin start into the same ISO-week bucket.
-function cycleBucket(iso: string | null | undefined): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '';
-  const day  = d.getUTCDay();           // 0=Sun … 1=Mon
-  const back = day === 0 ? 6 : day - 1; // days since Monday
-  const mon  = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back));
-  return mon.toISOString().slice(0, 10);
-}
-
-// ISO for the upcoming Monday 00:00 UTC — the cycle a user pre-registers INTO
-// during the Sunday→Monday intermission gap. Its bucket equals the bucket the
-// server writes at the Monday reset, so an intermission pre-registration carries
-// seamlessly into the new active week. Takes a SERVER-corrected `nowMs`
-// (Date.now() + serverOffset) — never the raw device clock — so a skewed/manual
-// device clock cannot target the wrong Monday and mis-gate registration.
-function nextMondayIso(nowMs: number): string {
-  const now = new Date(nowMs);
-  const day = now.getUTCDay();
-  const daysUntil = day === 1 ? 0 : (8 - day) % 7;
-  const cand = new Date(Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntil, 0, 0, 0, 0,
-  ));
-  if (cand.getTime() <= now.getTime()) cand.setUTCDate(cand.getUTCDate() + 7);
-  return cand.toISOString();
-}
-
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface TournamentConfig {
   id: string;
+  cycle_id: string;        // unique per manual launch; '' for legacy configs
   prize_pool_total: number;
   winners_count: number;
   reward_structure: Record<string, number>;
   banner_url: string;
   week_start: string;
   start_time: string;
-  end_time: string;        // server-set: next Sunday 18:00 UTC
+  end_time: string;        // admin-set absolute end of THIS cycle
   is_active: boolean;
 }
 
@@ -80,16 +50,15 @@ export interface TournamentEntry {
 interface TournamentContextValue {
   config: TournamentConfig | null;
   userJoined: boolean;
-  isRegistered: boolean;         // authoritative: a tournament_participants ROW exists
+  isRegistered: boolean;         // authoritative: a participant ROW for the CURRENT cycle_id exists
   userPoints: number;
   hasRejected: boolean;
   showPopup: boolean;
-  isIntermission: boolean;       // true during Sunday 6PM – Monday 12AM UTC gap
   serverOffset: number;          // ms offset: serverTime - Date.now() at load
   leaderboard: TournamentEntry[];
   leaderboardLoading: boolean;
   loadingConfig: boolean;
-  joinTournament: (duringIntermission?: boolean) => Promise<void>;
+  joinTournament: () => Promise<void>;
   rejectTournament: () => Promise<void>;
   refreshLeaderboard: () => Promise<void>;
   refreshUserStats: () => Promise<void>;
@@ -103,7 +72,6 @@ const TournamentContext = createContext<TournamentContextValue>({
   userPoints: 0,
   hasRejected: false,
   showPopup: false,
-  isIntermission: false,
   serverOffset: 0,
   leaderboard: [],
   leaderboardLoading: false,
@@ -120,35 +88,32 @@ const TournamentContext = createContext<TournamentContextValue>({
 export function TournamentProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const mounted  = useRef(true);
-  // Always-current mirrors of config + intermission. They let the STABLE
-  // (deps-free) refreshLeaderboard / refreshUserStats callbacks read the latest
-  // cycle WITHOUT taking `config` as a dependency. Taking `config` churned those
-  // callbacks' identity on every config refresh, which churned refreshTournament,
-  // which re-fired the leaderboard screen's effects → the infinite refresh loop.
+  // Always-current mirror of config. Lets the STABLE (deps-free)
+  // refreshLeaderboard / refreshUserStats callbacks read the latest cycle WITHOUT
+  // taking `config` as a dependency. Taking `config` churned those callbacks'
+  // identity on every config refresh, which churned refreshTournament, which
+  // re-fired the leaderboard screen's effects → the infinite refresh loop.
   // Kept in lock-step with state synchronously inside loadConfig.
   const configRef         = useRef<TournamentConfig | null>(null);
-  const isIntermissionRef = useRef(false);
-  // Mirror of the committed serverOffset so the STABLE callbacks can derive the
-  // intermission cycle from SERVER-corrected time without depending on the state.
-  const serverOffsetRef   = useRef(0);
 
   const [config, setConfig]                     = useState<TournamentConfig | null>(null);
   const [userJoined, setUserJoined]             = useState(false);
-  // The ISO week_start of the participant ROW we last confirmed for this user,
-  // or null if no row exists. `isRegistered` is DERIVED from this vs the current
-  // cycle (see below) so a leftover row from a previous cycle — or a stale value
-  // surviving the weekly wipe — can never unlock the current leaderboard.
-  const [registeredWeek, setRegisteredWeek]     = useState<string | null>(null);
+  // The cycle_id of the participant ROW we last confirmed for this user, or null
+  // if no row exists. `isRegistered` is DERIVED from this vs the active config's
+  // cycle_id (see below) so a leftover row from a previous cycle can never unlock
+  // the current leaderboard.
+  const [registeredCycleId, setRegisteredCycleId] = useState<string | null>(null);
   const [userPoints, setUserPoints]             = useState(0);
   const [hasRejected, setHasRejected]           = useState(false);
   const [leaderboard, setLeaderboard]           = useState<TournamentEntry[]>([]);
   const [leaderboardLoading, setLbLoading]      = useState(false);
   const [loadingConfig, setLoadingConfig]       = useState(true);
-  const [isIntermission, setIsIntermission]     = useState(false);
   const [serverOffset, setServerOffset]         = useState(0);
+  // Mirror of the committed serverOffset (kept for any time-corrected math).
+  const serverOffsetRef   = useRef(0);
 
   // userStatsChecked guards popup race: don't show popup until we know
-  // whether the user has already joined this week.
+  // whether the user has already joined this cycle.
   const [userStatsChecked, setUserStatsChecked] = useState(false);
 
   useEffect(() => {
@@ -162,7 +127,6 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       // 1. Try the Express route first — it returns config + serverTime atomically
       let raw: any = null;
       let serverTime = Date.now();
-      let intermission = false;
 
       try {
         const apiUrl = getApiUrl();
@@ -170,9 +134,8 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         const r      = await fetch(url, { signal: AbortSignal.timeout?.(5000) });
         if (r.ok) {
           const j = await r.json();
-          raw          = j.config;
-          serverTime   = j.serverTime ?? Date.now();
-          intermission = !!j.isIntermission;
+          raw        = j.config;
+          serverTime = j.serverTime ?? Date.now();
         }
       } catch {}
 
@@ -180,8 +143,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       if (!raw) {
         try {
           const res = await pb.collection('tournament_config').getList(1, 1, { sort: '-created' });
-          raw          = res.items[0] ?? null;
-          intermission = raw ? !raw.is_active : false;
+          raw = res.items[0] ?? null;
         } catch {}
 
         // Also fetch server time from dedicated endpoint as fallback
@@ -198,16 +160,20 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       // Compute monotonic offset: how far ahead/behind server clock is from device
       // clock. Only commit when it shifts meaningfully (>1.5s) — recomputing every
       // refresh (Date.now keeps advancing) would needlessly churn serverOffset and
-      // re-fire the leaderboard screen's boundary effects that depend on it. The ref
-      // is the source of truth and mirrors the committed state in lock-step, so the
-      // stable callbacks derive the intermission cycle from server-corrected time.
+      // re-fire the leaderboard screen's boundary effects that depend on it.
       const offset = serverTime - Date.now();
       if (Math.abs(offset - serverOffsetRef.current) > 1500) {
         serverOffsetRef.current = offset;
         if (mounted.current) setServerOffset(offset);
       }
 
-      if (!raw) return;
+      // No config at all → there has never been (or no longer is) a tournament.
+      // Clear it so the leaderboard shows the inactive "starts soon" state.
+      if (!raw) {
+        configRef.current = null;
+        if (mounted.current) setConfig(null);
+        return;
+      }
 
       let rewardStructure: Record<string, number> = {};
       try { rewardStructure = JSON.parse(raw.reward_structure || '{}'); } catch {}
@@ -222,28 +188,25 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
 
       const cfg: TournamentConfig = {
         id:               raw.id,
+        cycle_id:         raw.cycle_id     || '',
         prize_pool_total: Number(raw.prize_pool_total) || 0,
         winners_count:    Number(raw.winners_count)    || 3,
         reward_structure: rewardStructure,
         banner_url:       bannerUrl,
-        week_start:       raw.week_start   || new Date().toISOString(),
-        start_time:       raw.start_time   || raw.week_start || new Date().toISOString(),
+        week_start:       raw.week_start   || '',
+        start_time:       raw.start_time   || raw.week_start || '',
         end_time:         raw.end_time     || '',
         is_active:        !!raw.is_active,
       };
 
-      // Keep the latest-value refs in lock-step with state so the STABLE
+      // Keep the latest-value ref in lock-step with state so the STABLE
       // refreshLeaderboard / refreshUserStats callbacks always read the current
-      // cycle. No separate signature gate is needed: per-cycle registration
+      // cycle. No separate signature gate is needed: cycle_id registration
       // matching (see isRegistered) makes a leftover row from a previous cycle
       // fail to unlock the board DECLARATIVELY the instant fresh config loads.
-      configRef.current         = cfg;
-      isIntermissionRef.current = intermission;
+      configRef.current = cfg;
 
-      if (mounted.current) {
-        setConfig(cfg);
-        setIsIntermission(intermission);
-      }
+      if (mounted.current) setConfig(cfg);
     } catch {
       // tournament_config collection may not exist yet — fail silently
     } finally {
@@ -263,12 +226,11 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         setUserPoints(Number(u.weekly_tournament_points) || 0);
       }
 
-      // ── REGISTRATION GATE (per-cycle) ────────────────────────────────────
+      // ── REGISTRATION GATE (per-cycle_id) ─────────────────────────────────
       // The AUTHORITATIVE signal is the participant ROW, NOT the tournament_joined
-      // flag. But a row ONLY counts for the CURRENT cycle: its week_start bucket
-      // must match the active week (or, during intermission, the upcoming week the
-      // user pre-registers into). A leftover row from a PAST tournament keeps a
-      // non-matching bucket → its week_start is still stored (so re-tapping JOIN
+      // flag. But a row ONLY counts for the CURRENT cycle: its cycle_id must equal
+      // the active config's cycle_id. A leftover row from a PAST tournament keeps a
+      // non-matching cycle_id → its value is still stored (so re-tapping JOIN
       // de-dupes onto it) but isRegistered (derived) stays false → the poster
       // re-appears instead of silently unlocking the board on stale data.
       let participant: any = null;
@@ -278,14 +240,11 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
           .getFirstListItem(`user_id = "${user.pbId}"`, { sort: '-created' });
       } catch { participant = null; }
 
-      const rowWeek         = participant?.id ? (participant.week_start ?? '') : null;
-      const currentCycleIso = isIntermissionRef.current
-        ? nextMondayIso(Date.now() + serverOffsetRef.current)
-        : (configRef.current?.start_time || configRef.current?.week_start || '');
-      const currentBucket   = cycleBucket(currentCycleIso);
-      const matchesCurrent  = !!rowWeek && !!currentBucket && cycleBucket(rowWeek) === currentBucket;
+      const rowCycleId      = participant?.id ? (participant.cycle_id ?? '') : null;
+      const currentCycleId  = configRef.current?.cycle_id || '';
+      const matchesCurrent  = !!rowCycleId && !!currentCycleId && rowCycleId === currentCycleId;
 
-      if (mounted.current) setRegisteredWeek(rowWeek);
+      if (mounted.current) setRegisteredCycleId(rowCycleId);
 
       // Only mirror flag/points for a row that belongs to the CURRENT cycle — never
       // resurrect tournament_joined for a stale past-cycle row.
@@ -302,7 +261,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         }
       }
     } catch {
-      if (mounted.current) { setUserJoined(false); setRegisteredWeek(null); }
+      if (mounted.current) { setUserJoined(false); setRegisteredCycleId(null); }
     } finally {
       if (mounted.current) setUserStatsChecked(true);
     }
@@ -311,7 +270,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   // ── Reset all user-specific state when the logged-in user changes ────────
   useEffect(() => {
     setUserJoined(false);
-    setRegisteredWeek(null);
+    setRegisteredCycleId(null);
     setUserPoints(0);
     setHasRejected(false);
     setUserStatsChecked(false);
@@ -369,23 +328,18 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   // set the tournament_joined flag and mark the user registered. If the row create
   // fails, this THROWS so the caller keeps the lock screen up and shows an error —
   // never the old bug where the flag was set with no row behind it.
-  const joinTournament = useCallback(async (duringIntermission = false) => {
+  const joinTournament = useCallback(async () => {
     if (!user?.pbId) throw new Error('Not signed in');
 
-    // Target cycle to register INTO, written as week_start so the per-cycle match
-    // in isRegistered unlocks the board: the UPCOMING week during intermission,
-    // otherwise the active cycle. Bucketed comparison tolerates the server's
-    // precise per-Monday timestamp, and the intermission target's bucket equals the
-    // one the server stamps at the Monday reset → seamless carry-over.
-    const intermitting = duringIntermission || isIntermission;
-    const targetIso = intermitting
-      ? nextMondayIso(Date.now() + serverOffsetRef.current)
-      : (config?.start_time || config?.week_start || new Date().toISOString());
-    const targetBucket = cycleBucket(targetIso);
+    // Target cycle to register INTO = the active config's cycle_id. Without an
+    // active cycle there is nothing to join.
+    const targetCycleId = config?.cycle_id || '';
+    if (!targetCycleId) throw new Error('No active tournament to join');
+    const targetIso = config?.start_time || config?.week_start || new Date().toISOString();
 
     // Dedupe by user. A surviving row from a PAST cycle is RE-POINTED at the
-    // current cycle (update week_start) rather than left stale or duplicated, so a
-    // returning user who taps JOIN for the new week registers cleanly.
+    // current cycle (update cycle_id) rather than left stale or duplicated, so a
+    // returning user who taps JOIN for the new cycle registers cleanly.
     let existing: any = null;
     try {
       existing = await pb
@@ -394,23 +348,23 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     } catch { existing = null; }
 
     if (existing?.id) {
-      if (cycleBucket(existing.week_start ?? '') !== targetBucket) {
+      if ((existing.cycle_id ?? '') !== targetCycleId) {
         await pb.collection('tournament_participants').update(existing.id, {
-          week_start:                     targetIso,
-          joined_at:                      new Date().toISOString(),
-          registered_during_intermission: intermitting,
+          cycle_id:   targetCycleId,
+          week_start: targetIso,
+          joined_at:  new Date().toISOString(),
         });
       }
     } else {
       // Create the row (throws on failure → caller keeps the lock up + shows error).
       const displayName = (user as any).displayName || (user as any).email || 'Miner';
       await pb.collection('tournament_participants').create({
-        user_id:                        user.pbId,
-        display_name:                   typeof displayName === 'string' ? displayName.split('@')[0] : 'Miner',
-        week_start:                     targetIso,
-        joined_at:                      new Date().toISOString(),
-        points:                         0,
-        registered_during_intermission: intermitting,
+        user_id:      user.pbId,
+        display_name: typeof displayName === 'string' ? displayName.split('@')[0] : 'Miner',
+        cycle_id:     targetCycleId,
+        week_start:   targetIso,
+        joined_at:    new Date().toISOString(),
+        points:       0,
       });
     }
 
@@ -418,37 +372,35 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     try { await pb.collection('users').update(user.pbId, { tournament_joined: true }); } catch {}
 
     if (mounted.current) {
-      setRegisteredWeek(targetIso);
+      setRegisteredCycleId(targetCycleId);
       setUserJoined(true);
     }
-  }, [user?.pbId, config?.start_time, config?.week_start, isIntermission]);
+  }, [user?.pbId, config?.cycle_id, config?.start_time, config?.week_start]);
 
   // ── Reject tournament (session-only dismiss) ─────────────────────────────
   const rejectTournament = useCallback(async () => {
     if (mounted.current) setHasRejected(true);
   }, []);
 
-  // ── DERIVED per-cycle registration gate ──────────────────────────────────
-  // A participant row only unlocks the leaderboard when its week_start bucket
-  // matches the CURRENT cycle — the active week, or (during the Sun→Mon
-  // intermission) the upcoming week the user pre-registers into. Bucketing to the
-  // week's Monday (cycleBucket) tolerates the server's precise per-Monday
-  // timestamp. A leftover row from a PAST tournament therefore fails to register
-  // the user for the new cycle → the registration poster shows again. This is
-  // fully declarative: it re-derives the instant fresh config loads, with no
-  // stale-render window and no separate cycle-signature gate.
-  const registrationCycleIso = isIntermission
-    ? nextMondayIso(Date.now() + serverOffset)
-    : (config?.start_time || config?.week_start || '');
-  const currentCycleBucket = cycleBucket(registrationCycleIso);
-  const isRegistered = !!registeredWeek
-    && !!currentCycleBucket
-    && cycleBucket(registeredWeek) === currentCycleBucket;
+  // ── DERIVED per-cycle_id registration gate ───────────────────────────────
+  // A participant row only unlocks the leaderboard when its cycle_id matches the
+  // active config's cycle_id. A leftover row from a PAST tournament therefore
+  // fails to register the user for the new cycle → the registration poster shows
+  // again. Fully declarative: re-derives the instant fresh config loads, with no
+  // stale-render window.
+  const currentCycleId = config?.cycle_id || '';
+  const isRegistered = !!registeredCycleId
+    && !!currentCycleId
+    && registeredCycleId === currentCycleId;
 
-  // Popup shows during active tournament OR intermission (pre-register for next week).
-  // Gates on userStatsChecked to avoid the race before join-status is confirmed.
+  // Popup shows ONLY while a tournament cycle is live or pre-start (manual model —
+  // no intermission). Gates on the derived phase (not raw is_active) so a config
+  // left is_active=true around finalization lag — after end_time has passed but
+  // before the server flips is_active=false — never leaks an inactive-state popup.
+  // Also gates on userStatsChecked to avoid the race before join-status is confirmed.
+  const popupPhase = getTournamentPhase(config, Date.now() + serverOffset);
   const showPopup = !!(
-    (config?.is_active || isIntermission) &&
+    popupPhase !== 'none' &&
     !isRegistered &&
     !hasRejected &&
     !loadingConfig &&
@@ -464,7 +416,6 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       userPoints,
       hasRejected,
       showPopup,
-      isIntermission,
       serverOffset,
       leaderboard,
       leaderboardLoading,
@@ -486,21 +437,21 @@ export function useTournament() {
 
 // ── Phase derivation ─────────────────────────────────────────────────────────
 // Single source of truth for which tournament phase we're in, using the
-// server-corrected clock (serverNowMs = Date.now() + serverOffset).
-//   - 'none'         no config / no active tournament and not in the weekly gap
-//   - 'prestart'     active but not yet started (serverNow < start_time) → "STARTS IN"
-//   - 'live'         active and running (start_time <= serverNow < end_time) → "ENDS IN"
-//   - 'intermission' weekly gap (is_active=false, Sun 18:00 → Mon 00:00) → "STARTS IN"
-export type TournamentPhase = 'none' | 'prestart' | 'live' | 'intermission';
+// server-corrected clock (serverNowMs = Date.now() + serverOffset). Fully-manual
+// model — there is NO intermission:
+//   - 'none'      no config / not active / already past end_time → red "starts soon"
+//   - 'prestart'  active but not yet started (serverNow < start_time) → "STARTS IN"
+//   - 'live'      active and running (start_time <= serverNow < end_time) → "ENDS IN"
+export type TournamentPhase = 'none' | 'prestart' | 'live';
 
 export function getTournamentPhase(
   config: TournamentConfig | null,
-  isIntermission: boolean,
   serverNowMs: number,
 ): TournamentPhase {
-  if (isIntermission) return 'intermission';
   if (!config || !config.is_active) return 'none';
   const startMs = config.start_time ? new Date(config.start_time).getTime() : 0;
+  const endMs   = config.end_time   ? new Date(config.end_time).getTime()   : 0;
+  if (endMs && serverNowMs >= endMs) return 'none';
   if (startMs && serverNowMs < startMs) return 'prestart';
   return 'live';
 }

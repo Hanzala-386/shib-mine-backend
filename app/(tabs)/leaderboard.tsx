@@ -127,20 +127,6 @@ const cdStyles = StyleSheet.create({
   unit:      { fontFamily: 'Inter_400Regular', fontSize: 9, color: Colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase', marginTop: 2 },
 });
 
-/** Returns the next UTC Monday at 00:00:00 (new week start) */
-function nextMonday12AM_UTC(): Date {
-  const now  = new Date();
-  const day  = now.getUTCDay(); // 1=Monday
-  const daysUntil = day === 1 ? 0 : (8 - day) % 7;
-  const candidate = new Date(Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntil,
-    0, 0, 0, 0,
-  ));
-  if (candidate.getTime() <= now.getTime()) {
-    candidate.setUTCDate(candidate.getUTCDate() + 7);
-  }
-  return candidate;
-}
 
 async function fetchJson(path: string) {
   const url = new URL(path, getApiUrl());
@@ -531,7 +517,7 @@ function TournamentRegisterLock({
   config, phase, serverOffset, onRegister,
 }: {
   config: TournamentConfig;
-  phase: 'prestart' | 'live' | 'intermission';
+  phase: 'prestart' | 'live';
   serverOffset: number;
   onRegister: () => Promise<void>;
 }) {
@@ -555,16 +541,14 @@ function TournamentRegisterLock({
   let accent: string;
   if (phase === 'live') {
     target = config.end_time; label = 'ENDS IN'; accent = Colors.gold;
-  } else if (phase === 'prestart') {
-    target = config.start_time; label = 'STARTS IN'; accent = '#00C853';
   } else {
-    target = nextMonday12AM_UTC().toISOString(); label = 'STARTS IN'; accent = '#7B68EE';
+    target = config.start_time; label = 'STARTS IN'; accent = '#00C853';
   }
 
   const headline = phase === 'live' ? 'The tournament is live!' : 'Registration is open!';
   const blurb = phase === 'live'
     ? 'Register now to unlock the leaderboard and turn your mining rewards into tournament points.'
-    : 'Secure your spot before it begins. Your weekly mining rewards become tournament points the moment it goes live.';
+    : 'Secure your spot before it begins. Your mining rewards become tournament points the moment it goes live.';
 
   return (
     <View style={lockStyles.wrap}>
@@ -578,7 +562,7 @@ function TournamentRegisterLock({
           start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
         >
           <MaterialCommunityIcons name="trophy" size={56} color={Colors.gold} />
-          <Text style={lockStyles.posterFallbackText}>Weekly Tournament</Text>
+          <Text style={lockStyles.posterFallbackText}>Tournament</Text>
         </LinearGradient>
       )}
 
@@ -658,7 +642,7 @@ export default function LeaderboardScreen() {
 
   const {
     config, isRegistered, userPoints, leaderboard, leaderboardLoading,
-    isIntermission, serverOffset,
+    serverOffset,
     joinTournament, refreshLeaderboard, refreshUserStats, refreshConfig,
   } = useTournament();
 
@@ -666,7 +650,7 @@ export default function LeaderboardScreen() {
   // prestart→live boundary so the countdown flips from "STARTS IN" to "ENDS IN".
   const [, setBoundaryTick] = useState(0);
   const serverNow = Date.now() + serverOffset;
-  const phase     = getTournamentPhase(config, isIntermission, serverNow);
+  const phase     = getTournamentPhase(config, serverNow);
 
   useEffect(() => {
     if (phase !== 'prestart' || !config?.start_time) return;
@@ -721,12 +705,11 @@ export default function LeaderboardScreen() {
     return () => sub.remove();
   }, [refreshTournament]);
 
-  // Live→end boundary: getTournamentPhase only flips off 'live' once the SERVER
-  // marks is_active=false / intermission (the weekly freeze that wipes
-  // participants) — end_time alone never changes the client phase. So when the
+  // Live→end boundary: getTournamentPhase flips to 'none' once the clock crosses
+  // end_time (or the SERVER marks is_active=false after the payout+wipe). When the
   // clock crosses end_time, pull fresh config+row so the cycle-signature gate can
   // invalidate a now-stale registration and swap the wiped leaderboard for the
-  // lock, even if the user is still sitting on the screen.
+  // inactive "starts soon" state, even if the user is still sitting on the screen.
   useEffect(() => {
     if (phase !== 'live' || !config?.end_time) return;
     const endTime = config.end_time;
@@ -843,7 +826,7 @@ export default function LeaderboardScreen() {
         <View>
           <Text style={styles.pageTitle}>Leaderboard</Text>
           <Text style={styles.pageSub}>
-            {activeTab === 'alltime' ? 'Top 100 SHIB miners worldwide' : 'Weekly tournament rankings'}
+            {activeTab === 'alltime' ? 'Top 100 SHIB miners worldwide' : 'Tournament rankings'}
           </Text>
         </View>
         <MaterialCommunityIcons
@@ -881,16 +864,27 @@ export default function LeaderboardScreen() {
             styles.tabBtnText,
             activeTab === 'tournament' && styles.tabBtnTextTournament,
           ]}>
-            Weekly
+            Tournament
           </Text>
-          {config?.is_active && !isIntermission && (
+          {phase === 'live' ? (
             <View style={styles.liveDot} />
-          )}
-          {isIntermission && (
-            <View style={[styles.liveDot, { backgroundColor: '#7B68EE' }]} />
+          ) : (
+            <View style={[styles.liveDot, { backgroundColor: '#FF453A' }]} />
           )}
         </Pressable>
       </View>
+
+      {/* Tournament status label — explicit textual state (green "Live" while
+          running, red "Tournament will start soon" otherwise). Hidden for the
+          'none' phase, which renders its own prominent inactive placeholder. */}
+      {activeTab === 'tournament' && phase !== 'none' && (
+        <View style={styles.statusRow}>
+          <View style={[styles.statusDot, { backgroundColor: phase === 'live' ? '#00C853' : '#FF453A' }]} />
+          <Text style={[styles.statusLabel, { color: phase === 'live' ? '#00C853' : '#FF453A' }]}>
+            {phase === 'live' ? 'Live' : 'Tournament will start soon'}
+          </Text>
+        </View>
+      )}
 
       {/* Registered + live: countdown to end_time */}
       {activeTab === 'tournament' && isRegistered && phase === 'live' && !!config?.end_time && (
@@ -910,17 +904,6 @@ export default function LeaderboardScreen() {
           accentColor="#00C853"
         />
       )}
-      {/* Registered + intermission: countdown to next week start
-          (unregistered users get the countdown inside TournamentRegisterLock instead) */}
-      {activeTab === 'tournament' && isRegistered && phase === 'intermission' && (
-        <TournamentCountdown
-          endTimeIso={nextMonday12AM_UTC().toISOString()}
-          serverOffset={serverOffset}
-          label="NEW WEEK STARTS IN"
-          accentColor="#7B68EE"
-        />
-      )}
-
       {/* Tournament: total prize pool — shown directly below countdown */}
       {activeTab === 'tournament' && isRegistered && (config?.prize_pool_total ?? 0) > 0 && (
         <View style={styles.prizePoolBar}>
@@ -976,10 +959,16 @@ export default function LeaderboardScreen() {
   // ── Render ───────────────────────────────────────────────────────────────
 
   if (activeTab === 'tournament') {
-    // (1) No tournament configured, or finished and NOT in the weekly gap.
+    // (1) No active tournament — admin hasn't launched one (or the last cycle ended
+    // and was paid out + wiped). Inactive RED "will start soon" centered placeholder.
     if (phase === 'none') {
       return (
         <View style={styles.container}>
+          <LinearGradient
+            colors={['rgba(255,69,58,0.10)', 'rgba(140,30,30,0.05)', 'transparent']}
+            style={StyleSheet.absoluteFill}
+            start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.5 }}
+          />
           <FlatList
             data={[]}
             keyExtractor={() => 'empty'}
@@ -987,10 +976,16 @@ export default function LeaderboardScreen() {
             ListHeaderComponent={
               <View>
                 {ListHeader}
-                <View style={styles.emptyState}>
-                  <MaterialCommunityIcons name="trophy-outline" size={44} color={Colors.textMuted} />
-                  <Text style={styles.emptyTitle}>No active tournament</Text>
-                  <Text style={styles.emptyDesc}>Check back soon — the next weekly tournament starts soon!</Text>
+                <View style={styles.inactiveState}>
+                  <View style={styles.inactiveIconWrap}>
+                    <MaterialCommunityIcons name="trophy-broken" size={48} color="#FF453A" />
+                  </View>
+                  <View style={styles.inactiveDotRow}>
+                    <View style={[styles.liveDot, { backgroundColor: '#FF453A' }]} />
+                    <Text style={styles.inactiveBadge}>INACTIVE</Text>
+                  </View>
+                  <Text style={styles.inactiveTitle}>Tournament will start soon</Text>
+                  <Text style={styles.emptyDesc}>There's no tournament running right now. Check back soon — a new one will be launched shortly!</Text>
                 </View>
               </View>
             }
@@ -1004,8 +999,57 @@ export default function LeaderboardScreen() {
       );
     }
 
-    // (2) COMPULSORY LOCK — not registered (pre-start OR live OR intermission):
-    // poster + REGISTER + phase countdown ONLY. The leaderboard is never rendered.
+    // (2) PRE-START — scheduled but NOT yet live. Rankings/podium are NEVER shown
+    // to anyone (registered or not). Unregistered users get the poster + JOIN;
+    // registered users get a "you're in, get ready" confirmation. The header shows
+    // the red "Tournament will start soon" status + STARTS IN countdown.
+    if (phase === 'prestart') {
+      return (
+        <View style={styles.container}>
+          <LinearGradient
+            colors={['rgba(0,200,83,0.10)', 'rgba(0,100,40,0.06)', 'transparent']}
+            style={StyleSheet.absoluteFill}
+            start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.5 }}
+          />
+          <FlatList
+            data={[]}
+            keyExtractor={() => 'prestart'}
+            renderItem={() => null}
+            ListHeaderComponent={
+              <View>
+                {ListHeader}
+                {isRegistered ? (
+                  <View style={styles.emptyState}>
+                    <MaterialCommunityIcons name="rocket-launch-outline" size={44} color="#00C853" />
+                    <Text style={styles.emptyTitle}>You're in! Get ready</Text>
+                    <Text style={styles.emptyDesc}>The tournament hasn't started yet. Your mining rewards become tournament points the moment it goes live.</Text>
+                  </View>
+                ) : (
+                  <TournamentRegisterLock
+                    config={config!}
+                    phase={phase}
+                    serverOffset={serverOffset}
+                    onRegister={async () => {
+                      await joinTournament();
+                      refreshLeaderboard();
+                      refreshUserStats();
+                    }}
+                  />
+                )}
+              </View>
+            }
+            contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
+            showsVerticalScrollIndicator={false}
+          />
+          <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
+            <WithdrawalTicker items={ticker} />
+          </View>
+        </View>
+      );
+    }
+
+    // (3) COMPULSORY LOCK — live but not registered:
+    // poster + REGISTER + ENDS IN countdown ONLY. The leaderboard is never rendered.
     if (!isRegistered) {
       return (
         <View style={styles.container}>
@@ -1026,7 +1070,7 @@ export default function LeaderboardScreen() {
                   phase={phase}
                   serverOffset={serverOffset}
                   onRegister={async () => {
-                    await joinTournament(phase !== 'live');
+                    await joinTournament();
                     refreshLeaderboard();
                     refreshUserStats();
                   }}
@@ -1043,68 +1087,7 @@ export default function LeaderboardScreen() {
       );
     }
 
-    // (3) Registered + weekly intermission → frozen last-week leaderboard.
-    if (phase === 'intermission') {
-      const frozenList = leaderboard; // last snapshot from before freeze
-      const rank4Plus  = frozenList.slice(3);
-      return (
-        <View style={styles.container}>
-          <LinearGradient
-            colors={['rgba(123,104,238,0.12)', 'rgba(60,40,140,0.06)', 'transparent']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.5 }}
-          />
-          <FlatList
-            data={rank4Plus}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => <TCard entry={item} isMe={item.id === pbId} />}
-            ListHeaderComponent={
-              <View>
-                {ListHeader}
-                {/* Registered confirmation */}
-                <View style={styles.registeredBanner}>
-                  <MaterialCommunityIcons name="check-decagram" size={18} color="#00C853" />
-                  <Text style={styles.registeredText}>You're registered for next week 🎉</Text>
-                </View>
-                {/* Intermission banner */}
-                <View style={[styles.intermissionBanner]}>
-                  <MaterialCommunityIcons name="snowflake" size={20} color="#7B68EE" />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.intermissionTitle}>TOURNAMENT FROZEN</Text>
-                    <Text style={styles.intermissionDesc}>
-                      Last week's results are final. The new week begins Monday 12:00 AM UTC.
-                    </Text>
-                  </View>
-                </View>
-                {frozenList.length > 0 && leaderboard.length > 0 && (
-                  <TournamentPodium top3={frozenList.slice(0, 3)} pbId={pbId} />
-                )}
-                {frozenList.length > 3 && (
-                  <Text style={[styles.sectionTitle, { color: '#7B68EE' + 'aa', marginTop: 4 }]}>
-                    {`Last Week Rankings #4 – #${frozenList.length}`}
-                  </Text>
-                )}
-                {frozenList.length === 0 && (
-                  <View style={styles.emptyState}>
-                    <MaterialCommunityIcons name="trophy-outline" size={44} color={Colors.textMuted} />
-                    <Text style={styles.emptyTitle}>Results incoming</Text>
-                    <Text style={styles.emptyDesc}>Last week's final standings will appear here.</Text>
-                  </View>
-                )}
-              </View>
-            }
-            ListFooterComponent={<View style={{ height: 24 }} />}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
-          />
-          <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
-            <WithdrawalTicker items={ticker} />
-          </View>
-        </View>
-      );
-    }
-
-    // (4) Registered + live/prestart → leaderboard (podium in header, rank 4+ in list).
+    // (4) Registered + live → leaderboard (podium in header, rank 4+ in list).
     const rank4Plus = leaderboard.slice(3);
     return (
       <View style={styles.container}>
@@ -1126,12 +1109,6 @@ export default function LeaderboardScreen() {
             ) : leaderboard.length > 0 ? (
               // Top 3 exist but no rank 4+ — podium already shown, no empty state needed
               <View style={{ height: 16 }} />
-            ) : phase === 'prestart' ? (
-              <View style={styles.emptyState}>
-                <MaterialCommunityIcons name="rocket-launch-outline" size={44} color={Colors.textMuted} />
-                <Text style={styles.emptyTitle}>You're in! Get ready</Text>
-                <Text style={styles.emptyDesc}>The tournament hasn't started yet. Points are earned from your mining rewards once it goes live.</Text>
-              </View>
             ) : (
               <View style={styles.emptyState}>
                 <Text style={styles.emptyTitle}>No competitors yet</Text>
@@ -1216,6 +1193,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#00C853',
     marginLeft: 2,
   },
+  statusRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 7, marginBottom: 14,
+  },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  statusLabel: {
+    fontFamily: 'Inter_700Bold', fontSize: 12,
+    textTransform: 'uppercase', letterSpacing: 1,
+  },
 
   myRankCard:     { borderRadius: 18, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: 'rgba(244,196,48,0.3)' },
   myRankGradient: { flexDirection: 'row', alignItems: 'center', padding: 18 },
@@ -1246,34 +1232,27 @@ const styles = StyleSheet.create({
   emptyTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 17, color: Colors.textSecondary },
   emptyDesc:  { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted, textAlign: 'center', lineHeight: 20 },
 
+  // ── Inactive (no active tournament) ──
+  inactiveState: { alignItems: 'center', paddingTop: 70, paddingBottom: 60, gap: 14, paddingHorizontal: 40 },
+  inactiveIconWrap: {
+    width: 96, height: 96, borderRadius: 48,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,69,58,0.10)',
+    borderWidth: 1, borderColor: 'rgba(255,69,58,0.30)',
+  },
+  inactiveDotRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  inactiveBadge: {
+    fontFamily: 'Inter_700Bold', fontSize: 11, color: '#FF453A',
+    letterSpacing: 2, textTransform: 'uppercase',
+  },
+  inactiveTitle: {
+    fontFamily: 'Inter_700Bold', fontSize: 20, color: Colors.textPrimary, textAlign: 'center',
+  },
+
   tickerFixed: {
     position: 'absolute', left: 0, right: 0,
     backgroundColor: Colors.darkBg,
     zIndex: 25,
     elevation: 25,
-  },
-
-  // ── Intermission ──
-  intermissionBanner: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 12,
-    backgroundColor: 'rgba(123,104,238,0.10)',
-    borderWidth: 1, borderColor: 'rgba(123,104,238,0.30)',
-    borderRadius: 14, padding: 14, marginBottom: 16,
-  },
-  intermissionTitle: {
-    fontFamily: 'Inter_700Bold', fontSize: 11, color: '#7B68EE',
-    letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 4,
-  },
-  intermissionDesc: {
-    fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, lineHeight: 18,
-  },
-  registeredBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: 'rgba(0,200,83,0.10)',
-    borderWidth: 1, borderColor: 'rgba(0,200,83,0.30)',
-    borderRadius: 14, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 12,
-  },
-  registeredText: {
-    fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#00C853',
   },
 });

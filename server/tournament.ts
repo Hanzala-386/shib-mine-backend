@@ -1,20 +1,28 @@
 /**
- * tournament.ts — Zero-Trust Weekly Tournament
+ * tournament.ts — Zero-Trust, Fully-Manual Tournament Cycles
+ *
+ * Model:
+ *  - There is NO automatic weekly cycle. A tournament exists ONLY when the admin
+ *    starts one (writes tournament_config with is_active=true + a fresh cycle_id
+ *    + an arbitrary start_time/end_time). When a cycle's end_time passes the
+ *    engine instantly pays out, wipes participants, and drops to the inactive
+ *    (red "Tournament will start soon") state until the admin starts the next one.
  *
  * Security model:
  *  - Points are NEVER accepted from the client. The server reads mining_sessions
- *    directly and computes each user's weekly points atomically.
- *  - Two calendar-precise crons (not relative timers):
- *      Cron A: Sunday 18:00 UTC  — freeze, payout, export history, wipe participants
- *      Cron B: Monday 00:00 UTC  — create new week, set is_active=true
- *  - Intermission = is_active=false window between Sunday 6PM and Monday 12AM
+ *    directly and computes each user's points atomically.
+ *  - Each cycle is identified by a unique `cycle_id`. Payout is finalized exactly
+ *    once per cycle_id (payout_finalized_cycle marker), so the same cycle can
+ *    NEVER be paid twice — even across server restarts or overlapping runs.
+ *  - A single dynamic end-of-cycle timer is driven by the active cycle's end_time
+ *    (re)scheduled on boot and via a 60s reconciler poll that also detects
+ *    admin-started cycles written directly to PocketBase by the production APK.
  *
  * Exports:
  *  setupTournamentSchema()      — idempotent schema creation on server boot
  *  syncUserTournamentPoints()   — server-side point recalculation from mining_sessions
- *  runEndOfWeek()               — freeze + prize payout + history export
- *  startNewTournamentWeek()     — activate next week with fresh start/end times
- *  startTournamentCron()        — schedules both calendar-aligned crons
+ *  runEndOfCycle()              — freeze + prize payout + history export + wipe
+ *  startTournamentCron()        — boot catch-up + dynamic end-of-cycle reconciler
  */
 
 import https from 'node:https';
@@ -75,60 +83,31 @@ async function pbPost(path: string, body: object)     { return pbHttp('POST',   
 async function pbPatch(path: string, body: object)    { return pbHttp('PATCH',  path, body,  await getAdminToken()); }
 async function pbDelete(path: string)                 { return pbHttp('DELETE', path, null,  await getAdminToken()); }
 
-// ── Calendar helpers ────────────────────────────────────────────────────────
+// ── Cycle helpers ───────────────────────────────────────────────────────────
 
-/** Returns the next UTC Sunday at 18:00:00 (tournament end / freeze time) */
-function nextSunday6PM(): Date {
-  const now = new Date();
-  // UTC day: 0=Sunday … 6=Saturday
-  const daysUntil = (7 - now.getUTCDay()) % 7; // 0 if today is Sunday
-  const candidate = new Date(Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntil,
-    18, 0, 0, 0,
-  ));
-  // If the candidate is in the past (today is Sunday but already past 6PM), go +7 days
-  if (candidate.getTime() <= now.getTime()) {
-    candidate.setUTCDate(candidate.getUTCDate() + 7);
-  }
-  return candidate;
+/**
+ * Generate a unique per-cycle id. Each admin "start" produces a fresh one; the
+ * payout finalization marker is keyed to it so a cycle can never be paid twice.
+ */
+function generateCycleId(): string {
+  return `cyc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Returns the next UTC Monday at 00:00:00 (new week start time) */
-function nextMonday12AM(): Date {
-  const now  = new Date();
-  const day  = now.getUTCDay(); // 1=Monday
-  const daysUntil = day === 1 ? 0 : (8 - day) % 7;
-  const candidate = new Date(Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntil,
-    0, 0, 0, 0,
-  ));
-  if (candidate.getTime() <= now.getTime()) {
-    candidate.setUTCDate(candidate.getUTCDate() + 7);
-  }
-  return candidate;
-}
-
-function msUntil(target: Date): number {
-  return Math.max(target.getTime() - Date.now(), 60_000); // min 60s buffer
+/**
+ * Resolve the permanent finalization key for a config row. Prefers the explicit
+ * cycle_id; falls back to a start_time-derived legacy key only for pre-migration
+ * configs that have no cycle_id yet (the reconciler backfills cycle_id before a
+ * cycle can end, so the fallback is just belt-and-suspenders).
+ */
+function cycleKeyOf(cfg: any): string {
+  if (cfg?.cycle_id) return String(cfg.cycle_id);
+  const iso = cfg?.start_time || cfg?.week_start;
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '' : `legacy_${d.toISOString().slice(0, 10)}`;
 }
 
 // ── Participant cleanup helpers ─────────────────────────────────────────────
-
-/**
- * UTC ms of the Monday 00:00 of the ISO-week containing `iso`. Mirrors the
- * client's cycleBucket() EXACTLY so server-side cleanup uses the same per-cycle
- * "bucket" the leaderboard registration gate uses. This is what makes cleanup
- * safe: a FUTURE cycle's intermission pre-registrations live in a later bucket
- * and are therefore never deleted. Returns NaN for missing/invalid input.
- */
-function mondayBucketMs(iso: string | null | undefined): number {
-  if (!iso) return NaN;
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return NaN;
-  const day  = d.getUTCDay();           // 0=Sun … 1=Mon
-  const back = day === 0 ? 6 : day - 1; // days since Monday
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back);
-}
 
 /**
  * Deletes every tournament_participants row (superuser-authed). Reads all ids
@@ -152,37 +131,10 @@ async function wipeAllParticipants(): Promise<number> {
   return ids.length;
 }
 
-/**
- * Deletes ONLY participant rows whose cycle bucket is strictly older than
- * `thresholdBucketMs` (or older-or-equal when `inclusive`). Bucket-aware, so a
- * future cycle's pre-registrations (the intermission carry-over the registration
- * gate relies on) are NEVER touched. Rows with an unparseable week_start are
- * skipped on purpose (left for the freeze-time wipeAllParticipants). Reads all
- * matching ids first, then deletes. Returns the count removed.
- */
-async function cleanStaleParticipants(thresholdBucketMs: number, inclusive = false): Promise<number> {
-  if (!Number.isFinite(thresholdBucketMs)) return 0;
-  const staleIds: string[] = [];
-  let page = 1;
-  while (true) {
-    const batch = await pbGet(`/api/collections/tournament_participants/records?perPage=200&page=${page}&fields=id,week_start`).catch(() => null);
-    const items: any[] = batch?.items ?? [];
-    if (!items.length) break;
-    for (const r of items) {
-      const b = mondayBucketMs(r.week_start);
-      if (!Number.isFinite(b)) continue; // conservative: never delete unparseable rows
-      if (inclusive ? b <= thresholdBucketMs : b < thresholdBucketMs) staleIds.push(r.id);
-    }
-    if (items.length < 200) break;
-    page++;
-  }
-  for (const id of staleIds) {
-    await pbDelete(`/api/collections/tournament_participants/records/${id}`).catch(() => {});
-  }
-  if (staleIds.length) {
-    console.log(`[tournament] Stale participants cleaned: ${staleIds.length} (bucket ${inclusive ? '<=' : '<'} ${new Date(thresholdBucketMs).toISOString().slice(0, 10)}) ✓`);
-  }
-  return staleIds.length;
+/** Cheap existence probe — returns true if ANY participant row remains. */
+async function anyParticipantsExist(): Promise<boolean> {
+  const batch = await pbGet('/api/collections/tournament_participants/records?perPage=1&fields=id').catch(() => null);
+  return (batch?.items?.length ?? 0) > 0;
 }
 
 // ── Schema helpers ─────────────────────────────────────────────────────────
@@ -255,36 +207,26 @@ export async function setupTournamentSchema(): Promise<void> {
           { name: 'end_time',         type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
           { name: 'is_active',        type: 'bool',   required: false, options: {} },
           { name: 'payout_finalized_bucket', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
+          { name: 'cycle_id',               type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
+          { name: 'payout_finalized_cycle', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
         ],
         listRule: '', viewRule: '', createRule: null, updateRule: null, deleteRule: null,
       });
-      const now = new Date();
-      const endTime = nextSunday6PM();
-      await pbPost('/api/collections/tournament_config/records', {
-        prize_pool_total: 500000, winners_count: 3,
-        reward_structure: JSON.stringify({ '1': 250000, '2': 150000, '3': 100000 }),
-        week_start: now.toISOString(), start_time: now.toISOString(),
-        end_time: endTime.toISOString(), is_active: true,
-      });
-      console.log('[tournament] tournament_config seeded — ends', endTime.toUTCString());
+      // Fully-manual model: do NOT seed an active tournament. A fresh DB starts
+      // in the inactive (red "Tournament will start soon") state until the admin
+      // launches the first cycle.
+      console.log('[tournament] tournament_config created (no auto-seed — manual cycles) ✓');
     } else {
-      // Ensure new fields exist on existing collection
+      // Ensure new fields exist on existing collection (additive migration)
       await ensureField('tournament_config', 'start_time', userTextOpt);
       await ensureField('tournament_config', 'end_time',   userTextOpt);
       await ensureField('tournament_config', 'banner',     { type: 'file', required: false, options: { maxSelect: 1, maxSize: 10485760, mimeTypes: ['image/jpeg','image/png','image/gif','image/webp'], thumbs: [], protected: false } });
       await ensureField('tournament_config', 'payout_finalized_bucket', userTextOpt);
-
-      // Back-fill end_time if missing on existing config record
-      const recs = await pbGet('/api/collections/tournament_config/records?sort=-created&perPage=1');
-      const rec  = recs?.items?.[0];
-      if (rec && !rec.end_time) {
-        const endTime = nextSunday6PM();
-        await pbPatch(`/api/collections/tournament_config/records/${rec.id}`, {
-          start_time: rec.week_start || new Date().toISOString(),
-          end_time:   endTime.toISOString(),
-        });
-        console.log('[tournament] Back-filled end_time on existing config ✓');
-      }
+      await ensureField('tournament_config', 'cycle_id',               userTextOpt);
+      await ensureField('tournament_config', 'payout_finalized_cycle', userTextOpt);
+      // NOTE: end_time is NEVER auto-back-filled in the manual model — the admin
+      // owns start_time/end_time. The reconciler backfills only cycle_id (so a
+      // pre-migration live cycle gets a permanent payout-lock key).
     }
 
     // ── tournament_participants collection ───────────────────────────────
@@ -296,6 +238,7 @@ export async function setupTournamentSchema(): Promise<void> {
           { name: 'user_id',                     type: 'text',   required: true,  options: { min: null, max: null, pattern: '' } },
           { name: 'display_name',                type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
           { name: 'week_start',                  type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
+          { name: 'cycle_id',                    type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
           { name: 'joined_at',                   type: 'text',   required: false, options: { min: null, max: null, pattern: '' } },
           { name: 'points',                      type: 'number', required: false, options: { min: null, max: null } },
           { name: 'registered_during_intermission', type: 'bool', required: false, options: {} },
@@ -308,6 +251,7 @@ export async function setupTournamentSchema(): Promise<void> {
       console.log('[tournament] tournament_participants created ✓');
     } else {
       await ensureField('tournament_participants', 'registered_during_intermission', userBoolOpt);
+      await ensureField('tournament_participants', 'cycle_id', userTextOpt);
       // Migrate the existing (shared-PB) collection: allow self-update so clients can
       // mirror their own points. Cosmetic field — authoritative points live on users.
       try {
@@ -515,8 +459,8 @@ export async function syncUserTournamentPoints(pbId: string): Promise<number> {
 
     // 5b. Mirror into the user's tournament_participants row so the column the admin
     //     panel / DB shows matches the leaderboard. Secondary/cosmetic — leaderboard +
-    //     winners read users.weekly_tournament_points. runEndOfWeek wipes participant
-    //     rows weekly, so each user has exactly one row per week → match by user_id.
+    //     winners read users.weekly_tournament_points. runEndOfCycle wipes participant
+    //     rows each cycle, so each user has exactly one row per cycle → match by user_id.
     try {
       const pRes = await pbGet(
         `/api/collections/tournament_participants/records?filter=${encodeURIComponent(
@@ -541,34 +485,38 @@ export async function syncUserTournamentPoints(pbId: string): Promise<number> {
   }
 }
 
-// ── Public: End-of-week (Sunday 18:00 UTC) ────────────────────────────────
+// ── Public: End-of-cycle finalization ─────────────────────────────────────
 /**
- * Called by Cron A (Sunday 18:00 UTC).
+ * Runs when a manual cycle's end_time passes (reconciler timer/poll or boot
+ * catch-up). Fully-manual model — NO calendar logic:
  * 1. Immediately sets is_active=false (freeze the tournament).
  * 2. Distributes prizes to top N users atomically.
  * 3. Exports winners to tournament_history (permanent record).
  * 4. Resets all participants' points + joined flags.
- * 5. Wipes tournament_participants ready for next-week registration.
+ * 5. Wipes tournament_participants.
+ * 6. STAYS inactive — no next cycle is auto-created. The leaderboard shows the
+ *    red "Tournament will start soon" state until the admin launches a new one.
+ *
+ * Payout is locked to the config's `cycle_id`: it can NEVER pay twice for the
+ * same cycle, no matter how many times this runs (timer + poll + boot races).
  */
-// In-process concurrency lock. The ONLY callers of runEndOfWeek are the Sunday
-// freeze cron and the boot catch-up — both run inside this single Node process
-// (the admin "start" path writes tournament_config directly via PB and never
-// calls this). Serializing them here makes the payout finalization atomic: two
-// overlapping runs can NEVER both pass the marker check before it is written, so
-// winners can never be double-credited even under a cron + manual-trigger race.
-let endOfWeekInFlight: Promise<void> | null = null;
+// In-process concurrency lock. Callers (reconciler timer, 60s poll, boot
+// catch-up) all run inside this single Node process. Serializing them here makes
+// the payout finalization atomic: two overlapping runs can NEVER both pass the
+// marker check before it is written, so winners can never be double-credited.
+let endOfCycleInFlight: Promise<void> | null = null;
 
-export async function runEndOfWeek(): Promise<void> {
-  if (endOfWeekInFlight) {
-    console.log('[tournament] runEndOfWeek already running — joining in-flight run (concurrency lock) ✓');
-    return endOfWeekInFlight;
+export async function runEndOfCycle(): Promise<void> {
+  if (endOfCycleInFlight) {
+    console.log('[tournament] runEndOfCycle already running — joining in-flight run (concurrency lock) ✓');
+    return endOfCycleInFlight;
   }
-  endOfWeekInFlight = runEndOfWeekImpl().finally(() => { endOfWeekInFlight = null; });
-  return endOfWeekInFlight;
+  endOfCycleInFlight = runEndOfCycleImpl().finally(() => { endOfCycleInFlight = null; });
+  return endOfCycleInFlight;
 }
 
-async function runEndOfWeekImpl(): Promise<void> {
-  console.log('[tournament] ── Running end-of-week: freeze → payout → history → reset ──');
+async function runEndOfCycleImpl(): Promise<void> {
+  console.log('[tournament] ── Running end-of-cycle: freeze → payout → history → reset → wipe ──');
 
   // 1. Load config (hard requirement — without it there is nothing to finalize)
   let cfg: any;
@@ -576,7 +524,7 @@ async function runEndOfWeekImpl(): Promise<void> {
     const cfgRes = await pbGet('/api/collections/tournament_config/records?sort=-created&perPage=1');
     cfg = cfgRes?.items?.[0];
   } catch (e: any) {
-    console.error('[tournament] runEndOfWeek: could not load config:', e.message);
+    console.error('[tournament] runEndOfCycle: could not load config:', e.message);
   }
   if (!cfg) { console.log('[tournament] No config — skipping.'); return; }
 
@@ -586,25 +534,22 @@ async function runEndOfWeekImpl(): Promise<void> {
     await pbPatch(`/api/collections/tournament_config/records/${cfg.id}`, { is_active: false });
     console.log('[tournament] Frozen (is_active=false) ✓');
   } catch (e: any) {
-    console.error('[tournament] runEndOfWeek: freeze failed (continuing):', e.message);
+    console.error('[tournament] runEndOfCycle: freeze failed (continuing):', e.message);
   }
 
   // 3-6. Payout + history — guarded by a ONE-TIME finalization lock so the same
-  //      cycle can NEVER be paid twice (a retry, or an overlapping cron/manual
+  //      cycle can NEVER be paid twice (a retry, or an overlapping timer/poll
   //      run). The lock is a self-contained check on tournament_config — it does
   //      NOT touch points calculation, mining tracking, the participant wipe, or
   //      any DB hook. Still wrapped in try/catch so a failure here can never skip
   //      the participant wipe (steps 7-8).
   //
-  //      Cycle key = the UTC ISO-week Monday of this config's start_time, i.e.
-  //      the same per-cycle "bucket" the rest of the tournament already uses.
-  //      Storing the PAID bucket string (not a plain bool) means next week's
-  //      different bucket naturally re-arms payout with no separate reset step.
-  const cycleBucketMs    = mondayBucketMs(cfg.start_time || cfg.week_start);
-  const cycleKey         = Number.isFinite(cycleBucketMs)
-    ? new Date(cycleBucketMs).toISOString().slice(0, 10)
-    : '';
-  const alreadyFinalized = !!cycleKey && cfg.payout_finalized_bucket === cycleKey;
+  //      Cycle key = the config's unique `cycle_id` (manual model). Each admin
+  //      launch mints a fresh cycle_id, so storing the PAID cycle_id naturally
+  //      re-arms payout for the next cycle with no separate reset step. Legacy
+  //      configs with no cycle_id fall back to the start_time-derived key.
+  const cycleKey         = cycleKeyOf(cfg);
+  const alreadyFinalized = !!cycleKey && cfg.payout_finalized_cycle === cycleKey;
 
   if (alreadyFinalized) {
     console.log(`[tournament] Payout already finalized for cycle ${cycleKey} — skipping distribution (double-credit guard) ✓`);
@@ -653,14 +598,15 @@ async function runEndOfWeekImpl(): Promise<void> {
       // winners can never be credited a second time.
       if (cycleKey) {
         await pbPatch(`/api/collections/tournament_config/records/${cfg.id}`, {
-          payout_finalized_bucket: cycleKey,
+          payout_finalized_cycle:  cycleKey,
+          payout_finalized_bucket: cycleKey, // keep legacy field mirrored
         });
         console.log(`[tournament] Payout finalized + locked for cycle ${cycleKey} ✓`);
       } else {
-        console.warn('[tournament] Payout ran but cycle key was unresolvable — lock NOT written (config missing start_time/week_start).');
+        console.warn('[tournament] Payout ran but cycle key was unresolvable — lock NOT written (config missing cycle_id/start_time).');
       }
     } catch (e: any) {
-      console.error('[tournament] runEndOfWeek payout/history error (continuing to cleanup):', e.message);
+      console.error('[tournament] runEndOfCycle payout/history error (continuing to cleanup):', e.message);
     }
   }
 
@@ -684,7 +630,7 @@ async function runEndOfWeekImpl(): Promise<void> {
     }
     console.log('[tournament] All points + joined flags reset ✓');
   } catch (e: any) {
-    console.error('[tournament] runEndOfWeek reset error (continuing to wipe):', e.message);
+    console.error('[tournament] runEndOfCycle reset error (continuing to wipe):', e.message);
   }
 
   // 8. ALWAYS wipe tournament_participants — the user-critical guarantee that
@@ -693,117 +639,126 @@ async function runEndOfWeekImpl(): Promise<void> {
     const wiped = await wipeAllParticipants();
     console.log(`[tournament] Participants wiped: ${wiped} ✓`);
   } catch (e: any) {
-    console.error('[tournament] runEndOfWeek participant wipe error:', e.message);
+    console.error('[tournament] runEndOfCycle participant wipe error:', e.message);
   }
 
-  console.log('[tournament] ── End-of-week complete ──');
+  console.log('[tournament] ── End-of-cycle complete — staying INACTIVE until admin launches next cycle ──');
 }
 
-// ── Public: New week (Monday 00:00 UTC) ───────────────────────────────────
-/**
- * Called by Cron B (Monday 00:00 UTC).
- * Sets is_active=true, updates start_time + end_time for the new week.
- */
-export async function startNewTournamentWeek(): Promise<void> {
-  console.log('[tournament] Starting new tournament week...');
+// ── Dynamic end-of-cycle reconciler ───────────────────────────────────────
+// Fully-manual model: there is NO calendar cron. The single source of truth is
+// the active config's `end_time`. The reconciler:
+//   • backfills a cycle_id onto a live cycle that predates this migration,
+//   • runs runEndOfCycle immediately if end_time has already passed,
+//   • otherwise arms a single precise (capped) timer for the exact end moment.
+// A 60s poll re-runs this so an admin-started cycle (written straight to PB,
+// out-of-process) is always picked up without a restart.
+
+const MAX_TIMEOUT_MS = 2_000_000_000; // ~23 days — setTimeout 32-bit cap guard
+let cycleEndTimer: ReturnType<typeof setTimeout> | null = null;
+let armedEndMs: number | null = null;
+
+async function reconcileCycleSchedule(): Promise<void> {
+  let cfg: any;
   try {
-    const now     = new Date();
-    const endTime = nextSunday6PM(); // This Sunday coming up at 18:00 UTC
-
     const cfgRes = await pbGet('/api/collections/tournament_config/records?sort=-created&perPage=1');
-    const cfg    = cfgRes?.items?.[0];
-
-    if (cfg) {
-      await pbPatch(`/api/collections/tournament_config/records/${cfg.id}`, {
-        is_active:  true,
-        start_time: now.toISOString(),
-        week_start: now.toISOString(), // keep week_start in sync for legacy code
-        end_time:   endTime.toISOString(),
-      });
-    } else {
-      await pbPost('/api/collections/tournament_config/records', {
-        prize_pool_total: 500000, winners_count: 3,
-        reward_structure: JSON.stringify({ '1': 250000, '2': 150000, '3': 100000 }),
-        is_active: true, start_time: now.toISOString(),
-        week_start: now.toISOString(), end_time: endTime.toISOString(),
-      });
-    }
-    console.log(`[tournament] New week live — ends ${endTime.toUTCString()} ✓`);
-
-    // Defensive cross-cycle cleanup: now that this week is the active cycle,
-    // delete any participant rows left over from STRICTLY OLDER cycles (e.g. a
-    // prior cycle whose freeze-wipe failed, or an admin-restarted window). This
-    // is bucket-aware (strictly-older only) so intermission pre-registrations
-    // for THIS new week — same bucket — are preserved.
-    await cleanStaleParticipants(mondayBucketMs(now.toISOString()), false);
+    cfg = cfgRes?.items?.[0];
   } catch (e: any) {
-    console.error('[tournament] startNewTournamentWeek error:', e.message);
+    console.warn('[tournament] reconcile: could not load config:', e?.message);
+    return;
   }
-}
 
-// ── Public: dual calendar-aligned crons ───────────────────────────────────
+  // No config at all → nothing to schedule. Clear any stale timer.
+  if (!cfg) {
+    if (cycleEndTimer) { clearTimeout(cycleEndTimer); cycleEndTimer = null; armedEndMs = null; }
+    return;
+  }
 
-function scheduleSunday6PMCron(): void {
-  const target = nextSunday6PM();
-  const ms     = msUntil(target);
-  console.log(`[tournament] CRON-FREEZE: Sunday 6PM in ~${Math.round(ms / 3_600_000)}h (${target.toUTCString()})`);
-  setTimeout(async () => {
-    await runEndOfWeek();
-    scheduleSunday6PMCron(); // reschedule for next Sunday
-  }, ms);
-}
+  // Inactive config. Normally this is the steady "no tournament" state, BUT it can
+  // also be a cycle whose finalization was interrupted AFTER the freeze step
+  // (is_active was set false first, then payout/reset/wipe failed). Because
+  // runEndOfCycle freezes before paying, we must retry independent of is_active or
+  // the cycle could be left unpaid/uncleared forever. Retry when EITHER:
+  //   • payout was never committed for this cycle_id (payout_finalized_cycle mismatch), OR
+  //   • participants still exist (a prior wipe didn't complete).
+  // runEndOfCycle is idempotent (payout is cycle_id-locked), so a retry never
+  // double-pays — it just completes whatever step was missed.
+  if (!cfg.is_active) {
+    if (cycleEndTimer) { clearTimeout(cycleEndTimer); cycleEndTimer = null; armedEndMs = null; }
+    // Scope the retry to manual-model cycles (cycle_id minted at launch). A legacy
+    // pre-migration config has no cycle_id; never auto-finalize it here (its stale
+    // participant rows must not trigger an unintended payout — the old weekly path
+    // owned that).
+    if (cfg.cycle_id) {
+      const unfinalizedPayout = cfg.payout_finalized_cycle !== cfg.cycle_id;
+      let leftoverParticipants = false;
+      try { leftoverParticipants = await anyParticipantsExist(); } catch {}
+      if (unfinalizedPayout || leftoverParticipants) {
+        console.log(
+          `[tournament] reconcile: detected interrupted finalization (unfinalizedPayout=${unfinalizedPayout}, leftoverParticipants=${leftoverParticipants}) — retrying runEndOfCycle.`,
+        );
+        await runEndOfCycle();
+      }
+    }
+    return;
+  }
 
-function scheduleMonday12AMCron(): void {
-  const target = nextMonday12AM();
-  const ms     = msUntil(target);
-  console.log(`[tournament] CRON-RESET:  Monday 12AM in ~${Math.round(ms / 3_600_000)}h (${target.toUTCString()})`);
-  setTimeout(async () => {
-    await startNewTournamentWeek();
-    scheduleMonday12AMCron(); // reschedule for next Monday
-  }, ms);
+  // Backfill a permanent cycle_id onto a live cycle that has none (pre-migration
+  // record), so its payout lock has a stable key.
+  if (!cfg.cycle_id) {
+    const newId = generateCycleId();
+    try {
+      await pbPatch(`/api/collections/tournament_config/records/${cfg.id}`, { cycle_id: newId });
+      cfg.cycle_id = newId;
+      console.log(`[tournament] reconcile: backfilled cycle_id ${newId} onto live cycle ✓`);
+    } catch (e: any) {
+      console.warn('[tournament] reconcile: cycle_id backfill failed:', e?.message);
+    }
+  }
+
+  const endMs = cfg.end_time ? new Date(cfg.end_time).getTime() : NaN;
+  if (!Number.isFinite(endMs)) {
+    // Active cycle with no/invalid end_time → cannot auto-finalize. Leave it to
+    // the admin "End now" control. Do not guess a calendar end.
+    if (cycleEndTimer) { clearTimeout(cycleEndTimer); cycleEndTimer = null; armedEndMs = null; }
+    console.warn('[tournament] reconcile: active cycle has no valid end_time — no auto-end armed.');
+    return;
+  }
+
+  const now = Date.now();
+  if (now >= endMs) {
+    console.log('[tournament] reconcile: end_time reached — finalizing cycle now.');
+    if (cycleEndTimer) { clearTimeout(cycleEndTimer); cycleEndTimer = null; armedEndMs = null; }
+    await runEndOfCycle();
+    return;
+  }
+
+  // Future end — (re)arm a precise timer if the target moved or none is armed.
+  if (armedEndMs === endMs && cycleEndTimer) return; // already armed for this end
+  if (cycleEndTimer) { clearTimeout(cycleEndTimer); cycleEndTimer = null; }
+  const delay = Math.min(endMs - now, MAX_TIMEOUT_MS);
+  armedEndMs = endMs;
+  cycleEndTimer = setTimeout(() => {
+    cycleEndTimer = null; armedEndMs = null;
+    // Re-reconcile rather than blindly finalizing: handles the capped-delay
+    // case (re-arms for the remaining time) and confirms the cycle is still due.
+    reconcileCycleSchedule().catch((e) =>
+      console.warn('[tournament] reconcile (timer) error:', e?.message));
+  }, delay);
+  const hrs = (endMs - now) / 3_600_000;
+  console.log(`[tournament] reconcile: cycle "${cfg.cycle_id}" ends in ~${hrs.toFixed(1)}h (${new Date(endMs).toUTCString()})${delay < endMs - now ? ' [capped — will re-arm]' : ''}`);
 }
 
 export function startTournamentCron(): void {
-  // Delay 15s after server boot so PB auth + DB are warm
-  setTimeout(async () => {
-    try {
-      // ── Catch-up check: if end_time passed while server was down ──────
-      const cfgRes = await pbGet('/api/collections/tournament_config/records?sort=-created&perPage=1');
-      const cfg    = cfgRes?.items?.[0];
-
-      if (cfg) {
-        const endTime = cfg.end_time ? new Date(cfg.end_time).getTime() : 0;
-        const now     = Date.now();
-
-        if (endTime > 0 && now > endTime && cfg.is_active) {
-          console.log('[tournament] CRON: missed end-of-week during downtime — running catch-up now.');
-          await runEndOfWeek();
-        } else if (endTime > 0 && now > endTime && !cfg.is_active) {
-          // Already frozen but the cycle has ended — recover any participant rows
-          // that were orphaned (e.g. a freeze whose wipe failed, or an admin who
-          // manually ended the window). Bucket-aware + inclusive: removes this
-          // ended cycle's rows AND older, but NEVER a future (intermission)
-          // cycle's pre-registrations.
-          const cleaned = await cleanStaleParticipants(
-            mondayBucketMs(cfg.start_time || cfg.week_start), true,
-          );
-          if (cleaned) console.log(`[tournament] CRON: recovered ${cleaned} orphaned participant row(s) from an ended cycle ✓`);
-        } else if (endTime === 0) {
-          // Legacy config without end_time — back-fill it
-          const newEnd = nextSunday6PM();
-          await pbPatch(`/api/collections/tournament_config/records/${cfg.id}`, {
-            start_time: cfg.week_start || new Date().toISOString(),
-            end_time:   newEnd.toISOString(),
-          });
-          console.log('[tournament] CRON: back-filled end_time ✓');
-        }
-      }
-    } catch (e: any) {
-      console.warn('[tournament] CRON startup check error:', e.message);
-    }
-
-    // ── Schedule both calendar-aligned crons ─────────────────────────────
-    scheduleSunday6PMCron();
-    scheduleMonday12AMCron();
+  // Delay 15s after server boot so PB auth + DB are warm, then reconcile once
+  // (boot catch-up) and poll every 60s to pick up admin-started cycles.
+  setTimeout(() => {
+    reconcileCycleSchedule().catch((e) =>
+      console.warn('[tournament] reconcile (boot) error:', e?.message));
+    setInterval(() => {
+      reconcileCycleSchedule().catch((e) =>
+        console.warn('[tournament] reconcile (poll) error:', e?.message));
+    }, 60_000);
   }, 15_000);
+  console.log('[tournament] Manual-cycle reconciler armed (boot in 15s, poll every 60s) ✓');
 }

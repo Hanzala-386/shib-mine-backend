@@ -1,12 +1,14 @@
 /**
- * TournamentBannerPopup — Weekly Tournament registration bottom sheet.
+ * TournamentBannerPopup — MANUAL-cycle tournament registration bottom sheet.
  *
  * Security: countdown uses server-authoritative time (serverOffset from
  * TournamentContext) so device clock manipulation doesn't affect the deadline.
  *
- * Two modes:
- *   Active     — normal tournament running; countdown to end_time (Sunday 18:00 UTC).
- *   Intermission — Sunday 6PM → Monday 12AM gap; pre-registration for next week.
+ * Manual model — the popup ONLY appears while a tournament is active (showPopup
+ * gates on config.is_active). Two phases:
+ *   prestart — launched but not started yet; countdown to start_time ("STARTS IN").
+ *   live     — running; countdown to end_time ("TOURNAMENT ENDS IN").
+ * There is NO weekly intermission / pre-registration-for-next-week state.
  *
  * Layout (top → bottom inside the sheet):
  *   1. Mode label + live countdown timer
@@ -129,23 +131,19 @@ function CapsuleButton({ label, bg, borderColor, glowColor, onPress, disabled }:
 // ── Main popup ─────────────────────────────────────────────────────────────
 export function TournamentBannerPopup() {
   const insets = useSafeAreaInsets();
-  const { config, showPopup, isIntermission, serverOffset, joinTournament, rejectTournament } = useTournament();
+  const { config, showPopup, serverOffset, joinTournament, rejectTournament } = useTournament();
   const [joining, setJoining] = useState(false);
 
   // Phase from the server-corrected clock — drives the countdown target + labels.
   const serverNow = Date.now() + serverOffset;
-  const phase     = getTournamentPhase(config, isIntermission, serverNow);
+  const phase     = getTournamentPhase(config, serverNow);
 
-  // intermission → next Monday 12AM (new week starts)
-  // prestart     → start_time ("STARTS IN")
-  // live         → end_time (next Sunday 18:00 UTC), with legacy week_start+7d fallback
+  // prestart → start_time ("STARTS IN")
+  // live     → end_time (admin-set end of this cycle)
   const countdownTarget = (() => {
     if (!config) return '';
-    if (phase === 'intermission') return nextMonday12AM_UTC().toISOString();
-    if (phase === 'prestart')     return config.start_time;
-    if (config.end_time)          return config.end_time;
-    const legacyEnd = new Date(config.week_start).getTime() + 7 * 24 * 60 * 60 * 1000;
-    return new Date(legacyEnd).toISOString();
+    if (phase === 'prestart') return config.start_time;
+    return config.end_time;
   })();
 
   const countdown = useCountdown(countdownTarget, serverOffset);
@@ -154,15 +152,14 @@ export function TournamentBannerPopup() {
     if (joining) return;
     setJoining(true);
     try {
-      // duringIntermission flag = registered before the tournament goes live
-      await joinTournament(phase !== 'live');
+      await joinTournament();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setJoining(false);
     }
-  }, [joinTournament, joining, phase]);
+  }, [joinTournament, joining]);
 
   const handleReject = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -172,16 +169,14 @@ export function TournamentBannerPopup() {
   if (!showPopup || !config) return null;
 
   const modeLabel =
-    phase === 'intermission' ? 'NEXT WEEK STARTS IN'
-    : phase === 'prestart'   ? 'STARTS IN'
+    phase === 'prestart' ? 'STARTS IN'
     : 'TOURNAMENT ENDS IN';
   const modeColor =
     phase === 'live' ? Colors.gold
-    : phase === 'prestart' ? '#00C853'
-    : '#7B68EE';
+    : '#00C853';
   const disclaimerMsg = phase === 'live'
     ? 'Registering is free — your mining rewards count as tournament points.'
-    : 'Pre-register now — your mining rewards will count as points when the tournament begins.';
+    : 'Register now — your mining rewards will count as points when the tournament begins.';
 
   return (
     <Modal visible transparent animationType="slide" statusBarTranslucent>
@@ -253,21 +248,6 @@ export function TournamentBannerPopup() {
       </View>
     </Modal>
   );
-}
-
-// ── Calendar helper (client-side approximation for countdown target) ────────
-function nextMonday12AM_UTC(): Date {
-  const now  = new Date();
-  const day  = now.getUTCDay(); // 1=Monday
-  const daysUntil = day === 1 ? 0 : (8 - day) % 7;
-  const candidate = new Date(Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntil,
-    0, 0, 0, 0,
-  ));
-  if (candidate.getTime() <= now.getTime()) {
-    candidate.setUTCDate(candidate.getUTCDate() + 7);
-  }
-  return candidate;
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────

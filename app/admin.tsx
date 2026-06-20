@@ -17,18 +17,11 @@ import { pb } from '@/lib/pocketbase';
 import { MAX_VIP_LEVEL } from '@shared/vip';
 import Colors from '@/constants/colors';
 
-// Normalize an ISO timestamp to its UTC ISO-week Monday (YYYY-MM-DD) — the
-// per-cycle "bucket". Mirrors cycleBucket() in TournamentContext and
-// mondayBucketMs() on the server so admin-side cleanup uses the SAME notion of
-// "which week a participant row belongs to".
-function cycleBucketIso(iso: string | null | undefined): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '';
-  const day  = d.getUTCDay();           // 0=Sun … 1=Mon
-  const back = day === 0 ? 6 : day - 1; // days since Monday
-  const mon  = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back));
-  return mon.toISOString().slice(0, 10);
+// Mint a unique cycle identifier for a freshly-launched tournament. Mirrors
+// generateCycleId() on the server (server/tournament.ts) — manual cycles are
+// identified by this opaque id, NOT by any calendar bucket.
+function mintCycleId(): string {
+  return `cycle_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 // Build a PocketBase file URL for a given collection record and filename
@@ -106,7 +99,10 @@ export default function AdminScreen() {
     rank1: '250000',
     rank2: '150000',
     rank3: '100000',
-    startInHours: '0', // 0 = start now (live); >0 = scheduled pre-start window
+    startInHours: '0',   // 0 = start now (live); >0 = scheduled pre-start window
+    durationDays: '7',   // arbitrary cycle length — days component
+    durationHours: '0',  // arbitrary cycle length — hours component
+    isActive: false,     // whether a tournament is currently running (drives "End now")
   });
   const [localBannerUri, setLocalBannerUri]   = useState<string | null>(null);
   const [localBannerMime, setLocalBannerMime] = useState<string>('image/jpeg');
@@ -208,6 +204,10 @@ export default function AdminScreen() {
             if (fname) existingBannerUrl = `https://api.webcod.in/api/files/tournament_config/${raw.id}/${fname}`;
           }
           if (!existingBannerUrl && raw.banner_url) existingBannerUrl = raw.banner_url;
+          // Derive whether a tournament is currently running: is_active flag AND
+          // the end_time hasn't passed yet (matches the client phase model).
+          const endMs = raw.end_time ? new Date(raw.end_time).getTime() : 0;
+          const running = !!raw.is_active && (!endMs || endMs > Date.now());
           setTournament({
             id: raw.id,
             prizePool: String(raw.prize_pool_total || 500000),
@@ -217,6 +217,9 @@ export default function AdminScreen() {
             rank2: String(rw['2'] || 150000),
             rank3: String(rw['3'] || 100000),
             startInHours: '0',
+            durationDays: '7',
+            durationHours: '0',
+            isActive: running,
           });
         }).catch(() => {});
 
@@ -287,18 +290,68 @@ export default function AdminScreen() {
   async function handleSaveTournament() {
     setSavingTournament(true);
     try {
+      // ── Lifecycle guard ──────────────────────────────────────────────────
+      // Launching mints a fresh cycle_id + wipes ALL participant rows. If the
+      // current cycle has not been fully finalized, overwriting it here would
+      // bypass that cycle's payout + history (the server's runEndOfCycle would
+      // never fire for the old cycle_id). Re-fetch the live config (authoritative —
+      // not the possibly-stale in-memory flag) and refuse to launch while:
+      //   • the cycle is still active (is_active=true — covers a running cycle AND
+      //     the window after "End Tournament Now" before the server freezes it), OR
+      //   • a cycle_id exists that the server has NOT yet marked paid
+      //     (payout_finalized_cycle !== cycle_id — closes the freeze→payout gap).
+      // The admin must End it first and wait for the server to finalize.
+      // FAIL CLOSED: if we cannot read/validate the live config, we cannot prove the
+      // previous cycle was finalized, so we must NOT launch (a launch overwrites the
+      // config + wipes participants and could skip the old cycle's payout).
+      try {
+        const liveList = await pb.collection('tournament_config').getList(1, 1, { sort: '-created' });
+        const live = liveList?.items?.[0] as any;
+        const stillActive    = live?.is_active === true;
+        const hasUnfinalized = !!live?.cycle_id && live.payout_finalized_cycle !== live.cycle_id;
+        if (live && (stillActive || hasUnfinalized)) {
+          setSavingTournament(false);
+          Alert.alert(
+            'Tournament still wrapping up',
+            stillActive
+              ? 'A tournament is currently live. Tap "End Tournament Now" first — winners are paid out and the leaderboard is cleared — before launching a new one.'
+              : 'The previous tournament is still being finalized (paying out winners). Please wait a moment and try again.',
+          );
+          return;
+        }
+      } catch (guardErr: any) {
+        console.warn('[admin] active-cycle guard check failed (failing closed):', guardErr?.message);
+        setSavingTournament(false);
+        Alert.alert(
+          'Could not verify tournament status',
+          'We could not confirm whether a tournament is still running. Launching is blocked to protect the previous cycle\'s payout. Please check your connection and try again.',
+        );
+        return;
+      }
+
       const rewardStructure = JSON.stringify({
         '1': Number(tournament.rank1) || 0,
         '2': Number(tournament.rank2) || 0,
         '3': Number(tournament.rank3) || 0,
       });
 
-      // Schedule window: start in X hours (0 = now → live immediately; >0 → pre-start phase),
-      // end_time = start_time + 7 days. Server scores mining from start_time onward.
-      const hrs      = Math.max(0, Number(tournament.startInHours) || 0);
+      // Manual cycle: start in X hours (0 = now → live immediately; >0 → pre-start
+      // phase), and an arbitrary duration of (days + hours). A fresh cycle_id is
+      // minted on EVERY launch so the server's per-cycle payout guard treats this
+      // as a brand-new tournament. Server scores mining from start_time onward.
+      const hrs        = Math.max(0, Number(tournament.startInHours) || 0);
+      const durDays    = Math.max(0, Number(tournament.durationDays) || 0);
+      const durHours   = Math.max(0, Number(tournament.durationHours) || 0);
+      const durationMs = (durDays * 24 + durHours) * 3_600_000;
+      if (durationMs <= 0) {
+        Alert.alert('Invalid duration', 'Tournament duration must be at least 1 hour.');
+        setSavingTournament(false);
+        return;
+      }
       const startMs  = Date.now() + hrs * 3_600_000;
       const startIso = new Date(startMs).toISOString();
-      const endIso   = new Date(startMs + 7 * 24 * 3_600_000).toISOString();
+      const endIso   = new Date(startMs + durationMs).toISOString();
+      const cycleId  = mintCycleId();
 
       // Use FormData so the banner image file is uploaded as multipart
       const form = new FormData();
@@ -309,6 +362,7 @@ export default function AdminScreen() {
       form.append('start_time',       startIso);
       form.append('end_time',         endIso);
       form.append('is_active',        'true');
+      form.append('cycle_id',         cycleId);
 
       if (localBannerUri) {
         // Append image file — React Native FormData file shape
@@ -328,29 +382,21 @@ export default function AdminScreen() {
         setTournament(prev => ({ ...prev, id: rec.id }));
       }
 
-      // Cross-cycle cleanup (production path — the APK has no Express server, so
-      // this mirrors the server's startNewTournamentWeek cleanup client-side via
-      // the PB SDK). Delete participant rows from STRICTLY-OLDER cycles only, so
-      // this window's own registrations and any future intermission
-      // pre-registrations (same/later bucket) are preserved. Best-effort — never
+      // Fresh-cycle cleanup (production path — the APK has no Express server, so
+      // this mirrors the server's end-of-cycle wipe client-side via the PB SDK).
+      // Launching a new cycle_id means a brand-new tournament, so ALL existing
+      // participant rows from any previous cycle are cleared. Best-effort — never
       // block the admin save.
       try {
-        const startBucket = cycleBucketIso(startIso);
-        if (startBucket) {
-          const stale = await pb.collection('tournament_participants').getFullList({
-            fields: 'id,week_start',
-            batch:  500,
-          });
-          const doomed = stale.filter((r: any) => {
-            const b = cycleBucketIso(r.week_start);
-            return b !== '' && b < startBucket; // strictly older only
-          });
-          for (const r of doomed) {
-            try { await pb.collection('tournament_participants').delete(r.id); } catch {}
-          }
-          if (doomed.length) {
-            console.log(`[admin] Cleared ${doomed.length} stale participant row(s) from older cycles`);
-          }
+        const stale = await pb.collection('tournament_participants').getFullList({
+          fields: 'id',
+          batch:  500,
+        });
+        for (const r of stale) {
+          try { await pb.collection('tournament_participants').delete(r.id); } catch {}
+        }
+        if (stale.length) {
+          console.log(`[admin] Cleared ${stale.length} participant row(s) for new cycle ${cycleId}`);
         }
       } catch (cleanupErr: any) {
         console.warn('[admin] participant cleanup skipped:', cleanupErr?.message);
@@ -363,19 +409,55 @@ export default function AdminScreen() {
         setTournament(prev => ({ ...prev, existingBannerUrl: newUrl }));
         setLocalBannerUri(null);
       }
+      setTournament(prev => ({ ...prev, isActive: true }));
 
+      const durLabel = `${durDays}d ${durHours}h`;
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert(
         hrs > 0 ? 'Tournament Scheduled' : 'Tournament Started',
         hrs > 0
-          ? `Registration is open now. The tournament goes live in ${hrs} hour${hrs === 1 ? '' : 's'}.`
-          : 'New weekly tournament is now live for all users!',
+          ? `Registration is open now. The tournament goes live in ${hrs} hour${hrs === 1 ? '' : 's'} and runs for ${durLabel}.`
+          : `New tournament is now live for all users — it runs for ${durLabel}.`,
       );
     } catch (e: any) {
       Alert.alert('Error', e.message || 'Failed to save tournament config.');
     } finally {
       setSavingTournament(false);
     }
+  }
+
+  // End the running tournament immediately: set end_time = now (keeping
+  // is_active=true). The server's end-of-cycle reconciler then runs payout +
+  // participant wipe once for this cycle_id and flips the tournament inactive.
+  async function handleEndTournamentNow() {
+    if (!tournament.id) return;
+    Alert.alert(
+      'End tournament now?',
+      'This ends the current tournament immediately. Winners are paid out and the leaderboard is cleared. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'End Now',
+          style: 'destructive',
+          onPress: async () => {
+            setSavingTournament(true);
+            try {
+              await pb.collection('tournament_config').update(tournament.id, {
+                end_time: new Date().toISOString(),
+                is_active: true,
+              });
+              setTournament(prev => ({ ...prev, isActive: false }));
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert('Tournament Ending', 'The tournament is wrapping up. Payouts and cleanup run within a minute.');
+            } catch (e: any) {
+              Alert.alert('Error', e.message || 'Failed to end tournament.');
+            } finally {
+              setSavingTournament(false);
+            }
+          },
+        },
+      ],
+    );
   }
 
   async function pickDayImage(key: string) {
@@ -973,8 +1055,16 @@ export default function AdminScreen() {
             )}
           </AdminSection>
 
-          {/* ── Weekly Tournament Setup ──────────────────────────────── */}
-          <AdminSection title="Weekly Tournament Setup" icon="trophy">
+          {/* ── Tournament Setup ─────────────────────────────────────── */}
+          <AdminSection title="Tournament Setup" icon="trophy">
+            {/* Current status banner */}
+            <View style={[styles.statusPill, tournament.isActive ? styles.statusPillLive : styles.statusPillInactive]}>
+              <View style={[styles.statusDot, { backgroundColor: tournament.isActive ? '#00C853' : '#FF453A' }]} />
+              <Text style={[styles.statusPillText, { color: tournament.isActive ? '#00C853' : '#FF453A' }]}>
+                {tournament.isActive ? 'TOURNAMENT ACTIVE' : 'NO ACTIVE TOURNAMENT'}
+              </Text>
+            </View>
+
             {/* ── Banner image picker ── */}
             <View style={styles.fieldGroup}>
               <Text style={styles.fieldLabel}>Tournament Banner Image</Text>
@@ -1016,12 +1106,39 @@ export default function AdminScreen() {
               onChangeText={v => setTournament(p => ({ ...p, startInHours: v.replace(/[^0-9]/g, '') }))}
               keyboardType="numeric"
             />
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Tournament Duration</Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={{ flex: 1 }}>
+                  <AdminField
+                    label="Days"
+                    value={tournament.durationDays}
+                    onChangeText={v => setTournament(p => ({ ...p, durationDays: v.replace(/[^0-9]/g, '') }))}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <AdminField
+                    label="Hours"
+                    value={tournament.durationHours}
+                    onChangeText={v => setTournament(p => ({ ...p, durationHours: v.replace(/[^0-9]/g, '') }))}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+            </View>
+
             <Text style={[styles.emptyText, { textAlign: 'left', marginTop: -4, marginBottom: 4 }]}>
               {(() => {
-                const h = Math.max(0, Number(tournament.startInHours) || 0);
+                const h  = Math.max(0, Number(tournament.startInHours) || 0);
+                const dd = Math.max(0, Number(tournament.durationDays) || 0);
+                const dh = Math.max(0, Number(tournament.durationHours) || 0);
+                const durLabel = `${dd}d ${dh}h`;
+                if (dd === 0 && dh === 0) return 'Set a duration of at least 1 hour.';
                 return h > 0
-                  ? `Registration opens now; tournament goes live in ${h} hour${h === 1 ? '' : 's'}. Ends 7 days after start.`
-                  : 'Tournament goes live immediately. Ends 7 days from now.';
+                  ? `Registration opens now; tournament goes live in ${h} hour${h === 1 ? '' : 's'} and runs for ${durLabel}.`
+                  : `Tournament goes live immediately and runs for ${durLabel}.`;
               })()}
             </Text>
 
@@ -1059,13 +1176,30 @@ export default function AdminScreen() {
               <LinearGradient colors={['#00C853', '#1B5E20']} style={styles.createBtnGrad}>
                 {savingTournament
                   ? <ActivityIndicator size="small" color="#fff" />
-                  : <Text style={[styles.createBtnText, { color: '#fff' }]}>💾  Save &amp; Start Tournament</Text>}
+                  : <Text style={[styles.createBtnText, { color: '#fff' }]}>🚀  Launch New Tournament</Text>}
               </LinearGradient>
             </Pressable>
 
             <Text style={[styles.emptyText, { marginTop: 4 }]}>
-              Saving resets the week timer and shows the popup to all users.
+              Launching mints a fresh cycle, clears the previous leaderboard, and shows the popup to all users.
             </Text>
+
+            {/* End tournament now — only when one is active */}
+            {tournament.isActive && tournament.id && (
+              <>
+                <Pressable
+                  style={[styles.endNowBtn, savingTournament && { opacity: 0.6 }]}
+                  disabled={savingTournament}
+                  onPress={handleEndTournamentNow}
+                >
+                  <MaterialCommunityIcons name="stop-circle-outline" size={18} color="#FF453A" />
+                  <Text style={styles.endNowBtnText}>End Tournament Now</Text>
+                </Pressable>
+                <Text style={[styles.emptyText, { marginTop: 4 }]}>
+                  Ends the current cycle immediately — winners are paid out and the leaderboard is cleared.
+                </Text>
+              </>
+            )}
           </AdminSection>
 
           <View style={styles.adminNote}>
@@ -1162,6 +1296,20 @@ const styles = StyleSheet.create({
   createBtn: { marginTop: 4 },
   createBtnGrad: { borderRadius: 12, paddingVertical: 13, alignItems: 'center' },
   createBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#0A0A0F' },
+  statusPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start',
+    paddingVertical: 7, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, marginBottom: 12,
+  },
+  statusPillLive:     { backgroundColor: 'rgba(0,200,83,0.10)', borderColor: 'rgba(0,200,83,0.35)' },
+  statusPillInactive: { backgroundColor: 'rgba(255,69,58,0.10)', borderColor: 'rgba(255,69,58,0.35)' },
+  statusDot:          { width: 8, height: 8, borderRadius: 4 },
+  statusPillText:     { fontFamily: 'Inter_700Bold', fontSize: 11, letterSpacing: 1 },
+  endNowBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    marginTop: 12, paddingVertical: 13, borderRadius: 12,
+    backgroundColor: 'rgba(255,69,58,0.08)', borderWidth: 1, borderColor: 'rgba(255,69,58,0.40)',
+  },
+  endNowBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#FF453A' },
   taskRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.darkBorder },
   taskTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textPrimary },
   taskMeta: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted },

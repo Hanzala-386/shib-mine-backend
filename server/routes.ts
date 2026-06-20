@@ -4386,9 +4386,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ── Tournament: server-time + config ──────────────────────────────────────
-  // Returns the current tournament config enriched with server-authoritative time
-  // and an explicit `isIntermission` flag (is_active=false window between
-  // Sunday 18:00 UTC and Monday 00:00 UTC).
+  // Returns the current tournament config (including cycle_id) enriched with
+  // server-authoritative time. Fully-manual model: the client derives phase
+  // (none / prestart / live) from is_active + start_time/end_time + cycle_id.
   app.get('/api/app/tournament/config', async (req: Request, res: Response) => {
     try {
       const serverTime = Date.now();
@@ -4397,18 +4397,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           '/api/collections/tournament_config/records?sort=-created&perPage=1',
         );
         const raw = cfgRes?.items?.[0];
-        if (!raw) return res.json({ config: null, serverTime, isIntermission: false });
+        if (!raw) return res.json({ config: null, serverTime });
 
         let rewardStructure: Record<string, number> = {};
         try { rewardStructure = JSON.parse(raw.reward_structure || '{}'); } catch {}
 
-        // isIntermission: tournament is paused (is_active=false) but a new week
-        // hasn't started yet — the 6h window between Sunday 18:00 and Monday 00:00 UTC.
-        const isIntermission = !raw.is_active;
-
+        // Fully-manual model: the client derives phase (none / prestart / live)
+        // from is_active + start_time/end_time + cycle_id. No weekly intermission.
         return res.json({
           config: {
             id:               raw.id,
+            cycle_id:         raw.cycle_id || '',
             prize_pool_total: Number(raw.prize_pool_total) || 0,
             winners_count:    Number(raw.winners_count)    || 3,
             reward_structure: rewardStructure,
@@ -4419,10 +4418,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             is_active:        !!raw.is_active,
           },
           serverTime,
-          isIntermission,
         });
       } catch (innerErr: any) {
-        return res.json({ config: null, serverTime, isIntermission: false });
+        return res.json({ config: null, serverTime });
       }
     } catch (e: any) {
       console.error('[/api/app/tournament/config]', e.message);
