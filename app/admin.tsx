@@ -17,6 +17,20 @@ import { pb } from '@/lib/pocketbase';
 import { MAX_VIP_LEVEL } from '@shared/vip';
 import Colors from '@/constants/colors';
 
+// Normalize an ISO timestamp to its UTC ISO-week Monday (YYYY-MM-DD) — the
+// per-cycle "bucket". Mirrors cycleBucket() in TournamentContext and
+// mondayBucketMs() on the server so admin-side cleanup uses the SAME notion of
+// "which week a participant row belongs to".
+function cycleBucketIso(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const day  = d.getUTCDay();           // 0=Sun … 1=Mon
+  const back = day === 0 ? 6 : day - 1; // days since Monday
+  const mon  = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back));
+  return mon.toISOString().slice(0, 10);
+}
+
 // Build a PocketBase file URL for a given collection record and filename
 function pbFileUrl(recordId: string, filename: string): string {
   return `https://api.webcod.in/api/files/task_submissions/${recordId}/${filename}`;
@@ -312,6 +326,34 @@ export default function AdminScreen() {
       } else {
         rec = await pb.collection('tournament_config').create(form);
         setTournament(prev => ({ ...prev, id: rec.id }));
+      }
+
+      // Cross-cycle cleanup (production path — the APK has no Express server, so
+      // this mirrors the server's startNewTournamentWeek cleanup client-side via
+      // the PB SDK). Delete participant rows from STRICTLY-OLDER cycles only, so
+      // this window's own registrations and any future intermission
+      // pre-registrations (same/later bucket) are preserved. Best-effort — never
+      // block the admin save.
+      try {
+        const startBucket = cycleBucketIso(startIso);
+        if (startBucket) {
+          const stale = await pb.collection('tournament_participants').getFullList({
+            fields: 'id,week_start',
+            batch:  500,
+          });
+          const doomed = stale.filter((r: any) => {
+            const b = cycleBucketIso(r.week_start);
+            return b !== '' && b < startBucket; // strictly older only
+          });
+          for (const r of doomed) {
+            try { await pb.collection('tournament_participants').delete(r.id); } catch {}
+          }
+          if (doomed.length) {
+            console.log(`[admin] Cleared ${doomed.length} stale participant row(s) from older cycles`);
+          }
+        }
+      } catch (cleanupErr: any) {
+        console.warn('[admin] participant cleanup skipped:', cleanupErr?.message);
       }
 
       // Update displayed thumbnail with the newly uploaded banner

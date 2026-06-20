@@ -112,6 +112,79 @@ function msUntil(target: Date): number {
   return Math.max(target.getTime() - Date.now(), 60_000); // min 60s buffer
 }
 
+// ── Participant cleanup helpers ─────────────────────────────────────────────
+
+/**
+ * UTC ms of the Monday 00:00 of the ISO-week containing `iso`. Mirrors the
+ * client's cycleBucket() EXACTLY so server-side cleanup uses the same per-cycle
+ * "bucket" the leaderboard registration gate uses. This is what makes cleanup
+ * safe: a FUTURE cycle's intermission pre-registrations live in a later bucket
+ * and are therefore never deleted. Returns NaN for missing/invalid input.
+ */
+function mondayBucketMs(iso: string | null | undefined): number {
+  if (!iso) return NaN;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return NaN;
+  const day  = d.getUTCDay();           // 0=Sun … 1=Mon
+  const back = day === 0 ? 6 : day - 1; // days since Monday
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back);
+}
+
+/**
+ * Deletes every tournament_participants row (superuser-authed). Reads all ids
+ * FIRST (stable — no mutation during pagination), then deletes, so no row is
+ * ever skipped by index shift. Returns the count removed.
+ */
+async function wipeAllParticipants(): Promise<number> {
+  const ids: string[] = [];
+  let page = 1;
+  while (true) {
+    const batch = await pbGet(`/api/collections/tournament_participants/records?perPage=200&page=${page}&fields=id`).catch(() => null);
+    const items: any[] = batch?.items ?? [];
+    if (!items.length) break;
+    for (const r of items) ids.push(r.id);
+    if (items.length < 200) break;
+    page++;
+  }
+  for (const id of ids) {
+    await pbDelete(`/api/collections/tournament_participants/records/${id}`).catch(() => {});
+  }
+  return ids.length;
+}
+
+/**
+ * Deletes ONLY participant rows whose cycle bucket is strictly older than
+ * `thresholdBucketMs` (or older-or-equal when `inclusive`). Bucket-aware, so a
+ * future cycle's pre-registrations (the intermission carry-over the registration
+ * gate relies on) are NEVER touched. Rows with an unparseable week_start are
+ * skipped on purpose (left for the freeze-time wipeAllParticipants). Reads all
+ * matching ids first, then deletes. Returns the count removed.
+ */
+async function cleanStaleParticipants(thresholdBucketMs: number, inclusive = false): Promise<number> {
+  if (!Number.isFinite(thresholdBucketMs)) return 0;
+  const staleIds: string[] = [];
+  let page = 1;
+  while (true) {
+    const batch = await pbGet(`/api/collections/tournament_participants/records?perPage=200&page=${page}&fields=id,week_start`).catch(() => null);
+    const items: any[] = batch?.items ?? [];
+    if (!items.length) break;
+    for (const r of items) {
+      const b = mondayBucketMs(r.week_start);
+      if (!Number.isFinite(b)) continue; // conservative: never delete unparseable rows
+      if (inclusive ? b <= thresholdBucketMs : b < thresholdBucketMs) staleIds.push(r.id);
+    }
+    if (items.length < 200) break;
+    page++;
+  }
+  for (const id of staleIds) {
+    await pbDelete(`/api/collections/tournament_participants/records/${id}`).catch(() => {});
+  }
+  if (staleIds.length) {
+    console.log(`[tournament] Stale participants cleaned: ${staleIds.length} (bucket ${inclusive ? '<=' : '<'} ${new Date(thresholdBucketMs).toISOString().slice(0, 10)}) ✓`);
+  }
+  return staleIds.length;
+}
+
 // ── Schema helpers ─────────────────────────────────────────────────────────
 
 async function ensureField(collectionName: string, fieldName: string, fieldDef: object): Promise<void> {
@@ -477,32 +550,42 @@ export async function syncUserTournamentPoints(pbId: string): Promise<number> {
  */
 export async function runEndOfWeek(): Promise<void> {
   console.log('[tournament] ── Running end-of-week: freeze → payout → history → reset ──');
-  try {
-    // 1. Load config
-    const cfgRes = await pbGet('/api/collections/tournament_config/records?sort=-created&perPage=1');
-    const cfg    = cfgRes?.items?.[0];
-    if (!cfg) { console.log('[tournament] No config — skipping.'); return; }
 
-    // 2. Freeze immediately — any new mining claims won't count
+  // 1. Load config (hard requirement — without it there is nothing to finalize)
+  let cfg: any;
+  try {
+    const cfgRes = await pbGet('/api/collections/tournament_config/records?sort=-created&perPage=1');
+    cfg = cfgRes?.items?.[0];
+  } catch (e: any) {
+    console.error('[tournament] runEndOfWeek: could not load config:', e.message);
+  }
+  if (!cfg) { console.log('[tournament] No config — skipping.'); return; }
+
+  // 2. Freeze immediately — any new mining claims won't count. Best-effort: even
+  //    if the freeze write fails we still proceed to the participant wipe below.
+  try {
     await pbPatch(`/api/collections/tournament_config/records/${cfg.id}`, { is_active: false });
     console.log('[tournament] Frozen (is_active=false) ✓');
+  } catch (e: any) {
+    console.error('[tournament] runEndOfWeek: freeze failed (continuing):', e.message);
+  }
 
-    // 3. Load reward config
+  // 3-6. Payout + history. Wrapped so a failure here can NEVER skip the
+  //      participant wipe (steps 7-8) — that skip was the root cause of stale
+  //      participant rows surviving across cycles.
+  try {
     let rewardMap: Record<string, number> = {};
     try { rewardMap = JSON.parse(cfg.reward_structure || '{}'); } catch {}
     const winnersCount = Math.max(Number(cfg.winners_count) || 3, 1);
 
-    // 4. Fetch top players sorted by weekly_tournament_points
     const filter  = encodeURIComponent('tournament_joined=true&&weekly_tournament_points>0');
     const perPage = Math.min(Math.max(winnersCount, 10), 100);
     const usersRes = await pbGet(
       `/api/collections/users/records?sort=-weekly_tournament_points&filter=${filter}&perPage=${perPage}&fields=id,display_name,weekly_tournament_points,shib_balance`,
     );
     const topUsers: any[] = (usersRes?.items ?? []).slice(0, winnersCount);
-
     const weekEnd = new Date().toISOString();
 
-    // 5. Export winners to tournament_history
     for (let i = 0; i < topUsers.length; i++) {
       const u     = topUsers[i];
       const rank  = i + 1;
@@ -518,7 +601,6 @@ export async function runEndOfWeek(): Promise<void> {
     }
     console.log(`[tournament] History exported: ${topUsers.length} winners ✓`);
 
-    // 6. Distribute prizes atomically
     for (let i = 0; i < topUsers.length; i++) {
       const u     = topUsers[i];
       const prize = Number(rewardMap[String(i + 1)]) || 0;
@@ -529,8 +611,12 @@ export async function runEndOfWeek(): Promise<void> {
         console.log(`[tournament] Rank #${i + 1} (${u.display_name || u.id}): +${prize.toLocaleString()} SHIB`);
       }
     }
+  } catch (e: any) {
+    console.error('[tournament] runEndOfWeek payout/history error (continuing to cleanup):', e.message);
+  }
 
-    // 7. Reset ALL joined users in batches of 100
+  // 7. Reset ALL joined users (best-effort — must not abort the wipe)
+  try {
     let page = 1;
     while (true) {
       const batch = await pbGet(
@@ -548,23 +634,20 @@ export async function runEndOfWeek(): Promise<void> {
       page++;
     }
     console.log('[tournament] All points + joined flags reset ✓');
-
-    // 8. Wipe tournament_participants
-    let pPage = 1;
-    while (true) {
-      const pBatch = await pbGet(`/api/collections/tournament_participants/records?perPage=100&page=${pPage}&fields=id`);
-      const pItems: any[] = pBatch?.items ?? [];
-      if (!pItems.length) break;
-      await Promise.allSettled(pItems.map((r: any) => pbDelete(`/api/collections/tournament_participants/records/${r.id}`)));
-      if (pItems.length < 100) break;
-      pPage++;
-    }
-    console.log('[tournament] Participants wiped ✓');
-
-    console.log('[tournament] ── End-of-week complete ──');
   } catch (e: any) {
-    console.error('[tournament] runEndOfWeek error:', e.message);
+    console.error('[tournament] runEndOfWeek reset error (continuing to wipe):', e.message);
   }
+
+  // 8. ALWAYS wipe tournament_participants — the user-critical guarantee that
+  //    the next cycle starts with a 100% empty participant set.
+  try {
+    const wiped = await wipeAllParticipants();
+    console.log(`[tournament] Participants wiped: ${wiped} ✓`);
+  } catch (e: any) {
+    console.error('[tournament] runEndOfWeek participant wipe error:', e.message);
+  }
+
+  console.log('[tournament] ── End-of-week complete ──');
 }
 
 // ── Public: New week (Monday 00:00 UTC) ───────────────────────────────────
@@ -597,6 +680,13 @@ export async function startNewTournamentWeek(): Promise<void> {
       });
     }
     console.log(`[tournament] New week live — ends ${endTime.toUTCString()} ✓`);
+
+    // Defensive cross-cycle cleanup: now that this week is the active cycle,
+    // delete any participant rows left over from STRICTLY OLDER cycles (e.g. a
+    // prior cycle whose freeze-wipe failed, or an admin-restarted window). This
+    // is bucket-aware (strictly-older only) so intermission pre-registrations
+    // for THIS new week — same bucket — are preserved.
+    await cleanStaleParticipants(mondayBucketMs(now.toISOString()), false);
   } catch (e: any) {
     console.error('[tournament] startNewTournamentWeek error:', e.message);
   }
@@ -639,6 +729,16 @@ export function startTournamentCron(): void {
         if (endTime > 0 && now > endTime && cfg.is_active) {
           console.log('[tournament] CRON: missed end-of-week during downtime — running catch-up now.');
           await runEndOfWeek();
+        } else if (endTime > 0 && now > endTime && !cfg.is_active) {
+          // Already frozen but the cycle has ended — recover any participant rows
+          // that were orphaned (e.g. a freeze whose wipe failed, or an admin who
+          // manually ended the window). Bucket-aware + inclusive: removes this
+          // ended cycle's rows AND older, but NEVER a future (intermission)
+          // cycle's pre-registrations.
+          const cleaned = await cleanStaleParticipants(
+            mondayBucketMs(cfg.start_time || cfg.week_start), true,
+          );
+          if (cleaned) console.log(`[tournament] CRON: recovered ${cleaned} orphaned participant row(s) from an ended cycle ✓`);
         } else if (endTime === 0) {
           // Legacy config without end_time — back-fill it
           const newEnd = nextSunday6PM();
