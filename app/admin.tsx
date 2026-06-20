@@ -92,6 +92,7 @@ export default function AdminScreen() {
     rank1: '250000',
     rank2: '150000',
     rank3: '100000',
+    startInHours: '0', // 0 = start now (live); >0 = scheduled pre-start window
   });
   const [localBannerUri, setLocalBannerUri]   = useState<string | null>(null);
   const [localBannerMime, setLocalBannerMime] = useState<string>('image/jpeg');
@@ -201,6 +202,7 @@ export default function AdminScreen() {
             rank1: String(rw['1'] || 250000),
             rank2: String(rw['2'] || 150000),
             rank3: String(rw['3'] || 100000),
+            startInHours: '0',
           });
         }).catch(() => {});
 
@@ -277,12 +279,21 @@ export default function AdminScreen() {
         '3': Number(tournament.rank3) || 0,
       });
 
+      // Schedule window: start in X hours (0 = now → live immediately; >0 → pre-start phase),
+      // end_time = start_time + 7 days. Server scores mining from start_time onward.
+      const hrs      = Math.max(0, Number(tournament.startInHours) || 0);
+      const startMs  = Date.now() + hrs * 3_600_000;
+      const startIso = new Date(startMs).toISOString();
+      const endIso   = new Date(startMs + 7 * 24 * 3_600_000).toISOString();
+
       // Use FormData so the banner image file is uploaded as multipart
       const form = new FormData();
       form.append('prize_pool_total', String(Number(tournament.prizePool) || 0));
       form.append('winners_count',    String(Number(tournament.winnersCount) || 3));
       form.append('reward_structure', rewardStructure);
-      form.append('week_start',       new Date().toISOString());
+      form.append('week_start',       startIso);
+      form.append('start_time',       startIso);
+      form.append('end_time',         endIso);
       form.append('is_active',        'true');
 
       if (localBannerUri) {
@@ -312,7 +323,12 @@ export default function AdminScreen() {
       }
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Tournament Started', 'New weekly tournament is now live for all users!');
+      Alert.alert(
+        hrs > 0 ? 'Tournament Scheduled' : 'Tournament Started',
+        hrs > 0
+          ? `Registration is open now. The tournament goes live in ${hrs} hour${hrs === 1 ? '' : 's'}.`
+          : 'New weekly tournament is now live for all users!',
+      );
     } catch (e: any) {
       Alert.alert('Error', e.message || 'Failed to save tournament config.');
     } finally {
@@ -951,6 +967,21 @@ export default function AdminScreen() {
               onChangeText={v => setTournament(p => ({ ...p, prizePool: v }))}
               keyboardType="numeric"
             />
+
+            <AdminField
+              label="Start in hours (0 = now)"
+              value={tournament.startInHours}
+              onChangeText={v => setTournament(p => ({ ...p, startInHours: v.replace(/[^0-9]/g, '') }))}
+              keyboardType="numeric"
+            />
+            <Text style={[styles.emptyText, { textAlign: 'left', marginTop: -4, marginBottom: 4 }]}>
+              {(() => {
+                const h = Math.max(0, Number(tournament.startInHours) || 0);
+                return h > 0
+                  ? `Registration opens now; tournament goes live in ${h} hour${h === 1 ? '' : 's'}. Ends 7 days after start.`
+                  : 'Tournament goes live immediately. Ends 7 days from now.';
+              })()}
+            </Text>
 
             <View style={styles.fieldGroup}>
               <Text style={styles.fieldLabel}>Winners Cap</Text>

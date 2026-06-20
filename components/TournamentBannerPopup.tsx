@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
-import { useTournament } from '@/context/TournamentContext';
+import { useTournament, getTournamentPhase } from '@/context/TournamentContext';
 import Colors from '@/constants/colors';
 
 // ── Server-corrected countdown hook ────────────────────────────────────────
@@ -132,18 +132,18 @@ export function TournamentBannerPopup() {
   const { config, showPopup, isIntermission, serverOffset, joinTournament, rejectTournament } = useTournament();
   const [joining, setJoining] = useState(false);
 
-  // During intermission: countdown to next Monday 12AM (when new week starts).
-  // During active:       countdown to end_time (next Sunday 18:00 UTC).
-  // Fallback to week_start + 7d if end_time not set (legacy configs).
+  // Phase from the server-corrected clock — drives the countdown target + labels.
+  const serverNow = Date.now() + serverOffset;
+  const phase     = getTournamentPhase(config, isIntermission, serverNow);
+
+  // intermission → next Monday 12AM (new week starts)
+  // prestart     → start_time ("STARTS IN")
+  // live         → end_time (next Sunday 18:00 UTC), with legacy week_start+7d fallback
   const countdownTarget = (() => {
     if (!config) return '';
-    if (isIntermission) {
-      // Show countdown to next Monday midnight (when new week will start)
-      const nextMon = nextMonday12AM_UTC();
-      return nextMon.toISOString();
-    }
-    if (config.end_time) return config.end_time;
-    // Legacy fallback: week_start + 7 days
+    if (phase === 'intermission') return nextMonday12AM_UTC().toISOString();
+    if (phase === 'prestart')     return config.start_time;
+    if (config.end_time)          return config.end_time;
     const legacyEnd = new Date(config.week_start).getTime() + 7 * 24 * 60 * 60 * 1000;
     return new Date(legacyEnd).toISOString();
   })();
@@ -154,14 +154,15 @@ export function TournamentBannerPopup() {
     if (joining) return;
     setJoining(true);
     try {
-      await joinTournament(isIntermission);
+      // duringIntermission flag = registered before the tournament goes live
+      await joinTournament(phase !== 'live');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setJoining(false);
     }
-  }, [joinTournament, joining, isIntermission]);
+  }, [joinTournament, joining, phase]);
 
   const handleReject = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -170,11 +171,17 @@ export function TournamentBannerPopup() {
 
   if (!showPopup || !config) return null;
 
-  const modeLabel     = isIntermission ? 'NEXT WEEK STARTS IN' : 'TOURNAMENT ENDS IN';
-  const modeColor     = isIntermission ? '#7B68EE' : Colors.gold; // purple during intermission
-  const disclaimerMsg = isIntermission
-    ? 'Pre-register now — your mining rewards will count as points when the new week begins.'
-    : 'Registering is free — your mining rewards count as tournament points.';
+  const modeLabel =
+    phase === 'intermission' ? 'NEXT WEEK STARTS IN'
+    : phase === 'prestart'   ? 'STARTS IN'
+    : 'TOURNAMENT ENDS IN';
+  const modeColor =
+    phase === 'live' ? Colors.gold
+    : phase === 'prestart' ? '#00C853'
+    : '#7B68EE';
+  const disclaimerMsg = phase === 'live'
+    ? 'Registering is free — your mining rewards count as tournament points.'
+    : 'Pre-register now — your mining rewards will count as points when the tournament begins.';
 
   return (
     <Modal visible transparent animationType="slide" statusBarTranslucent>
@@ -182,7 +189,7 @@ export function TournamentBannerPopup() {
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 4 }]}>
 
           {/* ── 1. Mode label + countdown ────────────────────────────────── */}
-          <View style={[styles.timerRow, isIntermission && styles.timerRowIntermission]}>
+          <View style={[styles.timerRow, phase !== 'live' && styles.timerRowIntermission]}>
             <Text style={[styles.modeLabel, { color: modeColor }]}>{modeLabel}</Text>
             <View style={styles.timerDigitsRow}>
               <View style={styles.timerBlock}>

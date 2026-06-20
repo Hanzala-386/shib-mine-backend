@@ -1,8 +1,9 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Platform, Animated, Easing, Pressable,
-  ActivityIndicator, Image,
+  ActivityIndicator, Image, AppState,
 } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
@@ -12,7 +13,7 @@ import { getApiUrl } from '@/lib/query-client';
 import { POCKETBASE_URL, pb } from '@/lib/pocketbase';
 import { BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import SpinningCoin from '@/components/SpinningCoin';
-import { useTournament, type TournamentEntry } from '@/context/TournamentContext';
+import { useTournament, getTournamentPhase, type TournamentEntry, type TournamentConfig } from '@/context/TournamentContext';
 import Colors from '@/constants/colors';
 
 /* ── types ── */
@@ -522,47 +523,128 @@ const rowStyles = StyleSheet.create({
   balanceSub:  { fontFamily: 'Inter_400Regular', fontSize: 10, color: Colors.textMuted },
 });
 
-/* ─── Tournament Join CTA ──────────────────────────────────────────────── */
-function TournamentJoinCTA({ onJoin, joining }: { onJoin: () => void; joining: boolean }) {
+/* ─── Tournament Registration Lock ─────────────────────────────────────────
+ * COMPULSORY GATE shown when the user is NOT registered. Renders the poster,
+ * the phase-appropriate countdown ("STARTS IN" before live, "ENDS IN" once live)
+ * and a REGISTER button. The leaderboard is NEVER rendered behind this. */
+function TournamentRegisterLock({
+  config, phase, serverOffset, onRegister,
+}: {
+  config: TournamentConfig;
+  phase: 'prestart' | 'live' | 'intermission';
+  serverOffset: number;
+  onRegister: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr]   = useState<string | null>(null);
+
+  const handle = async () => {
+    if (busy) return;
+    setBusy(true); setErr(null);
+    try {
+      await onRegister();
+    } catch (e: any) {
+      setErr(e?.message || 'Could not register. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let target = '';
+  let label: string;
+  let accent: string;
+  if (phase === 'live') {
+    target = config.end_time; label = 'ENDS IN'; accent = Colors.gold;
+  } else if (phase === 'prestart') {
+    target = config.start_time; label = 'STARTS IN'; accent = '#00C853';
+  } else {
+    target = nextMonday12AM_UTC().toISOString(); label = 'STARTS IN'; accent = '#7B68EE';
+  }
+
+  const headline = phase === 'live' ? 'The tournament is live!' : 'Registration is open!';
+  const blurb = phase === 'live'
+    ? 'Register now to unlock the leaderboard and turn your mining rewards into tournament points.'
+    : 'Secure your spot before it begins. Your weekly mining rewards become tournament points the moment it goes live.';
+
   return (
-    <View style={ctaStyles.wrap}>
-      <MaterialCommunityIcons name="trophy-outline" size={64} color={Colors.gold} />
-      <Text style={ctaStyles.title}>Weekly Tournament</Text>
-      <Text style={ctaStyles.sub}>
-        Compete against all miners this week! Your mining rewards count as tournament points.
-        Top miners win bonus SHIB prizes.
-      </Text>
-      <Pressable
-        onPress={onJoin}
-        disabled={joining}
-        style={({ pressed }) => [ctaStyles.btn, pressed && { opacity: 0.8 }]}
-      >
+    <View style={lockStyles.wrap}>
+      {/* Poster */}
+      {config.banner_url ? (
+        <Image source={{ uri: config.banner_url }} style={lockStyles.poster} resizeMode="cover" />
+      ) : (
         <LinearGradient
-          colors={['#00C853', '#1B5E20']}
-          style={ctaStyles.btnGrad}
+          colors={['rgba(0,200,83,0.18)', 'rgba(0,80,40,0.10)']}
+          style={[lockStyles.poster, lockStyles.posterFallback]}
           start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
         >
-          {joining
+          <MaterialCommunityIcons name="trophy" size={56} color={Colors.gold} />
+          <Text style={lockStyles.posterFallbackText}>Weekly Tournament</Text>
+        </LinearGradient>
+      )}
+
+      {/* Prize pool */}
+      {(config.prize_pool_total ?? 0) > 0 && (
+        <View style={lockStyles.prizeChip}>
+          <MaterialCommunityIcons name="treasure-chest" size={16} color={Colors.gold} />
+          <Text style={lockStyles.prizeChipText}>{formatShib(config.prize_pool_total)} SHIB Prize Pool</Text>
+        </View>
+      )}
+
+      <Text style={lockStyles.headline}>{headline}</Text>
+
+      {/* Phase-appropriate countdown */}
+      {!!target && (
+        <View style={{ alignSelf: 'stretch' }}>
+          <TournamentCountdown endTimeIso={target} serverOffset={serverOffset} label={label} accentColor={accent} />
+        </View>
+      )}
+
+      <Text style={lockStyles.blurb}>{blurb}</Text>
+
+      {/* Lock notice */}
+      <View style={lockStyles.lockNote}>
+        <MaterialCommunityIcons name="lock-outline" size={14} color={Colors.textMuted} />
+        <Text style={lockStyles.lockNoteText}>Leaderboard unlocks after you register</Text>
+      </View>
+
+      {/* Register button */}
+      <Pressable onPress={handle} disabled={busy} style={({ pressed }) => [lockStyles.btn, pressed && { opacity: 0.85 }]}>
+        <LinearGradient
+          colors={['#00C853', '#1B5E20']}
+          style={lockStyles.btnGrad}
+          start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+        >
+          {busy
             ? <ActivityIndicator size="small" color="#fff" />
             : <>
                 <MaterialCommunityIcons name="trophy-award" size={18} color="#fff" />
-                <Text style={ctaStyles.btnLabel}>JOIN TOURNAMENT</Text>
+                <Text style={lockStyles.btnLabel}>REGISTER</Text>
               </>
           }
         </LinearGradient>
       </Pressable>
-      <Text style={ctaStyles.note}>Free to join. Registering doesn't cost any tokens.</Text>
+
+      {err && <Text style={lockStyles.err}>{err}</Text>}
+      <Text style={lockStyles.note}>Free to join — registering doesn't cost any tokens.</Text>
     </View>
   );
 }
 
-const ctaStyles = StyleSheet.create({
-  wrap:    { alignItems: 'center', paddingHorizontal: 32, paddingVertical: 40, gap: 14 },
-  title:   { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.textPrimary, textAlign: 'center' },
-  sub:     { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+const lockStyles = StyleSheet.create({
+  wrap:    { alignItems: 'center', paddingHorizontal: 24, paddingTop: 16, paddingBottom: 32, gap: 14 },
+  poster:  { width: '100%', aspectRatio: 16 / 9, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.04)' },
+  posterFallback:     { alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderColor: 'rgba(244,196,48,0.25)' },
+  posterFallbackText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: Colors.gold, letterSpacing: 0.5 },
+  prizeChip:     { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: 'rgba(244,196,48,0.10)', borderWidth: 1, borderColor: 'rgba(244,196,48,0.30)' },
+  prizeChipText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: Colors.gold },
+  headline:{ fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.textPrimary, textAlign: 'center' },
+  blurb:   { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+  lockNote:     { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  lockNoteText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: Colors.textMuted, letterSpacing: 0.3 },
   btn:     { width: '100%', borderRadius: 16, overflow: 'hidden' },
   btnGrad: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 16 },
   btnLabel:{ fontFamily: 'Inter_700Bold', fontSize: 16, color: '#fff', letterSpacing: 1 },
+  err:     { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#FF453A', textAlign: 'center' },
   note:    { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, textAlign: 'center' },
 });
 
@@ -573,18 +655,110 @@ export default function LeaderboardScreen() {
   const pbId    = pbUser?.pbId ?? '';
 
   const [activeTab, setActiveTab] = useState<'alltime' | 'tournament'>('alltime');
-  const [joining, setJoining]     = useState(false);
 
   const {
-    config, userJoined, userPoints, leaderboard, leaderboardLoading,
+    config, isRegistered, userPoints, leaderboard, leaderboardLoading,
     isIntermission, serverOffset,
-    joinTournament, refreshLeaderboard,
+    joinTournament, refreshLeaderboard, refreshUserStats, refreshConfig,
   } = useTournament();
 
-  // Load tournament leaderboard when switching to that tab
+  // Phase from the server-corrected clock; schedule a single re-render at the
+  // prestart→live boundary so the countdown flips from "STARTS IN" to "ENDS IN".
+  const [, setBoundaryTick] = useState(0);
+  const serverNow = Date.now() + serverOffset;
+  const phase     = getTournamentPhase(config, isIntermission, serverNow);
+
   useEffect(() => {
-    if (activeTab === 'tournament') refreshLeaderboard();
-  }, [activeTab]);
+    if (phase !== 'prestart' || !config?.start_time) return;
+    const delay = new Date(config.start_time).getTime() - (Date.now() + serverOffset);
+    if (delay <= 0) { setBoundaryTick(t => t + 1); return; }
+    const id = setTimeout(() => setBoundaryTick(t => t + 1), Math.min(delay + 300, 2_000_000_000));
+    return () => clearTimeout(id);
+  }, [phase, config?.start_time, serverOffset]);
+
+  // Audit registration + refresh config/board whenever the tournament view
+  // becomes visible — on tab switch, on screen focus (returning from another
+  // screen), and on app foreground. refreshConfig runs FIRST so a weekly
+  // freeze→reset that occurred while the app was open invalidates the cached
+  // registration (cycle-signature gate in the context) BEFORE refreshUserStats
+  // re-confirms the actual row — a wiped user drops to the registration lock
+  // instead of briefly seeing stale rankings.
+  const activeTabRef = useRef(activeTab);
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+  const focusedRef   = useRef(false);
+  const appStateRef  = useRef(AppState.currentState);
+  // The end_time we've already fired the one-shot live→end boundary refresh for —
+  // prevents a refresh loop when end_time has passed but the server cron hasn't
+  // wiped yet (refreshConfig can nudge serverOffset, re-running the effect).
+  const endFiredRef  = useRef<string | null>(null);
+
+  const refreshTournament = useCallback(async () => {
+    await refreshConfig();
+    refreshUserStats();
+    refreshLeaderboard();
+  }, [refreshConfig, refreshUserStats, refreshLeaderboard]);
+
+  // Tab switch into the tournament view.
+  useEffect(() => {
+    if (activeTab === 'tournament') refreshTournament();
+  }, [activeTab, refreshTournament]);
+
+  // Screen regained focus (navigated back to the leaderboard tab).
+  useFocusEffect(
+    useCallback(() => {
+      focusedRef.current = true;
+      if (activeTabRef.current === 'tournament') refreshTournament();
+      return () => { focusedRef.current = false; };
+    }, [refreshTournament]),
+  );
+
+  // App returned to the foreground while on the tournament view.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      appStateRef.current = s;
+      if (s === 'active' && activeTabRef.current === 'tournament') refreshTournament();
+    });
+    return () => sub.remove();
+  }, [refreshTournament]);
+
+  // Live→end boundary: getTournamentPhase only flips off 'live' once the SERVER
+  // marks is_active=false / intermission (the weekly freeze that wipes
+  // participants) — end_time alone never changes the client phase. So when the
+  // clock crosses end_time, pull fresh config+row so the cycle-signature gate can
+  // invalidate a now-stale registration and swap the wiped leaderboard for the
+  // lock, even if the user is still sitting on the screen.
+  useEffect(() => {
+    if (phase !== 'live' || !config?.end_time) return;
+    const endTime = config.end_time;
+    // One-shot per end_time: only consume the guard when we actually refresh (on
+    // the tournament tab), so it isn't wasted while the user is elsewhere. After
+    // this single boundary attempt the 60s poll takes over if the server cron is
+    // still lagging behind end_time.
+    const fire = () => {
+      if (activeTabRef.current !== 'tournament') return;
+      if (endFiredRef.current === endTime) return;
+      endFiredRef.current = endTime;
+      refreshTournament();
+    };
+    const delay = new Date(endTime).getTime() - (Date.now() + serverOffset);
+    if (delay <= 0) { fire(); return; }
+    const id = setTimeout(fire, Math.min(delay + 1500, 2_000_000_000));
+    return () => clearTimeout(id);
+  }, [phase, config?.end_time, serverOffset, refreshTournament]);
+
+  // Visible-only safety poll: while the tournament view is focused, re-validate
+  // config + registration + board every 60s. Catches a weekly wipe whose server
+  // cron lands after end_time (the boundary timer above can fire too early), and
+  // keeps a live board fresh — without polling while backgrounded or on another tab.
+  useEffect(() => {
+    if (activeTab !== 'tournament') return;
+    const poll = setInterval(() => {
+      if (focusedRef.current && appStateRef.current === 'active' && activeTabRef.current === 'tournament') {
+        refreshTournament();
+      }
+    }, 60_000);
+    return () => clearInterval(poll);
+  }, [activeTab, refreshTournament]);
 
   const { data: board = [], isLoading: boardLoading } = useQuery<LeaderEntry[]>({
     queryKey: ['/api/app/leaderboard'],
@@ -636,7 +810,7 @@ export default function LeaderboardScreen() {
   const myTournamentEntry = leaderboard.find(e => e.id === pbId);
 
   // ── My tournament stats card ─────────────────────────────────────────────
-  const myTournamentCard = userJoined && (
+  const myTournamentCard = isRegistered && (
     <View style={styles.myRankCard}>
       <LinearGradient
         colors={['rgba(0,200,83,0.15)', 'rgba(0,100,40,0.10)']}
@@ -718,8 +892,8 @@ export default function LeaderboardScreen() {
         </Pressable>
       </View>
 
-      {/* Tournament: server-corrected countdown */}
-      {activeTab === 'tournament' && config?.is_active && !!config.end_time && (
+      {/* Registered + live: countdown to end_time */}
+      {activeTab === 'tournament' && isRegistered && phase === 'live' && !!config?.end_time && (
         <TournamentCountdown
           endTimeIso={config.end_time}
           serverOffset={serverOffset}
@@ -727,8 +901,18 @@ export default function LeaderboardScreen() {
           accentColor={Colors.gold}
         />
       )}
-      {/* Intermission: countdown to next week start */}
-      {activeTab === 'tournament' && isIntermission && (
+      {/* Registered + pre-start: countdown to start_time */}
+      {activeTab === 'tournament' && isRegistered && phase === 'prestart' && !!config?.start_time && (
+        <TournamentCountdown
+          endTimeIso={config.start_time}
+          serverOffset={serverOffset}
+          label="STARTS IN"
+          accentColor="#00C853"
+        />
+      )}
+      {/* Registered + intermission: countdown to next week start
+          (unregistered users get the countdown inside TournamentRegisterLock instead) */}
+      {activeTab === 'tournament' && isRegistered && phase === 'intermission' && (
         <TournamentCountdown
           endTimeIso={nextMonday12AM_UTC().toISOString()}
           serverOffset={serverOffset}
@@ -738,7 +922,7 @@ export default function LeaderboardScreen() {
       )}
 
       {/* Tournament: total prize pool — shown directly below countdown */}
-      {activeTab === 'tournament' && config?.is_active && (config?.prize_pool_total ?? 0) > 0 && (
+      {activeTab === 'tournament' && isRegistered && (config?.prize_pool_total ?? 0) > 0 && (
         <View style={styles.prizePoolBar}>
           <Text style={styles.prizePoolLabel}>Total Prize Pool</Text>
           <Text style={styles.prizePoolValue}>{formatShib(config!.prize_pool_total)} SHIB</Text>
@@ -771,7 +955,7 @@ export default function LeaderboardScreen() {
       {activeTab === 'tournament' && myTournamentCard}
 
       {/* Tournament: Top 3 Podium — renders below stats card, above rank-4+ list */}
-      {activeTab === 'tournament' && userJoined && leaderboard.length > 0 && (
+      {activeTab === 'tournament' && isRegistered && leaderboard.length > 0 && (
         <TournamentPodium top3={leaderboard.slice(0, 3)} pbId={pbId} />
       )}
 
@@ -781,7 +965,7 @@ export default function LeaderboardScreen() {
           {boardLoading ? 'Loading…' : `${board.length} Players Ranked`}
         </Text>
       )}
-      {activeTab === 'tournament' && userJoined && leaderboard.length > 3 && (
+      {activeTab === 'tournament' && isRegistered && leaderboard.length > 3 && (
         <Text style={[styles.sectionTitle, { color: '#00C853' + 'aa', marginTop: 4 }]}>
           {leaderboardLoading ? 'Loading…' : `Rankings #4 – #${leaderboard.length}`}
         </Text>
@@ -791,129 +975,136 @@ export default function LeaderboardScreen() {
 
   // ── Render ───────────────────────────────────────────────────────────────
 
-  // ── Intermission view — Sunday 18:00 → Monday 00:00 UTC ────────────────
-  // Show frozen last-week leaderboard (if available) + "next week starts soon" banner.
-  if (activeTab === 'tournament' && isIntermission) {
-    const frozenList = leaderboard; // last snapshot from before freeze
-    const rank4Plus  = frozenList.slice(3);
-    return (
-      <View style={styles.container}>
-        <LinearGradient
-          colors={['rgba(123,104,238,0.12)', 'rgba(60,40,140,0.06)', 'transparent']}
-          style={StyleSheet.absoluteFill}
-          start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.5 }}
-        />
-        <FlatList
-          data={rank4Plus}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => <TCard entry={item} isMe={item.id === pbId} />}
-          ListHeaderComponent={
-            <View>
-              {ListHeader}
-              {/* Intermission banner */}
-              <View style={[styles.intermissionBanner]}>
-                <MaterialCommunityIcons name="snowflake" size={20} color="#7B68EE" />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.intermissionTitle}>TOURNAMENT FROZEN</Text>
-                  <Text style={styles.intermissionDesc}>
-                    Last week's results are final. The new week begins Monday 12:00 AM UTC.
-                  </Text>
-                </View>
-              </View>
-              {frozenList.length > 0 && leaderboard.length > 0 && (
-                <TournamentPodium top3={frozenList.slice(0, 3)} pbId={pbId} />
-              )}
-              {frozenList.length > 3 && (
-                <Text style={[styles.sectionTitle, { color: '#7B68EE' + 'aa', marginTop: 4 }]}>
-                  {`Last Week Rankings #4 – #${frozenList.length}`}
-                </Text>
-              )}
-              {frozenList.length === 0 && (
+  if (activeTab === 'tournament') {
+    // (1) No tournament configured, or finished and NOT in the weekly gap.
+    if (phase === 'none') {
+      return (
+        <View style={styles.container}>
+          <FlatList
+            data={[]}
+            keyExtractor={() => 'empty'}
+            renderItem={() => null}
+            ListHeaderComponent={
+              <View>
+                {ListHeader}
                 <View style={styles.emptyState}>
                   <MaterialCommunityIcons name="trophy-outline" size={44} color={Colors.textMuted} />
-                  <Text style={styles.emptyTitle}>Results incoming</Text>
-                  <Text style={styles.emptyDesc}>Last week's final standings will appear here.</Text>
+                  <Text style={styles.emptyTitle}>No active tournament</Text>
+                  <Text style={styles.emptyDesc}>Check back soon — the next weekly tournament starts soon!</Text>
                 </View>
-              )}
-            </View>
-          }
-          ListFooterComponent={<View style={{ height: 24 }} />}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
-        />
-        <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
-          <WithdrawalTicker items={ticker} />
-        </View>
-      </View>
-    );
-  }
-
-  // Tournament tab when NOT joined — show CTA only (no FlatList rows)
-  if (activeTab === 'tournament' && !userJoined && config?.is_active) {
-    return (
-      <View style={styles.container}>
-        <LinearGradient
-          colors={['rgba(0,200,83,0.10)', 'rgba(0,100,40,0.06)', 'transparent']}
-          style={StyleSheet.absoluteFill}
-          start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.5 }}
-        />
-        <FlatList
-          data={[]}
-          keyExtractor={() => 'cta'}
-          renderItem={() => null}
-          ListHeaderComponent={
-            <View>
-              {ListHeader}
-              <TournamentJoinCTA
-                onJoin={async () => {
-                  setJoining(true);
-                  try { await joinTournament(); refreshLeaderboard(); }
-                  finally { setJoining(false); }
-                }}
-                joining={joining}
-              />
-            </View>
-          }
-          contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
-          showsVerticalScrollIndicator={false}
-        />
-        <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
-          <WithdrawalTicker items={ticker} />
-        </View>
-      </View>
-    );
-  }
-
-  // Tournament tab — !is_active and not intermission: genuinely no active tournament
-  if (activeTab === 'tournament' && !config?.is_active && !isIntermission) {
-    return (
-      <View style={styles.container}>
-        <FlatList
-          data={[]}
-          keyExtractor={() => 'empty'}
-          renderItem={() => null}
-          ListHeaderComponent={
-            <View>
-              {ListHeader}
-              <View style={styles.emptyState}>
-                <MaterialCommunityIcons name="trophy-outline" size={44} color={Colors.textMuted} />
-                <Text style={styles.emptyTitle}>No active tournament</Text>
-                <Text style={styles.emptyDesc}>Check back soon — the next weekly tournament starts soon!</Text>
               </View>
-            </View>
-          }
-          contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
-          showsVerticalScrollIndicator={false}
-        />
-        <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
-          <WithdrawalTicker items={ticker} />
+            }
+            contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
+            showsVerticalScrollIndicator={false}
+          />
+          <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
+            <WithdrawalTicker items={ticker} />
+          </View>
         </View>
-      </View>
-    );
-  }
+      );
+    }
 
-  // Tournament leaderboard (joined) — podium shows top 3 in ListHeader; FlatList shows rank 4+
-  if (activeTab === 'tournament') {
+    // (2) COMPULSORY LOCK — not registered (pre-start OR live OR intermission):
+    // poster + REGISTER + phase countdown ONLY. The leaderboard is never rendered.
+    if (!isRegistered) {
+      return (
+        <View style={styles.container}>
+          <LinearGradient
+            colors={['rgba(0,200,83,0.10)', 'rgba(0,100,40,0.06)', 'transparent']}
+            style={StyleSheet.absoluteFill}
+            start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.5 }}
+          />
+          <FlatList
+            data={[]}
+            keyExtractor={() => 'lock'}
+            renderItem={() => null}
+            ListHeaderComponent={
+              <View>
+                {ListHeader}
+                <TournamentRegisterLock
+                  config={config!}
+                  phase={phase}
+                  serverOffset={serverOffset}
+                  onRegister={async () => {
+                    await joinTournament(phase !== 'live');
+                    refreshLeaderboard();
+                    refreshUserStats();
+                  }}
+                />
+              </View>
+            }
+            contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
+            showsVerticalScrollIndicator={false}
+          />
+          <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
+            <WithdrawalTicker items={ticker} />
+          </View>
+        </View>
+      );
+    }
+
+    // (3) Registered + weekly intermission → frozen last-week leaderboard.
+    if (phase === 'intermission') {
+      const frozenList = leaderboard; // last snapshot from before freeze
+      const rank4Plus  = frozenList.slice(3);
+      return (
+        <View style={styles.container}>
+          <LinearGradient
+            colors={['rgba(123,104,238,0.12)', 'rgba(60,40,140,0.06)', 'transparent']}
+            style={StyleSheet.absoluteFill}
+            start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.5 }}
+          />
+          <FlatList
+            data={rank4Plus}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => <TCard entry={item} isMe={item.id === pbId} />}
+            ListHeaderComponent={
+              <View>
+                {ListHeader}
+                {/* Registered confirmation */}
+                <View style={styles.registeredBanner}>
+                  <MaterialCommunityIcons name="check-decagram" size={18} color="#00C853" />
+                  <Text style={styles.registeredText}>You're registered for next week 🎉</Text>
+                </View>
+                {/* Intermission banner */}
+                <View style={[styles.intermissionBanner]}>
+                  <MaterialCommunityIcons name="snowflake" size={20} color="#7B68EE" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.intermissionTitle}>TOURNAMENT FROZEN</Text>
+                    <Text style={styles.intermissionDesc}>
+                      Last week's results are final. The new week begins Monday 12:00 AM UTC.
+                    </Text>
+                  </View>
+                </View>
+                {frozenList.length > 0 && leaderboard.length > 0 && (
+                  <TournamentPodium top3={frozenList.slice(0, 3)} pbId={pbId} />
+                )}
+                {frozenList.length > 3 && (
+                  <Text style={[styles.sectionTitle, { color: '#7B68EE' + 'aa', marginTop: 4 }]}>
+                    {`Last Week Rankings #4 – #${frozenList.length}`}
+                  </Text>
+                )}
+                {frozenList.length === 0 && (
+                  <View style={styles.emptyState}>
+                    <MaterialCommunityIcons name="trophy-outline" size={44} color={Colors.textMuted} />
+                    <Text style={styles.emptyTitle}>Results incoming</Text>
+                    <Text style={styles.emptyDesc}>Last week's final standings will appear here.</Text>
+                  </View>
+                )}
+              </View>
+            }
+            ListFooterComponent={<View style={{ height: 24 }} />}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
+          />
+          <View style={[styles.tickerFixed, { bottom: tabBarH }]}>
+            <WithdrawalTicker items={ticker} />
+          </View>
+        </View>
+      );
+    }
+
+    // (4) Registered + live/prestart → leaderboard (podium in header, rank 4+ in list).
     const rank4Plus = leaderboard.slice(3);
     return (
       <View style={styles.container}>
@@ -935,6 +1126,12 @@ export default function LeaderboardScreen() {
             ) : leaderboard.length > 0 ? (
               // Top 3 exist but no rank 4+ — podium already shown, no empty state needed
               <View style={{ height: 16 }} />
+            ) : phase === 'prestart' ? (
+              <View style={styles.emptyState}>
+                <MaterialCommunityIcons name="rocket-launch-outline" size={44} color={Colors.textMuted} />
+                <Text style={styles.emptyTitle}>You're in! Get ready</Text>
+                <Text style={styles.emptyDesc}>The tournament hasn't started yet. Points are earned from your mining rewards once it goes live.</Text>
+              </View>
             ) : (
               <View style={styles.emptyState}>
                 <Text style={styles.emptyTitle}>No competitors yet</Text>
@@ -1069,5 +1266,14 @@ const styles = StyleSheet.create({
   },
   intermissionDesc: {
     fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, lineHeight: 18,
+  },
+  registeredBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: 'rgba(0,200,83,0.10)',
+    borderWidth: 1, borderColor: 'rgba(0,200,83,0.30)',
+    borderRadius: 14, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 12,
+  },
+  registeredText: {
+    fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#00C853',
   },
 });

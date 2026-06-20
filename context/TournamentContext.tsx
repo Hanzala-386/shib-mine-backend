@@ -46,6 +46,7 @@ export interface TournamentEntry {
 interface TournamentContextValue {
   config: TournamentConfig | null;
   userJoined: boolean;
+  isRegistered: boolean;         // authoritative: a tournament_participants ROW exists
   userPoints: number;
   hasRejected: boolean;
   showPopup: boolean;
@@ -58,11 +59,13 @@ interface TournamentContextValue {
   rejectTournament: () => Promise<void>;
   refreshLeaderboard: () => Promise<void>;
   refreshUserStats: () => Promise<void>;
+  refreshConfig: () => Promise<void>;   // re-fetch config + server time (cycle/phase freshness)
 }
 
 const TournamentContext = createContext<TournamentContextValue>({
   config: null,
   userJoined: false,
+  isRegistered: false,
   userPoints: 0,
   hasRejected: false,
   showPopup: false,
@@ -75,6 +78,7 @@ const TournamentContext = createContext<TournamentContextValue>({
   rejectTournament: async () => {},
   refreshLeaderboard: async () => {},
   refreshUserStats: async () => {},
+  refreshConfig: async () => {},
 });
 
 // ── Provider ───────────────────────────────────────────────────────────────
@@ -82,9 +86,17 @@ const TournamentContext = createContext<TournamentContextValue>({
 export function TournamentProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const mounted  = useRef(true);
+  // Last seen `${week_start}|${is_active}` cycle signature; used to invalidate a
+  // cached registration the instant config crosses a weekly boundary.
+  const configSigRef = useRef<string | null>(null);
 
   const [config, setConfig]                     = useState<TournamentConfig | null>(null);
   const [userJoined, setUserJoined]             = useState(false);
+  // The ISO week_start of the participant ROW we last confirmed for this user,
+  // or null if no row exists. `isRegistered` is DERIVED from this vs the current
+  // cycle (see below) so a leftover row from a previous cycle — or a stale value
+  // surviving the weekly wipe — can never unlock the current leaderboard.
+  const [registeredWeek, setRegisteredWeek]     = useState<string | null>(null);
   const [userPoints, setUserPoints]             = useState(0);
   const [hasRejected, setHasRejected]           = useState(false);
   const [leaderboard, setLeaderboard]           = useState<TournamentEntry[]>([]);
@@ -170,6 +182,20 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         is_active:        !!raw.is_active,
       };
 
+      // ── Cycle-boundary invalidation (hard gate) ──────────────────────────
+      // If the cycle signature changed since we last loaded config — the Sunday
+      // freeze (is_active true→false, rows wiped) or the Monday reset (new
+      // week_start) — drop the cached registration SYNCHRONOUSLY so the leaderboard
+      // can never render with a stale isRegistered=true across the wipe. The very
+      // next refreshUserStats re-confirms against the actual row (a surviving
+      // intermission pre-registration re-validates true; a wiped row stays false).
+      const newSig  = `${cfg.week_start}|${cfg.is_active}`;
+      const prevSig = configSigRef.current;
+      if (prevSig !== null && prevSig !== newSig && mounted.current) {
+        setRegisteredWeek(null);
+      }
+      configSigRef.current = newSig;
+
       if (mounted.current) {
         setConfig(cfg);
         setIsIntermission(intermission);
@@ -192,23 +218,38 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         setUserJoined(!!u.tournament_joined);
         setUserPoints(Number(u.weekly_tournament_points) || 0);
       }
-      // Mirror the authoritative points into the user's OWN participant row so
-      // tournament_participants.points stays in sync even if the Express sync route
-      // is unreachable in production. Cosmetic field; self-update (updateRule) allows
-      // this. One row per user per week (weekly wipe) → match by user_id, latest.
-      if (u.tournament_joined) {
-        try {
-          const participant = await pb
-            .collection('tournament_participants')
-            .getFirstListItem(`user_id = "${user.pbId}"`, { sort: '-created' });
-          const pts = Number(u.weekly_tournament_points) || 0;
-          if (participant?.id && Number(participant.points) !== pts) {
-            await pb.collection('tournament_participants').update(participant.id, { points: pts });
-          }
-        } catch { /* no participant row yet / not permitted — non-critical */ }
+
+      // ── REGISTRATION GATE ────────────────────────────────────────────────
+      // The AUTHORITATIVE signal is the participant ROW, NOT the tournament_joined
+      // flag. The flag could historically be set even when the row create failed
+      // (silent .catch), leaving a user "joined" with no row → registration looked
+      // bypassed and the DB stayed empty. Rows are wiped weekly, so the existence
+      // of any row for this user_id means "registered for the current cycle".
+      let participant: any = null;
+      try {
+        participant = await pb
+          .collection('tournament_participants')
+          .getFirstListItem(`user_id = "${user.pbId}"`, { sort: '-created' });
+      } catch { participant = null; }
+
+      if (mounted.current) setRegisteredWeek(participant?.id ? (participant.week_start ?? '') : null);
+
+      if (participant?.id) {
+        // Self-heal: keep the joined flag in lock-step with the row (the leaderboard
+        // filter requires tournament_joined=true to include this user).
+        if (!u.tournament_joined) {
+          try { await pb.collection('users').update(user.pbId, { tournament_joined: true }); } catch {}
+          if (mounted.current) setUserJoined(true);
+        }
+        // Mirror the authoritative points into the cosmetic participant column so it
+        // stays in sync even if the Express sync route is unreachable in production.
+        const pts = Number(u.weekly_tournament_points) || 0;
+        if (Number(participant.points) !== pts) {
+          try { await pb.collection('tournament_participants').update(participant.id, { points: pts }); } catch {}
+        }
       }
     } catch {
-      if (mounted.current) setUserJoined(false);
+      if (mounted.current) { setUserJoined(false); setRegisteredWeek(null); }
     } finally {
       if (mounted.current) setUserStatsChecked(true);
     }
@@ -217,6 +258,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   // ── Reset all user-specific state when the logged-in user changes ────────
   useEffect(() => {
     setUserJoined(false);
+    setRegisteredWeek(null);
     setUserPoints(0);
     setHasRejected(false);
     setUserStatsChecked(false);
@@ -265,20 +307,46 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   }, [config]);
 
   // ── Join tournament ──────────────────────────────────────────────────────
+  // ORDER MATTERS. The participant ROW is the authoritative proof of registration
+  // and is created FIRST (awaited, not fire-and-forget). Only once it exists do we
+  // set the tournament_joined flag and mark the user registered. If the row create
+  // fails, this THROWS so the caller keeps the lock screen up and shows an error —
+  // never the old bug where the flag was set with no row behind it.
   const joinTournament = useCallback(async (duringIntermission = false) => {
-    if (!user?.pbId) return;
-    await pb.collection('users').update(user.pbId, { tournament_joined: true });
-    if (mounted.current) setUserJoined(true);
+    if (!user?.pbId) throw new Error('Not signed in');
 
-    const displayName = (user as any).displayName || (user as any).email || 'Miner';
-    pb.collection('tournament_participants').create({
-      user_id:                      user.pbId,
-      display_name:                 typeof displayName === 'string' ? displayName.split('@')[0] : 'Miner',
-      week_start:                   config?.week_start || new Date().toISOString(),
-      joined_at:                    new Date().toISOString(),
-      points:                       0,
-      registered_during_intermission: duringIntermission,
-    }).catch(() => {});
+    const cycleKey = config?.week_start || new Date().toISOString();
+
+    // 1. Dedupe — reuse any existing row for this user. The server wipes all rows
+    //    at the Sunday freeze, so a surviving row is the current registration
+    //    (re-tapping REGISTER must never create a duplicate row).
+    let existing: any = null;
+    try {
+      existing = await pb
+        .collection('tournament_participants')
+        .getFirstListItem(`user_id = "${user.pbId}"`, { sort: '-created' });
+    } catch { existing = null; }
+
+    // 2. Create the row (throws on failure → caller handles it).
+    if (!existing?.id) {
+      const displayName = (user as any).displayName || (user as any).email || 'Miner';
+      await pb.collection('tournament_participants').create({
+        user_id:                        user.pbId,
+        display_name:                   typeof displayName === 'string' ? displayName.split('@')[0] : 'Miner',
+        week_start:                     cycleKey,
+        joined_at:                      new Date().toISOString(),
+        points:                         0,
+        registered_during_intermission: duringIntermission,
+      });
+    }
+
+    // 3. Row confirmed — set the joined flag (controls leaderboard inclusion).
+    try { await pb.collection('users').update(user.pbId, { tournament_joined: true }); } catch {}
+
+    if (mounted.current) {
+      setRegisteredWeek(cycleKey);
+      setUserJoined(true);
+    }
   }, [user?.pbId, config?.week_start]);
 
   // ── Reject tournament (session-only dismiss) ─────────────────────────────
@@ -286,11 +354,22 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     if (mounted.current) setHasRejected(true);
   }, []);
 
+  // ── DERIVED registration gate ────────────────────────────────────────────
+  // isRegistered is true when a confirmed participant ROW exists for this user.
+  // We deliberately use plain row-existence (not a cycle-key match): the server
+  // WIPES every participant row at the Sunday freeze, so any surviving row is a
+  // genuine registration — including an intermission "pre-register for next week"
+  // row, whose week_start intentionally predates the Monday config update.
+  // Staleness across the wipe is handled by re-validating on tab focus
+  // (refreshUserStats + loadConfig), which nulls registeredWeek once the row is
+  // gone — so a wiped user falls back to the lock screen.
+  const isRegistered = registeredWeek != null;
+
   // Popup shows during active tournament OR intermission (pre-register for next week).
   // Gates on userStatsChecked to avoid the race before join-status is confirmed.
   const showPopup = !!(
     (config?.is_active || isIntermission) &&
-    !userJoined &&
+    !isRegistered &&
     !hasRejected &&
     !loadingConfig &&
     userStatsChecked &&
@@ -301,6 +380,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     <TournamentContext.Provider value={{
       config,
       userJoined,
+      isRegistered,
       userPoints,
       hasRejected,
       showPopup,
@@ -313,6 +393,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       rejectTournament,
       refreshLeaderboard,
       refreshUserStats,
+      refreshConfig: loadConfig,
     }}>
       {children}
     </TournamentContext.Provider>
@@ -321,4 +402,25 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
 
 export function useTournament() {
   return useContext(TournamentContext);
+}
+
+// ── Phase derivation ─────────────────────────────────────────────────────────
+// Single source of truth for which tournament phase we're in, using the
+// server-corrected clock (serverNowMs = Date.now() + serverOffset).
+//   - 'none'         no config / no active tournament and not in the weekly gap
+//   - 'prestart'     active but not yet started (serverNow < start_time) → "STARTS IN"
+//   - 'live'         active and running (start_time <= serverNow < end_time) → "ENDS IN"
+//   - 'intermission' weekly gap (is_active=false, Sun 18:00 → Mon 00:00) → "STARTS IN"
+export type TournamentPhase = 'none' | 'prestart' | 'live' | 'intermission';
+
+export function getTournamentPhase(
+  config: TournamentConfig | null,
+  isIntermission: boolean,
+  serverNowMs: number,
+): TournamentPhase {
+  if (isIntermission) return 'intermission';
+  if (!config || !config.is_active) return 'none';
+  const startMs = config.start_time ? new Date(config.start_time).getTime() : 0;
+  if (startMs && serverNowMs < startMs) return 'prestart';
+  return 'live';
 }

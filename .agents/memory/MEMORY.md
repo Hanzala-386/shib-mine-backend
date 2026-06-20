@@ -1,2 +1,3 @@
 - [Tournament points model](tournament-points-model.md) — users.weekly_tournament_points is authoritative; tournament_participants.points is cosmetic only, never use for payouts/winners.
+- [Tournament registration gate](tournament-registration-gate.md) — lock leaderboard on participant-row existence (NOT week_start match — breaks intermission pre-reg); re-fetch config at live→end boundary; cycle-signature gate.
 - [Shared PocketBase migrations](shared-pocketbase-migrations.md) — dev backend boot mutates the LIVE prod PB schema/rules; restarting "Start Backend" is a production migration.
