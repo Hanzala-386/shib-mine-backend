@@ -1,0 +1,29 @@
+IMPLEMENTATION TASK: REFACTOR TOURNAMENT SECTION TO MANUAL DYNAMIC CYCLES (REF: image_7640e8.png & image_764508.png)
+
+Hey Agent,
+
+We have officially updated our mobile backend engine ("Android Speed") to deprecate the fixed Sunday-to-Sunday weekly tournament calendar. The backend now runs on a "Fully Manual, Dynamic Duration Cycle" model driven by a unique `cycle_id`. 
+
+Based on the current HTML/CSS/JS frontend structure of our "Shiba Admin Panel" shown in image_7640e8.png and image_764508.png, please completely refactor the "Tournaments" config section to match this new structural flow.
+
+1. UI STRING & BUTTON LABELS CLEANUP:
+   - Completely remove the word "Week" from all headers, pills, and action items.
+   - Rename the top right action button from "+ New Tournament Week" to "+ New Tournament Cycle".
+   - Rename the modal header from "NEW TOURNAMENT WEEK" to "NEW TOURNAMENT CYCLE".
+   - Change historical list titles from "Week of [Date]" to "Tournament Cycle #[cycle_id]".
+
+2. FORM FIELD MODIFICATIONS (As shown in image_764508.png):
+   - REMOVE FIELD: Completely delete the "WEEK START" datetime input field from the DOM.
+   - ADD DYNAMIC DURATION LOGIC: Keep the "START TIME" and "END TIME" inputs, but add helper configuration inputs or logic so the Admin can explicitly pass arbitrary durations in total Days and Hours.
+   - BACKEND SCHEMA COMPATIBILITY: When creating a tournament, ensure the payload generates and passes a unique string-based or incremental `cycle_id` to the PocketBase collection, along with the standard `prize_pool_total`, `winners_count`, `banner_url`, and `reward_structure` array.
+
+3. ADD "END TOURNAMENT NOW" ACTION CONTROL:
+   - In the "Active + Leaderboard" view or next to the active tournament row (where the "Activate" button currently sits in image_7640e8.png), implement a prominent "End Tournament Now" button control.
+   - Clicking this button must instantly update the active configuration row in PocketBase, forcing `end_time` to equal the current precise timestamp (`now`), immediately triggering the backend payout loop and safety participant wipe mechanism.
+   - Ensure a robust confirmation prompt pops up before executing this action to avoid accidental terminations.
+
+4. RESTRICTED ROLE SAFETY & ANTI-OVERWRITE LAUNCH GUARD:
+   - Before launching a new tournament, the form submission handler must execute a dynamic check against PocketBase to verify if an active tournament (`is_active: true`) already exists OR if a prior cycle's payout is still finalizing (`payout_finalized_cycle !== cycle_id`).
+   - If an active/unfinalized cycle is detected, fail closed: block the creation, disable the "Create" button, and throw a clear alert: "An active tournament cycle is currently running. You must End the current cycle and allow it to finalize before deploying a new one."
+
+Please update the HTML templates, CSS components, and PocketBase JS integration files in this workspace to implement this manual dynamic model. Let me know once the form and control updates are live!
