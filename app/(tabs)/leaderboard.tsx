@@ -618,7 +618,7 @@ function TournamentRegisterLock({
             ? <ActivityIndicator size="small" color="#fff" />
             : <>
                 <MaterialCommunityIcons name="trophy-award" size={18} color="#fff" />
-                <Text style={lockStyles.btnLabel}>REGISTER</Text>
+                <Text style={lockStyles.btnLabel}>JOIN TOURNAMENT</Text>
               </>
           }
         </LinearGradient>

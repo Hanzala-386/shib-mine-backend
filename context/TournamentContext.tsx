@@ -20,6 +20,40 @@ import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 import { getApiUrl } from '@/lib/query-client';
 import { useAuth } from './AuthContext';
 
+// ── Cycle helpers ────────────────────────────────────────────────────────────
+// Normalize any ISO timestamp to the UTC date (YYYY-MM-DD) of THAT week's Monday.
+// This is the per-cycle "bucket". The server stamps week_start/start_time with a
+// precise timestamp at every Monday reset, so exact string equality is fragile —
+// bucketing to the week's Monday makes a participant row's cycle comparable to the
+// active config's cycle regardless of sub-second/scheduling differences, and also
+// folds a mid-week admin start into the same ISO-week bucket.
+function cycleBucket(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const day  = d.getUTCDay();           // 0=Sun … 1=Mon
+  const back = day === 0 ? 6 : day - 1; // days since Monday
+  const mon  = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back));
+  return mon.toISOString().slice(0, 10);
+}
+
+// ISO for the upcoming Monday 00:00 UTC — the cycle a user pre-registers INTO
+// during the Sunday→Monday intermission gap. Its bucket equals the bucket the
+// server writes at the Monday reset, so an intermission pre-registration carries
+// seamlessly into the new active week. Takes a SERVER-corrected `nowMs`
+// (Date.now() + serverOffset) — never the raw device clock — so a skewed/manual
+// device clock cannot target the wrong Monday and mis-gate registration.
+function nextMondayIso(nowMs: number): string {
+  const now = new Date(nowMs);
+  const day = now.getUTCDay();
+  const daysUntil = day === 1 ? 0 : (8 - day) % 7;
+  const cand = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntil, 0, 0, 0, 0,
+  ));
+  if (cand.getTime() <= now.getTime()) cand.setUTCDate(cand.getUTCDate() + 7);
+  return cand.toISOString();
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface TournamentConfig {
@@ -86,9 +120,17 @@ const TournamentContext = createContext<TournamentContextValue>({
 export function TournamentProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const mounted  = useRef(true);
-  // Last seen `${week_start}|${is_active}` cycle signature; used to invalidate a
-  // cached registration the instant config crosses a weekly boundary.
-  const configSigRef = useRef<string | null>(null);
+  // Always-current mirrors of config + intermission. They let the STABLE
+  // (deps-free) refreshLeaderboard / refreshUserStats callbacks read the latest
+  // cycle WITHOUT taking `config` as a dependency. Taking `config` churned those
+  // callbacks' identity on every config refresh, which churned refreshTournament,
+  // which re-fired the leaderboard screen's effects → the infinite refresh loop.
+  // Kept in lock-step with state synchronously inside loadConfig.
+  const configRef         = useRef<TournamentConfig | null>(null);
+  const isIntermissionRef = useRef(false);
+  // Mirror of the committed serverOffset so the STABLE callbacks can derive the
+  // intermission cycle from SERVER-corrected time without depending on the state.
+  const serverOffsetRef   = useRef(0);
 
   const [config, setConfig]                     = useState<TournamentConfig | null>(null);
   const [userJoined, setUserJoined]             = useState(false);
@@ -153,9 +195,17 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
 
       if (!mounted.current) return;
 
-      // Compute monotonic offset: how far ahead/behind server clock is from device clock
+      // Compute monotonic offset: how far ahead/behind server clock is from device
+      // clock. Only commit when it shifts meaningfully (>1.5s) — recomputing every
+      // refresh (Date.now keeps advancing) would needlessly churn serverOffset and
+      // re-fire the leaderboard screen's boundary effects that depend on it. The ref
+      // is the source of truth and mirrors the committed state in lock-step, so the
+      // stable callbacks derive the intermission cycle from server-corrected time.
       const offset = serverTime - Date.now();
-      if (mounted.current) setServerOffset(offset);
+      if (Math.abs(offset - serverOffsetRef.current) > 1500) {
+        serverOffsetRef.current = offset;
+        if (mounted.current) setServerOffset(offset);
+      }
 
       if (!raw) return;
 
@@ -182,19 +232,13 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         is_active:        !!raw.is_active,
       };
 
-      // ── Cycle-boundary invalidation (hard gate) ──────────────────────────
-      // If the cycle signature changed since we last loaded config — the Sunday
-      // freeze (is_active true→false, rows wiped) or the Monday reset (new
-      // week_start) — drop the cached registration SYNCHRONOUSLY so the leaderboard
-      // can never render with a stale isRegistered=true across the wipe. The very
-      // next refreshUserStats re-confirms against the actual row (a surviving
-      // intermission pre-registration re-validates true; a wiped row stays false).
-      const newSig  = `${cfg.week_start}|${cfg.is_active}`;
-      const prevSig = configSigRef.current;
-      if (prevSig !== null && prevSig !== newSig && mounted.current) {
-        setRegisteredWeek(null);
-      }
-      configSigRef.current = newSig;
+      // Keep the latest-value refs in lock-step with state so the STABLE
+      // refreshLeaderboard / refreshUserStats callbacks always read the current
+      // cycle. No separate signature gate is needed: per-cycle registration
+      // matching (see isRegistered) makes a leftover row from a previous cycle
+      // fail to unlock the board DECLARATIVELY the instant fresh config loads.
+      configRef.current         = cfg;
+      isIntermissionRef.current = intermission;
 
       if (mounted.current) {
         setConfig(cfg);
@@ -219,12 +263,14 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         setUserPoints(Number(u.weekly_tournament_points) || 0);
       }
 
-      // ── REGISTRATION GATE ────────────────────────────────────────────────
+      // ── REGISTRATION GATE (per-cycle) ────────────────────────────────────
       // The AUTHORITATIVE signal is the participant ROW, NOT the tournament_joined
-      // flag. The flag could historically be set even when the row create failed
-      // (silent .catch), leaving a user "joined" with no row → registration looked
-      // bypassed and the DB stayed empty. Rows are wiped weekly, so the existence
-      // of any row for this user_id means "registered for the current cycle".
+      // flag. But a row ONLY counts for the CURRENT cycle: its week_start bucket
+      // must match the active week (or, during intermission, the upcoming week the
+      // user pre-registers into). A leftover row from a PAST tournament keeps a
+      // non-matching bucket → its week_start is still stored (so re-tapping JOIN
+      // de-dupes onto it) but isRegistered (derived) stays false → the poster
+      // re-appears instead of silently unlocking the board on stale data.
       let participant: any = null;
       try {
         participant = await pb
@@ -232,11 +278,18 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
           .getFirstListItem(`user_id = "${user.pbId}"`, { sort: '-created' });
       } catch { participant = null; }
 
-      if (mounted.current) setRegisteredWeek(participant?.id ? (participant.week_start ?? '') : null);
+      const rowWeek         = participant?.id ? (participant.week_start ?? '') : null;
+      const currentCycleIso = isIntermissionRef.current
+        ? nextMondayIso(Date.now() + serverOffsetRef.current)
+        : (configRef.current?.start_time || configRef.current?.week_start || '');
+      const currentBucket   = cycleBucket(currentCycleIso);
+      const matchesCurrent  = !!rowWeek && !!currentBucket && cycleBucket(rowWeek) === currentBucket;
 
-      if (participant?.id) {
-        // Self-heal: keep the joined flag in lock-step with the row (the leaderboard
-        // filter requires tournament_joined=true to include this user).
+      if (mounted.current) setRegisteredWeek(rowWeek);
+
+      // Only mirror flag/points for a row that belongs to the CURRENT cycle — never
+      // resurrect tournament_joined for a stale past-cycle row.
+      if (participant?.id && matchesCurrent) {
         if (!u.tournament_joined) {
           try { await pb.collection('users').update(user.pbId, { tournament_joined: true }); } catch {}
           if (mounted.current) setUserJoined(true);
@@ -278,7 +331,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       });
       if (!mounted.current) return;
 
-      const rewardMap = config?.reward_structure ?? {};
+      const rewardMap = configRef.current?.reward_structure ?? {};
       const entries: TournamentEntry[] = res.items.map((u: any, i: number) => {
         let name: string = u.display_name || 'Miner';
         if (name.includes('@')) name = name.split('@')[0];
@@ -304,7 +357,11 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     } catch {} finally {
       if (mounted.current) setLbLoading(false);
     }
-  }, [config]);
+    // STABLE identity (empty deps): reads reward_structure from configRef, never
+    // the `config` object. Depending on `config` here churned this callback's
+    // identity on every refresh, cascading into the leaderboard screen's infinite
+    // refresh loop (effects depend on refreshTournament → refreshLeaderboard).
+  }, []);
 
   // ── Join tournament ──────────────────────────────────────────────────────
   // ORDER MATTERS. The participant ROW is the authoritative proof of registration
@@ -315,11 +372,20 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   const joinTournament = useCallback(async (duringIntermission = false) => {
     if (!user?.pbId) throw new Error('Not signed in');
 
-    const cycleKey = config?.week_start || new Date().toISOString();
+    // Target cycle to register INTO, written as week_start so the per-cycle match
+    // in isRegistered unlocks the board: the UPCOMING week during intermission,
+    // otherwise the active cycle. Bucketed comparison tolerates the server's
+    // precise per-Monday timestamp, and the intermission target's bucket equals the
+    // one the server stamps at the Monday reset → seamless carry-over.
+    const intermitting = duringIntermission || isIntermission;
+    const targetIso = intermitting
+      ? nextMondayIso(Date.now() + serverOffsetRef.current)
+      : (config?.start_time || config?.week_start || new Date().toISOString());
+    const targetBucket = cycleBucket(targetIso);
 
-    // 1. Dedupe — reuse any existing row for this user. The server wipes all rows
-    //    at the Sunday freeze, so a surviving row is the current registration
-    //    (re-tapping REGISTER must never create a duplicate row).
+    // Dedupe by user. A surviving row from a PAST cycle is RE-POINTED at the
+    // current cycle (update week_start) rather than left stale or duplicated, so a
+    // returning user who taps JOIN for the new week registers cleanly.
     let existing: any = null;
     try {
       existing = await pb
@@ -327,43 +393,57 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
         .getFirstListItem(`user_id = "${user.pbId}"`, { sort: '-created' });
     } catch { existing = null; }
 
-    // 2. Create the row (throws on failure → caller handles it).
-    if (!existing?.id) {
+    if (existing?.id) {
+      if (cycleBucket(existing.week_start ?? '') !== targetBucket) {
+        await pb.collection('tournament_participants').update(existing.id, {
+          week_start:                     targetIso,
+          joined_at:                      new Date().toISOString(),
+          registered_during_intermission: intermitting,
+        });
+      }
+    } else {
+      // Create the row (throws on failure → caller keeps the lock up + shows error).
       const displayName = (user as any).displayName || (user as any).email || 'Miner';
       await pb.collection('tournament_participants').create({
         user_id:                        user.pbId,
         display_name:                   typeof displayName === 'string' ? displayName.split('@')[0] : 'Miner',
-        week_start:                     cycleKey,
+        week_start:                     targetIso,
         joined_at:                      new Date().toISOString(),
         points:                         0,
-        registered_during_intermission: duringIntermission,
+        registered_during_intermission: intermitting,
       });
     }
 
-    // 3. Row confirmed — set the joined flag (controls leaderboard inclusion).
+    // Row confirmed — set the joined flag (controls leaderboard inclusion).
     try { await pb.collection('users').update(user.pbId, { tournament_joined: true }); } catch {}
 
     if (mounted.current) {
-      setRegisteredWeek(cycleKey);
+      setRegisteredWeek(targetIso);
       setUserJoined(true);
     }
-  }, [user?.pbId, config?.week_start]);
+  }, [user?.pbId, config?.start_time, config?.week_start, isIntermission]);
 
   // ── Reject tournament (session-only dismiss) ─────────────────────────────
   const rejectTournament = useCallback(async () => {
     if (mounted.current) setHasRejected(true);
   }, []);
 
-  // ── DERIVED registration gate ────────────────────────────────────────────
-  // isRegistered is true when a confirmed participant ROW exists for this user.
-  // We deliberately use plain row-existence (not a cycle-key match): the server
-  // WIPES every participant row at the Sunday freeze, so any surviving row is a
-  // genuine registration — including an intermission "pre-register for next week"
-  // row, whose week_start intentionally predates the Monday config update.
-  // Staleness across the wipe is handled by re-validating on tab focus
-  // (refreshUserStats + loadConfig), which nulls registeredWeek once the row is
-  // gone — so a wiped user falls back to the lock screen.
-  const isRegistered = registeredWeek != null;
+  // ── DERIVED per-cycle registration gate ──────────────────────────────────
+  // A participant row only unlocks the leaderboard when its week_start bucket
+  // matches the CURRENT cycle — the active week, or (during the Sun→Mon
+  // intermission) the upcoming week the user pre-registers into. Bucketing to the
+  // week's Monday (cycleBucket) tolerates the server's precise per-Monday
+  // timestamp. A leftover row from a PAST tournament therefore fails to register
+  // the user for the new cycle → the registration poster shows again. This is
+  // fully declarative: it re-derives the instant fresh config loads, with no
+  // stale-render window and no separate cycle-signature gate.
+  const registrationCycleIso = isIntermission
+    ? nextMondayIso(Date.now() + serverOffset)
+    : (config?.start_time || config?.week_start || '');
+  const currentCycleBucket = cycleBucket(registrationCycleIso);
+  const isRegistered = !!registeredWeek
+    && !!currentCycleBucket
+    && cycleBucket(registeredWeek) === currentCycleBucket;
 
   // Popup shows during active tournament OR intermission (pre-register for next week).
   // Gates on userStatsChecked to avoid the race before join-status is confirmed.
