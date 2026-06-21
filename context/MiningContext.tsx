@@ -6,8 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { useSecurity } from './SecurityContext';
-import { api } from '@/lib/api';
-import { getApiUrl } from '@/lib/query-client';
+import { api, syncTournamentPointsToPb } from '@/lib/api';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 import {
   effectiveRatePerSec,
@@ -252,22 +251,15 @@ async function pbClaimMining(
     vip_level:               newUserVip,
   });
 
-  // ── NON-CRITICAL: tournament points — server-side sync (ANTI-CHEAT) ────────
-  // The server reads mining_sessions directly and computes the canonical point
-  // total. The client NEVER pushes a point value. Fire-and-forget — any failure
-  // here must NEVER block balance credit.
+  // ── Tournament points — recompute & persist on EVERY claim (PRODUCTION-SAFE) ─
+  // The APK has NO Express server, so the old `/api/app/tournament/sync-points`
+  // fetch silently 404'd and `users.weekly_tournament_points` (the field the
+  // leaderboard sorts by) stayed 0 forever. syncTournamentPointsToPb() recomputes
+  // it from mining_sessions via the PocketBase SDK directly — gated on an active
+  // cycle + tournament_joined, and mirrored into the cosmetic participant row.
+  // Fire-and-forget: it runs AFTER the balance credit above and can never block it.
   if (user.tournament_joined && pbId) {
-    (async () => {
-      try {
-        const apiUrl = getApiUrl();
-        const url = new URL(`/api/app/tournament/sync-points/${pbId}`, apiUrl).href;
-        await fetch(url, { method: 'POST' });
-      } catch {
-        // Express unreachable (APK production) — the next app open will sync via
-        // refreshUserStats() which reads weekly_tournament_points directly from PB.
-        // No client-side write: points remain accurate from the last server sync.
-      }
-    })();
+    syncTournamentPointsToPb(pbId).catch(() => {});
   }
 
   // Referral commission (10%) — written to referral_earnings_log for secure deferred crediting.

@@ -1,5 +1,3 @@
-- [Tournament points model](tournament-points-model.md) — users.weekly_tournament_points is authoritative; tournament_participants.points is cosmetic only, never use for payouts/winners.
-- [Tournament registration gate](tournament-registration-gate.md) — lock leaderboard on participant-row existence (NOT week_start match — breaks intermission pre-reg); re-fetch config at live→end boundary; cycle-signature gate.
-- [Tournament participant cleanup](tournament-participant-cleanup.md) — wipe must be bucket-aware + live at every cycle-start/-end entry point (cron end/start, boot catch-up, admin start); strictly-older on start, inclusive only for ended-cycle recovery; never delete future pre-reg buckets.
-- [Tournament payout idempotency](tournament-payout-idempotency.md) — runEndOfWeek pays each cycle once via per-cycle bucket marker (payout_finalized_bucket) + in-process lock; gates only payout/history, never wipe/reset.
-- [Shared PocketBase migrations](shared-pocketbase-migrations.md) — dev backend boot mutates the LIVE prod PB schema/rules; restarting "Start Backend" is a production migration.
+# Project memory index
+
+- [Tournament points prod sync](tournament-points-prod-sync.md) — authoritative server-computed fields the APK needs must have a client PocketBase recompute; a read-only fallback can't repair them and dev Express routes 404 in prod.

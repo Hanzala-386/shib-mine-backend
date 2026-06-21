@@ -533,6 +533,100 @@ export const api = {
   adminSearchUsers: (q: string) => adminSearchUsersImpl(q),
 };
 
+// ── Tournament points sync (PRODUCTION-SAFE, client-side) ────────────────────
+// The published APK has NO Express server, so the dev-only `/api/app/tournament/
+// sync-points` route is unreachable and `users.weekly_tournament_points` — the
+// AUTHORITATIVE field the leaderboard sorts by — never updates → points stuck at 0.
+// This mirrors the server's `syncUserTournamentPoints` via the PocketBase SDK so
+// points are recomputed on every claim in production too. `users.updateRule` is a
+// self-update rule (`@request.auth.id = id`), so the signed-in user may write its
+// own record.
+//
+// Anti-resurrection: only writes while the current cycle is ACTIVE and in-window,
+// so it never re-creates points that `runEndOfCycle` already zeroed after payout.
+// Best-effort: any failure returns 0 and must never block the claim or the balance
+// credit that already completed before this runs.
+export async function syncTournamentPointsToPb(pbId: string): Promise<number> {
+  if (!pbId) return 0;
+  try {
+    // 1. Latest tournament config — need the cycle window + id.
+    const cfgList = await pb.collection('tournament_config').getList(1, 1, { sort: '-created' });
+    const cfg: any = cfgList?.items?.[0];
+    if (!cfg) return 0;
+
+    const startIso = cfg.start_time || cfg.week_start;
+    if (!startIso) return 0;
+
+    // Only accrue inside an active, not-yet-ended cycle. This matches the server's
+    // intent and prevents resurrecting points that the end-of-cycle payout wiped.
+    const endMs = cfg.end_time ? new Date(cfg.end_time).getTime() : Infinity;
+    if (cfg.is_active !== true || Date.now() >= endMs) return 0;
+
+    const cycleId = cfg.cycle_id || '';
+
+    // 2. Only participants earn points (server gates on tournament_joined too).
+    const u: any = await pb.collection('users').getOne(pbId, {
+      fields: 'id,tournament_joined,display_name,email,weekly_tournament_points',
+    });
+    if (!u?.tournament_joined) return 0;
+
+    // 3. Sum this cycle's claimed sessions — identical formula to the server.
+    const sessions = await pb.collection('mining_sessions').getFullList({
+      filter: `user = "${pbId}" && claimed_amount > 0 && start_time >= "${startIso}"`,
+      fields: 'claimed_amount',
+      batch: 500,
+    });
+    const total = sessions.reduce(
+      (sum: number, s: any) => sum + (Number(s.claimed_amount) || 0),
+      0,
+    );
+
+    // 4. AUTHORITATIVE write — standalone update (NEVER bundle with balance credit).
+    //    Skip when unchanged so repeated calls (claim + leaderboard refresh) don't churn.
+    if (Number(u.weekly_tournament_points) !== total) {
+      await pb.collection('users').update(pbId, { weekly_tournament_points: total });
+    }
+
+    // 5. Mirror into the cosmetic participant row for the active cycle (create it if
+    //    missing — the admin DB column reads from here). Non-critical.
+    try {
+      let row: any = null;
+      try {
+        row = await pb
+          .collection('tournament_participants')
+          .getFirstListItem(`user_id = "${pbId}"`, { sort: '-created' });
+      } catch {
+        row = null;
+      }
+
+      const rowMatchesCycle =
+        !!row?.id && (cycleId === '' || (row.cycle_id ?? '') === cycleId);
+
+      if (rowMatchesCycle) {
+        if (Number(row.points) !== total) {
+          await pb.collection('tournament_participants').update(row.id, { points: total });
+        }
+      } else if (cycleId) {
+        const dn = u.display_name || u.email || 'Miner';
+        await pb.collection('tournament_participants').create({
+          user_id:      pbId,
+          display_name: typeof dn === 'string' ? dn.split('@')[0] : 'Miner',
+          cycle_id:     cycleId,
+          week_start:   startIso,
+          joined_at:    new Date().toISOString(),
+          points:       total,
+        });
+      }
+    } catch {
+      /* cosmetic mirror — never blocks the authoritative write */
+    }
+
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
 // ── VIP wrappers: try Express/Railway first, fall back to PocketBase SDK ──────
 export interface VipStatusResult {
   vipLevel: number;

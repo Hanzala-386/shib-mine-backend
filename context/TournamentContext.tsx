@@ -20,6 +20,7 @@ import React, {
   useCallback, useRef, ReactNode,
 } from 'react';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
+import { syncTournamentPointsToPb } from '@/lib/api';
 import { getApiUrl } from '@/lib/query-client';
 import { useAuth } from './AuthContext';
 
@@ -218,6 +219,12 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   const refreshUserStats = useCallback(async () => {
     if (!user?.pbId) return;
     try {
+      // Production-safe self-heal: recompute the authoritative points from
+      // mining_sessions before reading. Covers the rare case where the
+      // fire-and-forget sync after a claim didn't finish (e.g. app killed). It is a
+      // no-op outside an active cycle / for non-participants and skips the write when
+      // the total is unchanged, so it adds no churn on normal leaderboard refreshes.
+      await syncTournamentPointsToPb(user.pbId);
       const u = await pb.collection('users').getOne(user.pbId, {
         fields: 'id,tournament_joined,weekly_tournament_points',
       });
@@ -375,6 +382,11 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       setRegisteredCycleId(targetCycleId);
       setUserJoined(true);
     }
+
+    // If the user already claimed sessions during this cycle (e.g. mined before
+    // joining), surface their points immediately instead of waiting for the next
+    // claim. Best-effort — never blocks joining.
+    syncTournamentPointsToPb(user.pbId).catch(() => {});
   }, [user?.pbId, config?.cycle_id, config?.start_time, config?.week_start]);
 
   // ── Reject tournament (session-only dismiss) ─────────────────────────────
