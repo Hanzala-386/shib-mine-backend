@@ -53,13 +53,13 @@ const BLOCK_CONFIG: Record<NonNullable<SecurityBlockType>, BlockConfig> = {
   },
   accessibility: {
     icon:     'hand-left',
-    title:    'Security Alert',
-    subtitle: 'Auto-Clicker / Unauthorized Tapping Service Detected',
+    title:    'Unsafe App Detected',
+    subtitle: '',
     message:
-      'Security Alert: An active Auto-Clicker or unauthorized tapping service ' +
-      'has been detected on your device. To continue playing, please completely ' +
-      'turn off or Force Stop the auto-clicker application, otherwise our ' +
-      'application will not open.',
+      'Our security system has detected an active Auto-Clicker or unauthorized ' +
+      'automation tool running on your device. To protect the integrity of the ' +
+      'tournament and ensure fair play for all users, you cannot access the ' +
+      'application while this tool is enabled.',
     canRetry:     false,
     openSettings: true,
   },
@@ -153,7 +153,7 @@ export function SecurityModal() {
 
           <Text style={styles.cardTitle}>⚠  {cfg.title}</Text>
           <View style={styles.divider} />
-          <Text style={styles.cardSubtitle}>{cfg.subtitle}</Text>
+          {!!cfg.subtitle && <Text style={styles.cardSubtitle}>{cfg.subtitle}</Text>}
           <Text style={styles.cardMessage}>{cfg.message}</Text>
         </View>
 
