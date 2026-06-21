@@ -922,8 +922,14 @@ export default function HomeScreen() {
                 </View>
                 <Text style={styles.warningText}>Play games to win free PT and start mining.</Text>
                 <Pressable
+                  testID="low-pt-play-games"
+                  accessibilityRole="button"
+                  accessibilityLabel="Play games to win free Power Tokens"
                   style={({ pressed }) => [styles.warningBtn, { opacity: pressed ? 0.8 : 1 }]}
-                  onPress={() => {}}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                    router.push('/(tabs)/games');
+                  }}
                 >
                   <Text style={styles.warningBtnText}>Play Games →</Text>
                 </Pressable>

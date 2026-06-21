@@ -18,6 +18,29 @@ import type { MiningHistoryRecord } from '@/lib/api';
 const BEP20_FEE         = 3680;   // fixed SHIB fee for BEP-20 network withdrawals
 const BEP20_MIN_BALANCE = 50_000; // balance required to unlock BEP-20 withdrawals
 
+const WITHDRAWAL_RULES: { title: string; body: string }[] = [
+  {
+    title: 'Binance Account Alignment',
+    body: 'You must possess a registered Binance account matching the exact email address you specify for withdrawal.',
+  },
+  {
+    title: 'Identity Verification',
+    body: 'Your Binance account must have completed Identity Verification (KYC). Failure to do so will result in an automatic withdrawal rejection.',
+  },
+  {
+    title: 'Anti-Cheat / Hacking Policy',
+    body: 'Use of any hacking tools, automated clickers, or malicious scripts will lead to an immediate, permanent ID ban and rejection of all pending withdrawals.',
+  },
+  {
+    title: 'Pre-Flight Check',
+    body: 'Always double-check and verify that your Binance identity status is completely active and valid before initiating a transaction to prevent losing funds.',
+  },
+  {
+    title: 'Independent Network Fees',
+    body: 'Ensure your account is ready to receive assets over the designated network option.',
+  },
+];
+
 function formatShib(val: number) {
   if (val >= 1_000_000_000) return `${(val / 1_000_000_000).toFixed(2)}B`;
   if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(2)}M`;
@@ -87,6 +110,7 @@ export default function WalletScreen() {
   const { showMiningInterstitial } = useAds();
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
+  const [showRules, setShowRules] = useState(false);
   const [binanceVerified, setBinanceVerified] = useState(false);
   const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>('Binance Email');
   const [miningHistory, setMiningHistory] = useState<MiningHistoryRecord[]>([]);
@@ -237,6 +261,35 @@ export default function WalletScreen() {
       >
         <Animated.View entering={FadeInDown.delay(100).springify()}>
           <Text style={styles.pageTitle}>Wallet</Text>
+        </Animated.View>
+
+        {/* ── Guaranteed fast-withdrawal banner ── */}
+        <Animated.View entering={FadeInDown.delay(150).springify()}>
+          <Pressable
+            testID="withdrawal-guarantee-banner"
+            accessibilityRole="button"
+            accessibilityLabel="Guaranteed 12-hour fast withdrawals. View rules and regulations"
+            style={({ pressed }) => [styles.guarBanner, { opacity: pressed ? 0.9 : 1 }]}
+            onPress={() => setShowRules(true)}
+          >
+            <LinearGradient
+              colors={['rgba(244,196,48,0.22)', 'rgba(255,107,0,0.12)']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.guarBannerInner}
+            >
+              <View style={styles.guarIconWrap}>
+                <MaterialCommunityIcons name="shield-check" size={22} color={Colors.gold} />
+              </View>
+              <View style={styles.guarTextWrap}>
+                <Text style={styles.guarHeadline}>Guaranteed 12-Hour Fast Withdrawals</Text>
+                <View style={styles.guarLinkRow}>
+                  <Text style={styles.guarLink}>View Rules &amp; Regulations</Text>
+                  <Ionicons name="chevron-forward" size={13} color={Colors.gold} />
+                </View>
+              </View>
+            </LinearGradient>
+          </Pressable>
         </Animated.View>
 
         {/* ── Main SHIB balance card ── */}
@@ -580,6 +633,56 @@ export default function WalletScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* ══ WITHDRAWAL RULES MODAL ══════════════════════════════════════════ */}
+      <Modal visible={showRules} transparent animationType="fade" onRequestClose={() => setShowRules(false)}>
+        <View style={styles.rulesOverlay}>
+          <View style={styles.rulesSheet}>
+            <View style={styles.rulesHeader}>
+              <View style={styles.rulesIconWrap}>
+                <MaterialCommunityIcons name="shield-check" size={26} color={Colors.gold} />
+              </View>
+              <Text style={styles.rulesTitle}>Rules &amp; Regulations</Text>
+              <Text style={styles.rulesSub}>Withdrawals are guaranteed within 12 hours when every rule below is met.</Text>
+            </View>
+
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              style={styles.rulesScroll}
+              contentContainerStyle={styles.rulesScrollContent}
+            >
+              {WITHDRAWAL_RULES.map((r, i) => (
+                <View key={i} style={styles.ruleRow}>
+                  <View style={styles.ruleNumBadge}>
+                    <Text style={styles.ruleNum}>{i + 1}</Text>
+                  </View>
+                  <View style={styles.ruleTextWrap}>
+                    <Text style={styles.ruleTitle}>{r.title}</Text>
+                    <Text style={styles.ruleBody}>{r.body}</Text>
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+
+            <Pressable
+              testID="withdrawal-rules-close"
+              accessibilityRole="button"
+              accessibilityLabel="Close rules and regulations"
+              style={({ pressed }) => [styles.rulesCloseBtn, { opacity: pressed ? 0.85 : 1 }]}
+              onPress={() => setShowRules(false)}
+            >
+              <LinearGradient
+                colors={[Colors.gold, Colors.neonOrange]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.rulesCloseGradient}
+              >
+                <Text style={styles.rulesCloseText}>Got It</Text>
+              </LinearGradient>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -744,4 +847,37 @@ const styles = StyleSheet.create({
   inputError: { borderColor: '#ff5252' },
   fieldError: { flexDirection: 'row', alignItems: 'flex-start', gap: 5, marginTop: -4 },
   fieldErrorText: { flex: 1, fontFamily: 'Inter_400Regular', fontSize: 12, color: '#ff5252', lineHeight: 16 },
+
+  /* ── Guaranteed withdrawals banner ── */
+  guarBanner: { marginBottom: 14, borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(244,196,48,0.35)' },
+  guarBannerInner: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 14 },
+  guarIconWrap: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(244,196,48,0.15)',
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(244,196,48,0.4)' },
+  guarTextWrap: { flex: 1, gap: 3 },
+  guarHeadline: { fontFamily: 'Inter_700Bold', fontSize: 15, color: Colors.textPrimary, lineHeight: 20 },
+  guarLinkRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  guarLink: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.gold, textDecorationLine: 'underline' },
+
+  /* ── Rules modal ── */
+  rulesOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 22 },
+  rulesSheet: { width: '100%', maxHeight: '85%', backgroundColor: Colors.darkCard, borderRadius: 24, padding: 22, gap: 14,
+    borderWidth: 1.5, borderColor: 'rgba(244,196,48,0.4)' },
+  rulesHeader: { alignItems: 'center', gap: 6 },
+  rulesIconWrap: { width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(244,196,48,0.12)',
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(244,196,48,0.35)', marginBottom: 2 },
+  rulesTitle: { fontFamily: 'Inter_700Bold', fontSize: 20, color: Colors.textPrimary, textAlign: 'center' },
+  rulesSub: { fontFamily: 'Inter_400Regular', fontSize: 12.5, color: Colors.textMuted, textAlign: 'center', lineHeight: 18 },
+  rulesScroll: { flexGrow: 0 },
+  rulesScrollContent: { gap: 12, paddingVertical: 2 },
+  ruleRow: { flexDirection: 'row', gap: 12, backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 14, padding: 13,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)' },
+  ruleNumBadge: { width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(244,196,48,0.15)',
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(244,196,48,0.4)' },
+  ruleNum: { fontFamily: 'Inter_700Bold', fontSize: 13, color: Colors.gold },
+  ruleTextWrap: { flex: 1, gap: 3 },
+  ruleTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: Colors.gold },
+  ruleBody: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary, lineHeight: 19 },
+  rulesCloseBtn: { marginTop: 2 },
+  rulesCloseGradient: { height: 50, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  rulesCloseText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
 });
