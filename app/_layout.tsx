@@ -29,6 +29,7 @@ import { AnnouncementModal, useAnnouncementGate } from "@/components/Announcemen
 import { SupportWidget } from "@/components/SupportWidget";
 import { TournamentProvider } from "@/context/TournamentContext";
 import { TournamentBannerPopup } from "@/components/TournamentBannerPopup";
+import { TournamentWinPopup } from "@/components/TournamentWinPopup";
 import { DailyRewardWidget } from "@/components/DailyRewardWidget";
 import { View, StyleSheet } from "react-native";
 import SpinningCoin from "@/components/SpinningCoin";
@@ -116,6 +117,8 @@ function ProvidedApp() {
                   <DailyRewardWidget />
                   {/* Tournament banner popup — shown once per week until registered or rejected */}
                   <TournamentBannerPopup />
+                  {/* Winner celebration — shown once per finalized cycle to prize winners */}
+                  <TournamentWinPopup />
                 </TournamentProvider>
               </NotificationsProvider>
             </AdminProvider>

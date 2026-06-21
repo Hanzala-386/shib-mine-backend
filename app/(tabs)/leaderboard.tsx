@@ -14,6 +14,7 @@ import { POCKETBASE_URL, pb } from '@/lib/pocketbase';
 import { BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import SpinningCoin from '@/components/SpinningCoin';
 import { useTournament, getTournamentPhase, type TournamentEntry, type TournamentConfig } from '@/context/TournamentContext';
+import { fetchLastCycleStandings, type LastCycleResult } from '@/lib/tournamentHistory';
 import Colors from '@/constants/colors';
 
 /* ── types ── */
@@ -785,6 +786,18 @@ export default function LeaderboardScreen() {
     refetchInterval: 60_000,
   });
 
+  // Last finalized cycle's standings — surfaced in the inactive (phase 'none')
+  // state so a just-ended tournament's FINAL rankings replace the blank board
+  // until the admin launches the next cycle. Reads the public tournament_history
+  // collection (APK-safe, no Express). Disabled while a cycle is live/prestart,
+  // so it auto-swaps back to the live board the moment a new cycle launches.
+  const { data: lastCycle, isLoading: lastCycleLoading } = useQuery<LastCycleResult>({
+    queryKey: ['tournament-last-cycle', config?.end_time ?? ''],
+    queryFn: () => fetchLastCycleStandings(config?.end_time || undefined),
+    enabled: activeTab === 'tournament' && phase === 'none',
+    staleTime: 60_000,
+  });
+
   const topPad  = insets.top + (Platform.OS === 'web' ? 67 : 0);
   const AD_TOTAL = Platform.OS === 'web' ? 0 : BANNER_HEIGHT + 16 + 8;
   const tabBarH  = Platform.OS === 'web' ? 84 : AD_TOTAL + 56 + insets.bottom;
@@ -962,6 +975,15 @@ export default function LeaderboardScreen() {
     // (1) No active tournament — admin hasn't launched one (or the last cycle ended
     // and was paid out + wiped). Inactive RED "will start soon" centered placeholder.
     if (phase === 'none') {
+      // When a cycle has just ended (no active tournament), show the FINALIZED
+      // standings of that last cycle instead of a blank board. Falls back to the
+      // plain inactive placeholder when there's no history yet.
+      const standings = lastCycle?.standings ?? [];
+      const hasResults = standings.length > 0;
+      const histTop3  = standings.slice(0, 3);
+      const histRest  = standings.slice(3);
+      const lastRank  = hasResults ? standings[standings.length - 1].rank : 0;
+
       return (
         <View style={styles.container}>
           <LinearGradient
@@ -970,23 +992,58 @@ export default function LeaderboardScreen() {
             start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 0.5 }}
           />
           <FlatList
-            data={[]}
-            keyExtractor={() => 'empty'}
-            renderItem={() => null}
+            data={hasResults ? histRest : []}
+            keyExtractor={(item) => item.id || `r${item.rank}`}
+            renderItem={({ item }) => <TCard entry={item} isMe={item.id === pbId} />}
             ListHeaderComponent={
               <View>
                 {ListHeader}
-                <View style={styles.inactiveState}>
-                  <View style={styles.inactiveIconWrap}>
-                    <MaterialCommunityIcons name="trophy-broken" size={48} color="#FF453A" />
+                {lastCycleLoading && !hasResults ? (
+                  <View style={styles.emptyState}>
+                    <ActivityIndicator color="#FF453A" size="large" />
                   </View>
-                  <View style={styles.inactiveDotRow}>
-                    <View style={[styles.liveDot, { backgroundColor: '#FF453A' }]} />
-                    <Text style={styles.inactiveBadge}>INACTIVE</Text>
+                ) : hasResults ? (
+                  <View>
+                    {/* Compact inactive notice — a tournament just wrapped up */}
+                    <View style={styles.lastResultsNotice}>
+                      <View style={styles.inactiveDotRow}>
+                        <View style={[styles.liveDot, { backgroundColor: '#FF453A' }]} />
+                        <Text style={styles.inactiveBadge}>INACTIVE</Text>
+                      </View>
+                      <Text style={styles.inactiveTitle}>Tournament will start soon</Text>
+                      <Text style={styles.emptyDesc}>
+                        Here are the final standings from the last tournament. A new one launches soon!
+                      </Text>
+                    </View>
+
+                    {/* Final standings header */}
+                    <View style={styles.resultsHeader}>
+                      <MaterialCommunityIcons name="trophy-variant" size={18} color={Colors.gold} />
+                      <Text style={styles.resultsTitle}>Final Standings</Text>
+                    </View>
+
+                    {/* Top 3 podium of the finalized cycle */}
+                    <TournamentPodium top3={histTop3} pbId={pbId} />
+
+                    {histRest.length > 0 && (
+                      <Text style={[styles.sectionTitle, { color: Colors.gold + 'aa', marginTop: 4, paddingHorizontal: 6 }]}>
+                        Rankings #4 – #{lastRank}
+                      </Text>
+                    )}
                   </View>
-                  <Text style={styles.inactiveTitle}>Tournament will start soon</Text>
-                  <Text style={styles.emptyDesc}>There's no tournament running right now. Check back soon — a new one will be launched shortly!</Text>
-                </View>
+                ) : (
+                  <View style={styles.inactiveState}>
+                    <View style={styles.inactiveIconWrap}>
+                      <MaterialCommunityIcons name="trophy-broken" size={48} color="#FF453A" />
+                    </View>
+                    <View style={styles.inactiveDotRow}>
+                      <View style={[styles.liveDot, { backgroundColor: '#FF453A' }]} />
+                      <Text style={styles.inactiveBadge}>INACTIVE</Text>
+                    </View>
+                    <Text style={styles.inactiveTitle}>Tournament will start soon</Text>
+                    <Text style={styles.emptyDesc}>There's no tournament running right now. Check back soon — a new one will be launched shortly!</Text>
+                  </View>
+                )}
               </View>
             }
             contentContainerStyle={{ paddingBottom: tabBarH + TICKER_TOTAL_H + 24 }}
@@ -1231,6 +1288,15 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', paddingVertical: 60, gap: 12, paddingHorizontal: 40 },
   emptyTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 17, color: Colors.textSecondary },
   emptyDesc:  { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textMuted, textAlign: 'center', lineHeight: 20 },
+
+  // ── Last finalized cycle results (shown in inactive state) ──
+  lastResultsNotice: { alignItems: 'center', paddingTop: 6, paddingBottom: 16, gap: 8, paddingHorizontal: 30 },
+  resultsHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 12,
+  },
+  resultsTitle: {
+    fontFamily: 'Inter_700Bold', fontSize: 16, color: Colors.gold, letterSpacing: 0.5,
+  },
 
   // ── Inactive (no active tournament) ──
   inactiveState: { alignItems: 'center', paddingTop: 70, paddingBottom: 60, gap: 14, paddingHorizontal: 40 },

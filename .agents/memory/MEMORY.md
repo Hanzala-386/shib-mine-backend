@@ -1,1 +1,2 @@
 - [Tournament points prod sync](tournament-points-prod-sync.md) — PB datetime filters need a SPACE separator not ISO `T` (else 0 rows); recompute points client-side in prod; filter by `updated` (claim-time) not `start_time`.
+- [Tournament history & finalize quirks](tournament-history.md) — duplicate finalize rows, no cycle_id, earliest-in-cluster key, phase-none-leads-history stale window, prizes auto-credited (claim must be cosmetic).
