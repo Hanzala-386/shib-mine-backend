@@ -7,7 +7,20 @@ description: Why weekly_tournament_points needs a client-side PocketBase recompu
 
 `users.weekly_tournament_points` is the field the tournament leaderboard sorts by and
 end-of-cycle payout reads. Formula: sum `mining_sessions.claimed_amount` for the user
-where `claimed_amount > 0 && start_time >= tournament_config.start_time`.
+where `claimed_amount > 0 && updated >= <cycle start, SPACE-formatted>`.
+
+## Two bugs that kept points at 0 forever (both required to fix)
+1. **Filter FIELD must be `updated`, not `start_time`.** A claim writes `claimed_amount`
+   (bumping PB's `updated` to claim-time) but never touches `start_time`. A 60-min session
+   started BEFORE the cycle but claimed INSIDE it must still score. `start_time >= cycleStart`
+   implies `updated >= cycleStart`, so `updated` is the strict superset = "earned this cycle".
+2. **PocketBase datetime filters parse a SPACE separator, NOT the ISO `T`.** `tournament_config.start_time`
+   is a TEXT field storing `2026-06-21T06:18:00.000Z` (with `T`). Passed raw into a `mining_sessions`
+   datetime filter it matched ZERO rows (proven live: `>= "...T..."` → 0, `>= "... ..."` → correct).
+   The `user="id"` and `claimed_amount>0` clauses worked; only the date clause silently zeroed results.
+   **Fix:** `.replace('T', ' ')` the comparison value before building any PB datetime filter.
+   **Why it matters broadly:** any PB filter built from an ISO/`toISOString()` value (or a text field
+   holding ISO-T) is a latent zero-match bug. Always space-separate datetime filter values.
 
 **The trap:** the published APK has NO Express server. `getApiUrl()` in prod resolves to
 the Railway host (`backend.webcod.in`), which has NO tournament logic, so any

@@ -441,10 +441,21 @@ export async function syncUserTournamentPoints(pbId: string): Promise<number> {
     const weekStart = cfg.start_time || cfg.week_start;
     if (!weekStart) return 0;
 
-    // 4. Sum all claimed sessions for this user since week_start
-    //    PB relation filter: user = "pbId" (direct ID match on the relation field)
+    // 4. Sum every session CLAIMED during this cycle. Three things baked in (must
+    //    stay identical to the client helper syncTournamentPointsToPb in lib/api.ts):
+    //    (a) key off `updated` (claim-time) NOT `start_time`, so a session started
+    //        before the cycle but claimed inside it still scores;
+    //    (b) PB datetime filters need a SPACE separator, not the ISO `T`. The config
+    //        stores start_time as text with a `T`, which matched zero rows → points 0;
+    //    (c) upper-bound `updated < end_time` (only when valid) so a claim landing
+    //        after the cycle ends (clock skew / payout lag) isn't miscounted into it.
+    const weekStartFilter = weekStart.replace('T', ' ');
+    const endMs = cfg.end_time ? new Date(cfg.end_time).getTime() : NaN;
+    const endClause = Number.isFinite(endMs)
+      ? ` && updated < "${String(cfg.end_time).replace('T', ' ')}"`
+      : '';
     const filter = encodeURIComponent(
-      `user = "${pbId}" && claimed_amount > 0 && start_time >= "${weekStart}"`,
+      `user = "${pbId}" && claimed_amount > 0 && updated >= "${weekStartFilter}"${endClause}`,
     );
     const sessRes = await pbGet(
       `/api/collections/mining_sessions/records?filter=${filter}&perPage=500&fields=claimed_amount`,

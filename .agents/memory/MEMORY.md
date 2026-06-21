@@ -1,3 +1,1 @@
-# Project memory index
-
-- [Tournament points prod sync](tournament-points-prod-sync.md) — authoritative server-computed fields the APK needs must have a client PocketBase recompute; a read-only fallback can't repair them and dev Express routes 404 in prod.
+- [Tournament points prod sync](tournament-points-prod-sync.md) — PB datetime filters need a SPACE separator not ISO `T` (else 0 rows); recompute points client-side in prod; filter by `updated` (claim-time) not `start_time`.

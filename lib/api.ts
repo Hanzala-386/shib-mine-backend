@@ -570,9 +570,29 @@ export async function syncTournamentPointsToPb(pbId: string): Promise<number> {
     });
     if (!u?.tournament_joined) return 0;
 
-    // 3. Sum this cycle's claimed sessions — identical formula to the server.
+    // 3. Sum every session CLAIMED during this cycle. TWO independent bugs lived
+    //    here — both had to be fixed or points stayed 0:
+    //    (a) FIELD: key off `updated` (the claim writes claimed_amount, bumping PB's
+    //        `updated` to claim-time) NOT `start_time`. A 60-min session started
+    //        BEFORE the cycle but claimed INSIDE it must still score. `start_time >=
+    //        cycleStart` implies `updated >= cycleStart`, so `updated` is the strict
+    //        superset and the correct "earned during the cycle" signal.
+    //    (b) FORMAT: PocketBase datetime filters parse a SPACE separator, NOT the ISO
+    //        `T`. tournament_config.start_time is stored as TEXT with a `T`
+    //        (e.g. "2026-06-21T06:18:00.000Z"); passed raw it matched ZERO rows, so
+    //        points stuck at 0 forever. Convert `T`→space before comparing. Verified
+    //        live: T-form → 0 rows, space-form → correct rows.
+    //    `claimed_amount > 0` excludes the -1 fraud/void sentinel and unclaimed rows.
+    const filterStart = startIso.replace('T', ' ');
+    // (c) Upper-bound on end_time (only when it's a valid date) so a claim that lands
+    //     AFTER the cycle ends — device-clock skew or end-of-cycle payout lag — can't
+    //     be miscounted into this cycle. `endMs` was computed above; reuse it as the
+    //     validity guard (Infinity/NaN ⇒ no bound, never an empty "updated < ''").
+    const filterEnd = Number.isFinite(endMs)
+      ? ` && updated < "${String(cfg.end_time).replace('T', ' ')}"`
+      : '';
     const sessions = await pb.collection('mining_sessions').getFullList({
-      filter: `user = "${pbId}" && claimed_amount > 0 && start_time >= "${startIso}"`,
+      filter: `user = "${pbId}" && claimed_amount > 0 && updated >= "${filterStart}"${filterEnd}`,
       fields: 'claimed_amount',
       batch: 500,
     });
