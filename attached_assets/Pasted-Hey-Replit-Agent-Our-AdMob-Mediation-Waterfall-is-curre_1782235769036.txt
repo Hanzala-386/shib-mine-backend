@@ -1,0 +1,27 @@
+Hey Replit Agent, 
+
+Our AdMob Mediation/Waterfall is currently failing and throwing "No ad config" / "Adapter not found" errors in our diagnostic test logs. We are heavily losing ad revenue because the application code is unable to locate the required native dependency bridges (Adapters) to talk to third-party ad networks.
+
+Since I am not a developer, I need you to do a thorough code-level inspection of our existing project files right now. Do not rewrite or modify any code yet. Just inspect and answer the following questions with absolute precision:
+
+1. CORE ADMOB SDK CHECK:
+We are using Expo with React Native. Which exact npm package and version are we using for AdMob? Is it `react-native-google-mobile-ads`? 
+
+2. NATIVE MEDIATION ADAPTERS AUDIT:
+Open `android/app/build.gradle` and look into the `dependencies` block. Scan the file and tell me exactly if the following official Google Mobile Ads Mediation Adapters are present or missing. Please answer with "PRESENT" or "MISSING" for each, along with the exact version string if present:
+
+   * Unity Ads Adapter: com.google.ads.mediation:unity
+   * InMobi Adapter: com.google.ads.mediation:inmobi
+   * AppLovin MAX Adapter: com.google.ads.mediation:applovin
+
+3. MAVEN REPOSITORIES VERIFICATION:
+Open `android/build.gradle` (or your gradle configuration pipeline). Third-party networks like InMobi and AppLovin require custom Maven endpoints to download their SDK binaries. Are the following repository URLs explicitly declared inside your `allprojects { repositories { ... } }` or `pluginManagement` block? 
+   * InMobi Repository: https://maven.inmobi.com/
+   * AppLovin Repository: https://android-sdk.is.com/
+
+4. LOCAL COMPILATION RUNS (CMD COMMANDS):
+If I download the current project as a ZIP archive right now, extract it on my local Windows machine, and open the Command Prompt (CMD), what are the exact step-by-step commands I need to run to:
+   * Perform a clean 'npm install'
+   * Execute a native Android Gradle Sync/Clean to ensure these newly identified third-party SDK binaries are compiled successfully before building the Expo prebuild / native app?
+
+Please generate a structured factual audit report based on the existing code files so that we can identify exactly what you missed or what was incorrectly installed.
