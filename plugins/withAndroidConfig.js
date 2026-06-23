@@ -15,6 +15,7 @@
 const {
   withProjectBuildGradle,
   withAppBuildGradle,
+  withSettingsGradle,
   withAndroidManifest,
   withDangerousMod,
 } = require('@expo/config-plugins');
@@ -118,41 +119,53 @@ const MEDIATION_ADAPTERS = [
   "    implementation 'com.google.ads.mediation:digitalturbine:8.3.3.0'",
 ];
 
+/* ─── Idempotency markers (so re-running prebuild never double-injects) ──────── */
+const ADAPTERS_MARKER_OPEN  = '// [shib-mediation-adapters] injected by withAndroidConfig.js — DO NOT EDIT';
+const ADAPTERS_MARKER_CLOSE = '// [/shib-mediation-adapters]';
+const REPOS_MARKER_OPEN     = '// [shib-mediation-repos] injected by withAndroidConfig.js — DO NOT EDIT';
+const REPOS_MARKER_CLOSE    = '// [/shib-mediation-repos]';
+
+/**
+ * Pure transform (exported for tests): inject the mediation adapter
+ * `implementation` lines into the top-level `dependencies { }` block of an
+ * app/build.gradle file.
+ *
+ * Returns { contents, changed, alreadyPresent }.
+ * THROWS (fail-loud) if no top-level `dependencies {` block exists — we refuse
+ * to silently no-op and ship a build with a dead AdMob waterfall.
+ */
+function injectMediationDependencies(contents) {
+  if (typeof contents !== 'string' || contents.trim() === '') {
+    throw new Error('[withAndroidConfig] FATAL: app/build.gradle is empty — cannot inject mediation adapters.');
+  }
+  if (contents.includes(ADAPTERS_MARKER_OPEN)) {
+    return { contents, changed: false, alreadyPresent: true };
+  }
+  // Anchor to a top-level (column-0) `dependencies {` so we never match a nested
+  // dependencies block (e.g. inside buildscript {}) or a commented-out line.
+  const depRe = /^dependencies[ \t]*\{[^\n]*$/m;
+  if (!depRe.test(contents)) {
+    throw new Error(
+      '[withAndroidConfig] FATAL: no top-level `dependencies {` block found in app/build.gradle. ' +
+      'Mediation adapters (Unity / InMobi / AppLovin / Meta / ironSource / Digital Turbine) were NOT ' +
+      'injected. Aborting prebuild instead of shipping a broken waterfall.'
+    );
+  }
+  const block = ['    ' + ADAPTERS_MARKER_OPEN, ...MEDIATION_ADAPTERS, '    ' + ADAPTERS_MARKER_CLOSE].join('\n');
+  const out = contents.replace(depRe, (m) => `${m}\n${block}`);
+  return { contents: out, changed: true, alreadyPresent: false };
+}
+
+/* ─── 3. app/build.gradle — add AdMob mediation adapters (fail-loud) ─────────── */
 function withAdMediationAdapters(config) {
   return withAppBuildGradle(config, (cfg) => {
-    let content = cfg.modResults.contents;
-
-    // Only inject lines that are not already present (idempotent)
-    const missing = MEDIATION_ADAPTERS.filter(line =>
-      !line.trimStart().startsWith('//') && !content.includes(line.trim())
-    );
-
-    if (missing.length === 0) return cfg;
-
-    // Reconstruct the full block (comments + deps) for missing adapters,
-    // preserving the comment that precedes each dep line.
-    const linesToInject = [];
-    for (let i = 0; i < MEDIATION_ADAPTERS.length; i++) {
-      const line = MEDIATION_ADAPTERS[i];
-      const isComment = line.trimStart().startsWith('//');
-      const isDep     = !isComment;
-      if (isDep && missing.includes(line)) {
-        // Include the immediately preceding comment if it's a comment line
-        const prev = MEDIATION_ADAPTERS[i - 1];
-        if (prev && prev.trimStart().startsWith('//') && !linesToInject.includes(prev)) {
-          linesToInject.push(prev);
-        }
-        linesToInject.push(line);
-      }
+    const res = injectMediationDependencies(cfg.modResults.contents); // throws on no-match
+    cfg.modResults.contents = res.contents;
+    if (res.changed) {
+      console.log('[withAndroidConfig] ✓ AdMob mediation adapters injected into app/build.gradle dependencies {}');
+    } else if (res.alreadyPresent) {
+      console.log('[withAndroidConfig] ✓ AdMob mediation adapters already present — idempotent skip');
     }
-
-    const block = linesToInject.join('\n') + '\n';
-    content = content.replace(
-      /(\bdependencies\s*\{)/,
-      `$1\n${block}`
-    );
-
-    cfg.modResults.contents = content;
     return cfg;
   });
 }
@@ -170,42 +183,142 @@ function withAdMediationAdapters(config) {
 // already present the function is a no-op (idempotent).
 //
 const EXTRA_MAVEN_REPOS = [
-  // ironSource / LevelPlay
-  { marker: 'android-sdk.is.com',  line: "        maven { url 'https://android-sdk.is.com/' }" },
-  // Digital Turbine / DT Exchange
-  { marker: 'fyber.jfrog.io',      line: "        maven { url 'https://fyber.jfrog.io/artifactory/inner-active-android-sdk-local' }" },
+  // ironSource / LevelPlay — NOT on Maven Central, needs its own endpoint
+  { marker: 'android-sdk.is.com', line: "maven { url 'https://android-sdk.is.com/' }" },
+  // Digital Turbine (DT Exchange) — NOT on Maven Central, needs its JFrog endpoint
+  { marker: 'fyber.jfrog.io',     line: "maven { url 'https://fyber.jfrog.io/artifactory/inner-active-android-sdk-local' }" },
+  // NOTE: Unity Ads, InMobi, AppLovin MAX and Meta adapters all resolve from
+  // mavenCentral() (already present in Expo's allprojects block) — no custom repo needed.
 ];
 
+/**
+ * Brace-aware locator (exported indirectly via injectMediationReposIntoBlock):
+ * returns the string index immediately AFTER the `repositories {` opener that
+ * lives INSIDE the `blockKeyword { … }` block, or -1 if the block (or its
+ * repositories child) is absent.
+ *
+ * Brace-counting bounds the search to the block's own body, so we never match a
+ * `repositories {` that sits OUTSIDE the target block — the hazard a lazy
+ * `blockKeyword[\s\S]*?repositories {` regex had.
+ */
+function findReposInsertIndex(contents, blockKeyword) {
+  const open = new RegExp(blockKeyword + '\\s*\\{');
+  const m = open.exec(contents);
+  if (!m) return -1;
+
+  // Walk braces from the block's opening `{` to find the block-body extent.
+  let depth = 0, blockStart = -1, blockEnd = -1;
+  for (let i = m.index + m[0].length - 1; i < contents.length; i++) {
+    const ch = contents[i];
+    if (ch === '{') { depth++; if (depth === 1) blockStart = i; }
+    else if (ch === '}') { depth--; if (depth === 0) { blockEnd = i; break; } }
+  }
+  if (blockStart === -1 || blockEnd === -1) return -1;
+
+  // First `repositories {` strictly within the block body (note: `repositoriesMode`
+  // is not matched because it has no whitespace+`{` after `repositories`).
+  const body = contents.slice(blockStart, blockEnd);
+  const rm = /repositories\s*\{/.exec(body);
+  if (!rm) return -1;
+  return blockStart + rm.index + rm[0].length;
+}
+
+/**
+ * Pure transform (exported for tests): inject EXTRA_MAVEN_REPOS right after the
+ * `repositories {` opener INSIDE the `blockKeyword { … }` block, indenting each
+ * line with `indent`.
+ *
+ * Returns { contents, changed, alreadyPresent, found }. Never throws — the caller
+ * decides whether a missing block is fatal (so it can fall back to another file).
+ */
+function injectMediationReposIntoBlock(contents, blockKeyword, indent) {
+  if (typeof contents !== 'string') {
+    return { contents, changed: false, alreadyPresent: false, found: false };
+  }
+  if (contents.includes(REPOS_MARKER_OPEN)) {
+    return { contents, changed: false, alreadyPresent: true, found: true };
+  }
+  const insertAt = findReposInsertIndex(contents, blockKeyword);
+  if (insertAt < 0) return { contents, changed: false, alreadyPresent: false, found: false };
+
+  const repoLines = [
+    indent + REPOS_MARKER_OPEN,
+    ...EXTRA_MAVEN_REPOS.map(r => indent + r.line),
+    indent + REPOS_MARKER_CLOSE,
+  ].join('\n');
+
+  const out = contents.slice(0, insertAt) + '\n' + repoLines + contents.slice(insertAt);
+  return { contents: out, changed: true, alreadyPresent: false, found: true };
+}
+
+/* ─── 3b. Maven repos — fail-loud, version-proof injection ───────────────────── */
+//
+// Repositories can live in different files depending on the RN/Expo version:
+//   • Expo 54:                 root build.gradle → allprojects { repositories { } }
+//   • newer bare-RN templates: settings.gradle   → dependencyResolutionManagement { repositories { } }
+//
+// Both passes run in-memory through modResults (a withDangerousMod guard is not an
+// option here: config-plugins runs dangerous mods BEFORE the gradle files are
+// flushed to disk, so it would read stale content). The fail-loud throw is
+// ORDER-INDEPENDENT — each pass records that it ran, and whichever pass runs LAST
+// throws iff BOTH files were inspected and nothing was injected anywhere. This
+// avoids the previous bug where a throw in the build.gradle pass killed the chain
+// before the settings.gradle fallback could run.
 function withMediationRepositories(config) {
-  return withProjectBuildGradle(config, (cfg) => {
-    let content = cfg.modResults.contents;
+  const state = { injected: false, buildGradleRan: false, settingsGradleRan: false };
 
-    const toAdd = EXTRA_MAVEN_REPOS.filter(r => !content.includes(r.marker));
-    if (toAdd.length === 0) return cfg;
-
-    // Insert before the closing brace of the allprojects { repositories { } } block.
-    // The generated file always ends this block with a lone "    }" on its own line
-    // inside the allprojects block.  We match the last "google()" inside that block
-    // and add the custom repos right after it.
-    const repoLines = toAdd.map(r => r.line).join('\n');
-    if (content.includes('allprojects') && content.includes('google()')) {
-      // Append after the last google() inside allprojects repositories
-      content = content.replace(
-        /(allprojects[\s\S]*?repositories[\s\S]*?google\(\))/,
-        `$1\n${repoLines}`
+  const failIfBothCheckedAndEmpty = () => {
+    if (state.buildGradleRan && state.settingsGradleRan && !state.injected) {
+      throw new Error(
+        '[withAndroidConfig] FATAL: could not inject the mediation Maven repositories — no ' +
+        '`allprojects { repositories { … } }` (root build.gradle) or ' +
+        '`dependencyResolutionManagement { repositories { … } }` (build.gradle / settings.gradle) ' +
+        'block was found in either file. The ironSource + Digital Turbine adapters would fail to ' +
+        'resolve at build time, so the mediation waterfall would be silently broken. Aborting prebuild.'
       );
-    } else {
-      // Fallback: append the full allprojects block at the end
-      const block =
-        '\nallprojects {\n    repositories {\n' + repoLines + '\n    }\n}\n';
-      if (!content.includes('allprojects')) {
-        content = content.trimEnd() + '\n' + block;
+    }
+  };
+
+  // Pass A — root build.gradle: Expo 54's allprojects block (or a DRM block if a
+  // future template put one here).
+  config = withProjectBuildGradle(config, (cfg) => {
+    state.buildGradleRan = true;
+    if (!state.injected) {
+      let res = injectMediationReposIntoBlock(cfg.modResults.contents, 'allprojects', '        ');
+      if (!res.found) {
+        res = injectMediationReposIntoBlock(cfg.modResults.contents, 'dependencyResolutionManagement', '            ');
+      }
+      if (res.found) {
+        cfg.modResults.contents = res.contents;
+        state.injected = true;
+        console.log(res.changed
+          ? '[withAndroidConfig] ✓ Mediation Maven repos injected into root build.gradle'
+          : '[withAndroidConfig] ✓ Mediation Maven repos already present in root build.gradle');
       }
     }
-
-    cfg.modResults.contents = content;
+    failIfBothCheckedAndEmpty();
     return cfg;
   });
+
+  // Pass B — settings.gradle: newer templates' dependencyResolutionManagement block.
+  // No-op on Expo 54 (repos already injected in Pass A). Order-independent throw.
+  config = withSettingsGradle(config, (cfg) => {
+    state.settingsGradleRan = true;
+    if (!state.injected) {
+      const res = injectMediationReposIntoBlock(cfg.modResults.contents, 'dependencyResolutionManagement', '            ');
+      if (res.found) {
+        cfg.modResults.contents = res.contents;
+        state.injected = true;
+        console.log(res.changed
+          ? '[withAndroidConfig] ✓ Mediation Maven repos injected into settings.gradle dependencyResolutionManagement { repositories }'
+          : '[withAndroidConfig] ✓ Mediation Maven repos already present in settings.gradle');
+      }
+    }
+    failIfBothCheckedAndEmpty();
+    return cfg;
+  });
+
+  return config;
 }
 
 /* ─── 3c. AndroidManifest — ironSource hardware acceleration ─────────────────── */
@@ -453,3 +566,9 @@ module.exports = function withAndroidConfig(config) {
 
   return config;
 };
+
+/* ─── Exported pure transforms (for verification harness / unit tests) ───────── */
+module.exports.injectMediationDependencies   = injectMediationDependencies;
+module.exports.injectMediationReposIntoBlock = injectMediationReposIntoBlock;
+module.exports.MEDIATION_ADAPTERS            = MEDIATION_ADAPTERS;
+module.exports.EXTRA_MAVEN_REPOS             = EXTRA_MAVEN_REPOS;
