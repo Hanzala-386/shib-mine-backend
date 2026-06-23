@@ -1,0 +1,21 @@
+Hey Replit Agent, 
+
+Listen to me very carefully. This is a live production app with 1.5 Million daily requests, and we are experiencing massive revenue loss. Our AdMob Waterfall has been completely failing for 2 months, showing "No ad config" and "Adapter not found" on live production builds (.aab/APKs). 
+
+I do not want generic answers saying "the code looks fine." If it was fine, it would have worked over the last 2 months with millions of requests. We are going to audit the exact programmatic injection of your custom Expo config plugin (`plugins/withAndroidConfig.js`). 
+
+Answer the following technical questions immediately by checking the absolute source code:
+
+1. THE CONFIG PLUGIN INJECTION FAULT:
+Since this is a managed Expo project, how exactly is `plugins/withAndroidConfig.js` registered inside `app.json` or `app.config.js`? If the plugin is not properly arrayed inside the "plugins" field of `app.json`, Expo completely ignores it during cloud/local builds, meaning the mediation adapters never get injected into the final build. Prove to me with code snippets exactly where this plugin is linked in `app.json`.
+
+2. THE APP-LEVEL BUILD.GRADLE MODIFICATION LOGIC:
+In `plugins/withAndroidConfig.js`, show me the exact Regular Expression (RegExp) or string replacement code you are using to inject `com.google.ads.mediation:unity`, `inmobi`, and `applovin` into the generated `android/app/build.gradle`. If your RegExp pattern fails to match the dynamic structure of the Expo-generated gradle file, the string replacement silently fails without throwing a build error. Paste the exact lines of code doing this injection.
+
+3. RENDER THE INITIALIZATION CODE:
+Where inside the React Native JavaScript/TypeScript codebase are you initializing the AdMob SDK, and are you initializing the third-party SDKs? Paste the exact code snippet showing `mobileAds().initialize()`. Are we waiting for this initialization Promise to completely resolve before triggering `RewardedAd.createForAdRequest()`?
+
+4. THE PROD VERSION VS AD UNIT MATCH:
+Are the AdMob Ad Unit IDs used inside the live application exactly matching the Mediation Group mapping configured on the AdMob Dashboard? 
+
+Do a deep line-by-line debugging session of `plugins/withAndroidConfig.js` right now and locate why the native compilation is failing to link the adapters correctly. Provide the exact code blocks.
