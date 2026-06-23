@@ -78,45 +78,72 @@ function withGradleWrapper(config) {
 //   6. InMobi                 — emerging markets / high fill rate
 //   7. Digital Turbine (DT)   — performance advertising / programmatic
 //
+// ─────────────────────────────────────────────────────────────────────────────
+// VERSION POLICY — Google Mobile Ads SDK 25 compatibility (verified June 2026)
+// ─────────────────────────────────────────────────────────────────────────────
+// react-native-google-mobile-ads@16.2.1 bundles GMA SDK (play-services-ads) 25.x.
+// Adapters pinned for GMA 23.x fail to initialize against GMA 25 ("Adapter not
+// found" / no fill) — this was the 2-month mediation outage. Every version below
+// was confirmed against Google's Maven repo: each adapter POM declares a
+// play-services-ads 25.x dependency, and every underlying network SDK resolves
+// from Maven Central (already present in Expo's allprojects {} repositories).
+//
+//   Network      Adapter                                   GMA dep   Underlying SDK
+//   Unity        com.google.ads.mediation:unity:4.18.1.0   25.3.0    com.unity3d.ads:unity-ads:4.18.1
+//   AppLovin     com.google.ads.mediation:applovin:13.6.2.0 25.1.0   com.applovin:applovin-sdk:13.6.2
+//   Meta         com.google.ads.mediation:facebook:6.21.0.3 25.2.0   com.facebook.android:audience-network-sdk:6.21.0
+//   ironSource   com.google.ads.mediation:ironsource:9.4.2.0 25.2.0  com.unity3d.ads-mediation:mediation-sdk:9.4.2
+//   InMobi       com.google.ads.mediation:inmobi:11.3.0.0  25.2.0    com.inmobi.monetization:inmobi-ads-kotlin:11.3.0
+//   Digital Turbine com.google.ads.mediation:fyber:8.4.5.0 25.2.0    com.fyber:marketplace-sdk:8.4.5
+//
 const MEDIATION_ADAPTERS = [
   // ── Unity Ads ─────────────────────────────────────────────────────────────
+  // GMA-25 compatible (adapter 4.18.1.0 → play-services-ads 25.3.0).
+  // The Unity adapter POM explicitly states "This build does not contain the
+  // UnityAds SDK", so the unity-ads SDK MUST be pinned explicitly or Unity never
+  // fills. (It was missing from the old GMA-23 config.)
   "    // AdMob mediation — Unity Ads",
-  "    implementation 'com.google.ads.mediation:unity:4.13.0.0'",
+  "    implementation 'com.unity3d.ads:unity-ads:4.18.1'",
+  "    implementation 'com.google.ads.mediation:unity:4.18.1.0'",
 
   // ── AppLovin MAX ──────────────────────────────────────────────────────────
+  // GMA-25 compatible (adapter 13.6.2.0 → play-services-ads 25.1.0).
   "    // AdMob mediation — AppLovin MAX (account pending; adapter pre-bundled)",
-  "    implementation 'com.applovin:applovin-sdk:13.0.1'",
-  "    implementation 'com.google.ads.mediation:applovin:13.0.1.0'",
+  "    implementation 'com.applovin:applovin-sdk:13.6.2'",
+  "    implementation 'com.google.ads.mediation:applovin:13.6.2.0'",
 
   // ── Meta Audience Network ─────────────────────────────────────────────────
-  // Most stable adapter with broadest advertiser demand. Chosen over Mintegral
-  // for first integration due to mature SDK + certified GMA 23.x support.
+  // GMA-25 compatible (adapter 6.21.0.3 → play-services-ads 25.2.0).
   "    // AdMob mediation — Meta Audience Network",
-  "    implementation 'com.facebook.android:audience-network-sdk:6.18.0'",
-  "    implementation 'com.google.ads.mediation:facebook:6.18.0.0'",
+  "    implementation 'com.facebook.android:audience-network-sdk:6.21.0'",
+  "    implementation 'com.google.ads.mediation:facebook:6.21.0.3'",
 
   // ── ironSource / LevelPlay ────────────────────────────────────────────────
-  // Critical for gaming setups — one of the highest fill rates for rewarded/
-  // interstitial ads in mobile games. Rebranded from ironSource to LevelPlay
-  // but Maven artifact remains 'ironsource'. Requires hardware acceleration
-  // (added in withIronSourceManifest below).
+  // GMA-25 compatible (adapter 9.4.2.0 → play-services-ads 25.2.0).
+  // Post-Unity-acquisition the underlying SDK artifact moved
+  //   com.ironsource.sdk:mediationsdk → com.unity3d.ads-mediation:mediation-sdk
+  // and now resolves from Maven Central (NOT android-sdk.is.com, which 404s the
+  // new coordinate). Requires hardware acceleration (withIronSourceManifest below).
   "    // AdMob mediation — ironSource (LevelPlay)",
-  "    implementation 'com.ironsource.sdk:mediationsdk:8.6.0'",
-  "    implementation 'com.google.ads.mediation:ironsource:8.6.0.0'",
+  "    implementation 'com.unity3d.ads-mediation:mediation-sdk:9.4.2'",
+  "    implementation 'com.google.ads.mediation:ironsource:9.4.2.0'",
 
   // ── InMobi ────────────────────────────────────────────────────────────────
-  // Strong in South/Southeast Asia and emerging markets — ideal for SHIB's
-  // global user base. Fully integrated; activate in AdMob dashboard when ready.
+  // GMA-25 compatible (adapter 11.3.0.0 → play-services-ads 25.2.0).
   "    // AdMob mediation — InMobi",
-  "    implementation 'com.inmobi.monetization:inmobi-ads-kotlin:10.7.8'",
-  "    implementation 'com.google.ads.mediation:inmobi:10.7.8.0'",
+  "    implementation 'com.inmobi.monetization:inmobi-ads-kotlin:11.3.0'",
+  "    implementation 'com.google.ads.mediation:inmobi:11.3.0.0'",
 
   // ── Digital Turbine (DT Exchange) ─────────────────────────────────────────
-  // AdColony was acquired by Digital Turbine; the DT Exchange SDK fully
-  // replaces it. Do NOT use the legacy 'adcolony' artifact — it is abandoned.
-  "    // AdMob mediation — Digital Turbine (DT Exchange, formerly AdColony)",
-  "    implementation 'com.digitalturbine:dtexchange:8.3.3'",
-  "    implementation 'com.google.ads.mediation:digitalturbine:8.3.3.0'",
+  // GMA-25 compatible (adapter 8.4.5.0 → play-services-ads 25.2.0).
+  // The Google adapter artifact is 'fyber' — 'digitalturbine' 404s on Google's
+  // Maven (it never existed; the old pin would have failed resolution regardless
+  // of GMA version). Underlying SDK com.fyber:marketplace-sdk resolves from Maven
+  // Central (also mirrored at fyber.jfrog.io). AdColony's legacy 'adcolony'
+  // artifact remains abandoned — do NOT use it.
+  "    // AdMob mediation — Digital Turbine (DT Exchange, formerly Fyber/AdColony)",
+  "    implementation 'com.fyber:marketplace-sdk:8.4.5'",
+  "    implementation 'com.google.ads.mediation:fyber:8.4.5.0'",
 ];
 
 /* ─── Idempotency markers (so re-running prebuild never double-injects) ──────── */
@@ -170,25 +197,30 @@ function withAdMediationAdapters(config) {
   });
 }
 
-/* ─── 3b. Root build.gradle — add Maven repos for networks not on Maven Central ─ */
+/* ─── 3b. Root build.gradle — legacy network Maven repos (now vestigial) ──────── */
 //
-// ironSource publishes its SDK at https://android-sdk.is.com/
-// Digital Turbine (DT Exchange) publishes at their JFrog instance.
-// Meta (facebook) and InMobi are on Maven Central — no extra repo needed.
-// Unity is on Maven Central — no extra repo needed.
-// AppLovin's adapter is on Maven Central — no extra repo needed.
+// IMPORTANT (verified June 2026): after the LevelPlay (Unity) and DT Exchange
+// (Fyber) rebrands, ALL six networks' underlying SDKs resolve from Maven Central,
+// which Expo's allprojects {} block already contains:
+//   • ironSource  → com.unity3d.ads-mediation:mediation-sdk  (Maven Central;
+//                    the old android-sdk.is.com endpoint 404s this new coordinate)
+//   • DT Exchange → com.fyber:marketplace-sdk                (Maven Central; also
+//                    mirrored at fyber.jfrog.io)
+//   • Unity / Meta / InMobi / AppLovin → Maven Central
+// So these two custom repos are no longer REQUIRED for any current dependency —
+// they are kept only as harmless belt-and-suspenders fallbacks (Gradle falls
+// through a 404 to mavenCentral()). They can be removed safely in a future
+// cleanup; left in place here to keep this revenue-restoring change minimal.
 //
-// The patch targets the `allprojects { repositories { ... } }` block that
-// the Expo-generated root build.gradle always contains.  If the repo URL is
-// already present the function is a no-op (idempotent).
+// The patch targets the `allprojects { repositories { ... } }` block that the
+// Expo-generated root build.gradle always contains. If a repo URL is already
+// present the function is a no-op (idempotent).
 //
 const EXTRA_MAVEN_REPOS = [
-  // ironSource / LevelPlay — NOT on Maven Central, needs its own endpoint
+  // ironSource / LevelPlay legacy endpoint — vestigial (SDK now on Maven Central)
   { marker: 'android-sdk.is.com', line: "maven { url 'https://android-sdk.is.com/' }" },
-  // Digital Turbine (DT Exchange) — NOT on Maven Central, needs its JFrog endpoint
+  // Digital Turbine (DT Exchange) legacy endpoint — vestigial (SDK now on Maven Central)
   { marker: 'fyber.jfrog.io',     line: "maven { url 'https://fyber.jfrog.io/artifactory/inner-active-android-sdk-local' }" },
-  // NOTE: Unity Ads, InMobi, AppLovin MAX and Meta adapters all resolve from
-  // mavenCentral() (already present in Expo's allprojects block) — no custom repo needed.
 ];
 
 /**

@@ -20,6 +20,19 @@ So regex/brace injection targeting `allprojects…repositories` + top-level `dep
 ## android/ is gitignored and absent
 `.gitignore` lists `android/`; there is no committed android/. ⇒ `expo prebuild` / EAS regenerates it fresh every build, so registered config plugins always run. A stale committed android/ bypassing the plugin is **not** a failure mode for this project; there is nothing to "clear".
 
+## How to confirm an adapter is GMA-25 (or any GMA-major) compatible — the authoritative check
+Do NOT trust the mediation docs page or guess from the 4-part version. Read each adapter's POM straight from Google Maven and look at its declared `play-services-ads` dependency:
+- Versions list: `https://dl.google.com/dl/android/maven2/com/google/ads/mediation/<artifact>/maven-metadata.xml`
+- POM: `…/<artifact>/<ver>/<artifact>-<ver>.pom` → grep `play-services-ads` (its version = the GMA major the adapter targets) AND the underlying network-SDK dep (groupId:artifactId:version).
+- Full artifact-name list under the group: `…/com/google/ads/mediation/group-index.xml` (use this to catch renamed/removed adapters).
+- Pin BOTH the `com.google.ads.mediation:*` adapter AND the exact underlying SDK version the POM declares; verify the underlying SDK actually resolves (curl the repo, expect 200) before pinning.
+
+## Adapter / SDK rebrands that bite (coordinates change, not just versions)
+- **Digital Turbine / DT Exchange**: the Google adapter is `com.google.ads.mediation:fyber` — `…:digitalturbine` 404s (never existed). Underlying SDK is `com.fyber:marketplace-sdk` (on Maven Central; also mirrored fyber.jfrog.io). Legacy `adcolony` is abandoned.
+- **ironSource → LevelPlay (Unity acquisition)**: underlying SDK moved `com.ironsource.sdk:mediationsdk` → `com.unity3d.ads-mediation:mediation-sdk`, now on **Maven Central** (the old `android-sdk.is.com` repo 404s the new coordinate). The Google adapter artifact is still `com.google.ads.mediation:ironsource`.
+- **Unity Ads**: the adapter POM says *"This build does not contain the UnityAds SDK"* — it does NOT pull `com.unity3d.ads:unity-ads` transitively, so the SDK must be pinned explicitly or Unity silently never fills.
+- Net effect circa 2026: all these underlying SDKs resolve from Maven Central, so the custom `android-sdk.is.com` / `fyber.jfrog.io` repos became vestigial fallbacks (harmless; Gradle falls through 404 to mavenCentral).
+
 ## Verifying a prebuild config plugin when the CLI is blocked
 The main-agent sandbox blocks `expo prebuild` (the CLI touches `.git` → destructive-git guard; a stale `.git/index.lock` may also block it). Verify without the CLI:
 - Export the plugin's pure string transforms as properties on `module.exports` (keep the default export a function so config-plugins still loads it) and unit-test them.
