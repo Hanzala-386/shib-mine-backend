@@ -4,12 +4,7 @@ const path = require("path");
 const config = getDefaultConfig(__dirname);
 
 /**
- * 1. react-native-google-mobile-ads stubs for web:
- *    The SDK imports React Native internals (codegenNativeComponent) that crash
- *    the web bundler. On web we return a no-op stub so the web build succeeds.
- *    Real ads only run on native (via the try-catch in AdContext / nativeAds).
- *
- * 2. @firebase/auth/react-native fix:
+ * 1. @firebase/auth/react-native fix:
  *    Firebase v12 removed the "./react-native" subpath from its package.json
  *    exports map. Metro warns and falls back to file-based resolution, which
  *    also fails because no react-native.js exists at the package root.
@@ -38,14 +33,6 @@ config.resolver.blockList = [
 const originalResolveRequest = config.resolver.resolveRequest;
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {
-  /* ── Web stub for Google Mobile Ads ── */
-  if (platform === "web" && moduleName === "react-native-google-mobile-ads") {
-    return {
-      filePath: path.resolve(__dirname, "lib/googleMobileAdsStub.ts"),
-      type: "sourceFile",
-    };
-  }
-
   /* ── Web stub for AsyncStorage ── */
   /* On web the package's merge-options dep exports undefined, crashing on
      .bind(). Redirect to a localStorage-backed shim for web previews.     */

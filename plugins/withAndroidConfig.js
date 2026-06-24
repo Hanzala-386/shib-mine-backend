@@ -60,7 +60,7 @@ const fs   = require('fs');
  * react-native-google-mobile-ads first — GMA 25.x cannot coexist with Yodo1's
  * bundled play-services-ads.)
  */
-const YODO1_ENABLED = false;
+const YODO1_ENABLED = true;
 
 /* ─── 1. Root build.gradle — pin AGP to 8.10.2 (supports compileSdk 36) ─────── */
 function withAgpVersion(config) {
