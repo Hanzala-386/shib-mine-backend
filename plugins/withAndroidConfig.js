@@ -38,6 +38,7 @@ const {
   withSettingsGradle,
   withGradleProperties,
   withDangerousMod,
+  withAndroidManifest,
 } = require('@expo/config-plugins');
 const path = require('path');
 const fs   = require('fs');
@@ -513,6 +514,33 @@ function withAdiRegistration(config) {
   ]);
 }
 
+/* ─── 9. AdMob App ID in AndroidManifest.xml ─────────────────────────────────── */
+const ADMOB_APP_ID = 'ca-app-pub-5784311004955543~3992313953';
+
+function withAdMobManifest(config) {
+  return withAndroidManifest(config, (cfg) => {
+    const manifest = cfg.modResults;
+    if (!manifest.manifest || !manifest.manifest.application) return cfg;
+    const app = manifest.manifest.application[0];
+    if (!app['meta-data']) app['meta-data'] = [];
+    const existing = app['meta-data'].find(
+      (m) => m.$ && m.$['android:name'] === 'com.google.android.gms.ads.APPLICATION_ID'
+    );
+    if (existing) {
+      existing.$['android:value'] = ADMOB_APP_ID;
+    } else {
+      app['meta-data'].push({
+        $: {
+          'android:name': 'com.google.android.gms.ads.APPLICATION_ID',
+          'android:value': ADMOB_APP_ID,
+        },
+      });
+    }
+    console.log('[withAndroidConfig] AdMob App ID written to AndroidManifest.xml');
+    return cfg;
+  });
+}
+
 /* ─── Compose all patches and export ─────────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   // Build system
@@ -531,6 +559,9 @@ module.exports = function withAndroidConfig(config) {
   // Yodo1 MAS — always writes the `yodo1Enabled` marker; the pipeline-altering
   // AndroidX/dexing flags are written only when YODO1_ENABLED (Phase 2).
   config = withYodo1GradleProperties(config);
+
+  // AdMob App ID for Yodo1 MAS bundled AdMob
+  config = withAdMobManifest(config);
 
   // App assets / Google Play ownership registration
   config = withAdiRegistration(config);
