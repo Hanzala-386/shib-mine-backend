@@ -5,6 +5,8 @@ description: Why the mediation waterfall really fails, plus the Expo-54 gradle f
 
 # AdMob mediation config plugin (Android)
 
+> **SUPERSEDED** — the AdMob mediation injection described here was removed when the Android ad stack began migrating to Yodo1 MAS (see `yodo1-migration.md`). The Expo-54 gradle ground-truth and the "verify a prebuild plugin without the CLI" technique below are still accurate and reusable.
+
 ## Real likely cause of the long-standing "No ad config / Adapter not found"
 **Version drift, not the gradle injection.** `react-native-google-mobile-ads` bundles a GMA (play-services-ads) SDK version on Android (read it from `react-native-google-mobile-ads/package.json` → `sdkVersions.android.googleMobileAds`); when it jumped to GMA 25.x while the mediation adapters were still pinned at versions certified for GMA 23.x, adapters can be runtime-incompatible. Also, "No ad config" is AdMob's **server-side** message for an ad unit / mediation group not set up in the dashboard — also unrelated to gradle.
 **Before blaming the plugin:** (1) check adapter ↔ GMA-major compatibility on Google's mediation versions page and bump the 4-part adapter versions to match the bundled GMA major; (2) verify the AdMob dashboard mediation groups. Do NOT guess adapter version numbers — confirm them from Google's page first.

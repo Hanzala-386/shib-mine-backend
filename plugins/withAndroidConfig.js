@@ -3,24 +3,64 @@
  *
  * Expo Config Plugin — patches generated Android files on every `npx expo prebuild`.
  *
- *  1. AGP version     — Pins to 8.10.2 (required for compileSdk 36 / Gradle 8.13)
- *  2. Gradle wrapper  — Updates to Gradle 8.13 (required for compileSdk 35/36 on EAS)
- *  3. Ad adapters     — Adds Unity Ads + AppLovin mediation adapter deps
- *  4. NDK version     — Pins to 26.1.10909125 (stable LTS for RN 0.81)
- *  5. C++ config      — Sets -DANDROID_STL=c++_shared + cppFlags "-std=c++17" in cmake
- *                       Fixes "operator delete(void*)" and "no member named 'format'"
- *                       caused by NDK 27 defaulting to C++20 headers.
+ *  1. AGP version       — Pins to 8.10.2 (required for compileSdk 36 / Gradle 8.13)
+ *  2. Gradle wrapper    — Updates to Gradle 8.13 (required for compileSdk 35/36 on EAS)
+ *  3. Yodo1 MAS repos   — Adds the 7 mediation-network Maven repositories Yodo1 needs,
+ *                         injected AFTER google()/mavenCentral() so they are queried
+ *                         last-resort only (no latency hit on the bulk of deps).
+ *  4. gradle.properties — useAndroidX / enableJetifier / enableDexingArtifactTransform
+ *                         + the dormant `yodo1Enabled` master toggle (default false).
+ *  5. NDK version       — Pins to 26.1.10909125 (stable LTS for RN 0.81)
+ *  6. C++ config        — Sets -DANDROID_STL=c++_shared + cppFlags "-std=c++17" in cmake
+ *  7. subprojects sdk   — Forces compileSdk 35 on any third-party module below it
+ *  8. ADI registration  — Writes adi-registration.properties into native assets
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * YODO1 MAS MIGRATION — PHASE 1 (DORMANT FOUNDATION)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The old AdMob-mediation injection (Unity / AppLovin / Meta / ironSource /
+ * InMobi / Digital Turbine adapter pins, their extra repos, the ironSource
+ * hardware-acceleration manifest patch and the InMobi location permissions) has
+ * been REMOVED — Yodo1 MAS Full SDK bundles those networks internally.
+ *
+ * This phase only lays prebuild-safe infrastructure: the Maven repos + the
+ * gradle.properties flags. The actual Yodo1 SDK dependencies live in the local
+ * Expo module `modules/yodo1-mas/android/build.gradle`, gated behind the
+ * `yodo1Enabled` gradle property (default false set here). While false the module
+ * compiles a no-op stub and pulls ZERO Yodo1 deps, so the current
+ * react-native-google-mobile-ads (.aab) build keeps working unchanged. Phase 2
+ * flips `yodo1Enabled` → true (and removes react-native-google-mobile-ads).
  */
 
 const {
   withProjectBuildGradle,
   withAppBuildGradle,
   withSettingsGradle,
-  withAndroidManifest,
+  withGradleProperties,
   withDangerousMod,
 } = require('@expo/config-plugins');
 const path = require('path');
 const fs   = require('fs');
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * YODO1 PHASE TOGGLE — the single source of truth for the migration phase.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Phase 1 (current) = false → TRULY DORMANT. None of the Yodo1 build-environment
+ * changes are applied: the vendor Maven repos are NOT injected and the
+ * AndroidX/dexing gradle.properties are NOT written, so the current
+ * react-native-google-mobile-ads (.aab) build pipeline is byte-for-byte
+ * untouched. The only thing written is the `yodo1Enabled=false` marker property,
+ * which nothing consumes while false (the modules/yodo1-mas Gradle gate compiles
+ * its no-op stub and pulls zero Yodo1 deps).
+ *
+ * Phase 2 = flip to true → this one switch (a) injects the 7 Yodo1 vendor Maven
+ * repos, (b) writes the Yodo1/AndroidX/dexing gradle.properties, and (c) writes
+ * `yodo1Enabled=true`, which makes modules/yodo1-mas/android/build.gradle compile
+ * the real bridge + pull the Yodo1 MAS SDK. (Phase 2 must also remove
+ * react-native-google-mobile-ads first — GMA 25.x cannot coexist with Yodo1's
+ * bundled play-services-ads.)
+ */
+const YODO1_ENABLED = false;
 
 /* ─── 1. Root build.gradle — pin AGP to 8.10.2 (supports compileSdk 36) ─────── */
 function withAgpVersion(config) {
@@ -37,7 +77,7 @@ function withAgpVersion(config) {
   });
 }
 
-/* ─── 2. gradle-wrapper.properties — pin Gradle to 8.11.1 ───────────────────── */
+/* ─── 2. gradle-wrapper.properties — pin Gradle to 8.13 ─────────────────────── */
 function withGradleWrapper(config) {
   return withDangerousMod(config, [
     'android',
@@ -64,174 +104,45 @@ function withGradleWrapper(config) {
   ]);
 }
 
-/* ─── 3. app/build.gradle — add AdMob mediation adapters ────────────────────── */
+/* ─── 3. Yodo1 MAS — mediation-network Maven repositories ────────────────────── */
 //
-// All adapter versions below are certified against Google Mobile Ads SDK 23.x
-// (bundled by react-native-google-mobile-ads, 2025).
+// Yodo1 MAS Full SDK aggregates many ad networks (Pangle, ironSource, Mintegral,
+// BidMachine, YSO Network, PubMatic, Chartboost, …). Each network's SDK artifact
+// is hosted on its own vendor Maven repo — these are the exact URLs Yodo1's
+// integration guide requires.
 //
-// Waterfall priority (configure order in AdMob dashboard):
-//   1. Google AdMob
-//   2. Meta Audience Network  — broadest global demand / highest eCPM
-//   3. Unity Ads              — strongest in gaming demographics
-//   4. ironSource (LevelPlay) — excellent gaming + app fill rate
-//   5. AppLovin MAX           — account pending; adapter bundled for future activation
-//   6. InMobi                 — emerging markets / high fill rate
-//   7. Digital Turbine (DT)   — performance advertising / programmatic
+// IMPORTANT (latency / fragility): these vendor repos are injected AFTER
+// google()/mavenCentral() (see findReposInsertIndex) so Gradle only consults
+// them as a last resort. The bulk of the build's dependencies (React Native,
+// AndroidX, Expo, etc.) resolve from google()/mavenCentral() first and never hit
+// these slower vendor endpoints. In Phase 1 no Yodo1 dependency is present at all
+// (the module stub pulls nothing), so these repos are declared-but-unused.
 //
-// ─────────────────────────────────────────────────────────────────────────────
-// VERSION POLICY — Google Mobile Ads SDK 25 compatibility (verified June 2026)
-// ─────────────────────────────────────────────────────────────────────────────
-// react-native-google-mobile-ads@16.2.1 bundles GMA SDK (play-services-ads) 25.x.
-// Adapters pinned for GMA 23.x fail to initialize against GMA 25 ("Adapter not
-// found" / no fill) — this was the 2-month mediation outage. Every version below
-// was confirmed against Google's Maven repo: each adapter POM declares a
-// play-services-ads 25.x dependency, and every underlying network SDK resolves
-// from Maven Central (already present in Expo's allprojects {} repositories).
-//
-//   Network      Adapter                                   GMA dep   Underlying SDK
-//   Unity        com.google.ads.mediation:unity:4.18.1.0   25.3.0    com.unity3d.ads:unity-ads:4.18.1
-//   AppLovin     com.google.ads.mediation:applovin:13.6.2.0 25.1.0   com.applovin:applovin-sdk:13.6.2
-//   Meta         com.google.ads.mediation:facebook:6.21.0.3 25.2.0   com.facebook.android:audience-network-sdk:6.21.0
-//   ironSource   com.google.ads.mediation:ironsource:9.4.2.0 25.2.0  com.unity3d.ads-mediation:mediation-sdk:9.4.2
-//   InMobi       com.google.ads.mediation:inmobi:11.3.0.0  25.2.0    com.inmobi.monetization:inmobi-ads-kotlin:11.3.0
-//   Digital Turbine com.google.ads.mediation:fyber:8.4.5.0 25.2.0    com.fyber:marketplace-sdk:8.4.5
-//
-const MEDIATION_ADAPTERS = [
-  // ── Unity Ads ─────────────────────────────────────────────────────────────
-  // GMA-25 compatible (adapter 4.18.1.0 → play-services-ads 25.3.0).
-  // The Unity adapter POM explicitly states "This build does not contain the
-  // UnityAds SDK", so the unity-ads SDK MUST be pinned explicitly or Unity never
-  // fills. (It was missing from the old GMA-23 config.)
-  "    // AdMob mediation — Unity Ads",
-  "    implementation 'com.unity3d.ads:unity-ads:4.18.1'",
-  "    implementation 'com.google.ads.mediation:unity:4.18.1.0'",
+const REPOS_MARKER_OPEN  = '// [yodo1-mas-repos] injected by withAndroidConfig.js — DO NOT EDIT';
+const REPOS_MARKER_CLOSE = '// [/yodo1-mas-repos]';
 
-  // ── AppLovin MAX ──────────────────────────────────────────────────────────
-  // GMA-25 compatible (adapter 13.6.2.0 → play-services-ads 25.1.0).
-  "    // AdMob mediation — AppLovin MAX (account pending; adapter pre-bundled)",
-  "    implementation 'com.applovin:applovin-sdk:13.6.2'",
-  "    implementation 'com.google.ads.mediation:applovin:13.6.2.0'",
-
-  // ── Meta Audience Network ─────────────────────────────────────────────────
-  // GMA-25 compatible (adapter 6.21.0.3 → play-services-ads 25.2.0).
-  "    // AdMob mediation — Meta Audience Network",
-  "    implementation 'com.facebook.android:audience-network-sdk:6.21.0'",
-  "    implementation 'com.google.ads.mediation:facebook:6.21.0.3'",
-
-  // ── ironSource / LevelPlay ────────────────────────────────────────────────
-  // GMA-25 compatible (adapter 9.4.2.0 → play-services-ads 25.2.0).
-  // Post-Unity-acquisition the underlying SDK artifact moved
-  //   com.ironsource.sdk:mediationsdk → com.unity3d.ads-mediation:mediation-sdk
-  // and now resolves from Maven Central (NOT android-sdk.is.com, which 404s the
-  // new coordinate). Requires hardware acceleration (withIronSourceManifest below).
-  "    // AdMob mediation — ironSource (LevelPlay)",
-  "    implementation 'com.unity3d.ads-mediation:mediation-sdk:9.4.2'",
-  "    implementation 'com.google.ads.mediation:ironsource:9.4.2.0'",
-
-  // ── InMobi ────────────────────────────────────────────────────────────────
-  // GMA-25 compatible (adapter 11.3.0.0 → play-services-ads 25.2.0).
-  "    // AdMob mediation — InMobi",
-  "    implementation 'com.inmobi.monetization:inmobi-ads-kotlin:11.3.0'",
-  "    implementation 'com.google.ads.mediation:inmobi:11.3.0.0'",
-
-  // ── Digital Turbine (DT Exchange) ─────────────────────────────────────────
-  // GMA-25 compatible (adapter 8.4.5.0 → play-services-ads 25.2.0).
-  // The Google adapter artifact is 'fyber' — 'digitalturbine' 404s on Google's
-  // Maven (it never existed; the old pin would have failed resolution regardless
-  // of GMA version). Underlying SDK com.fyber:marketplace-sdk resolves from Maven
-  // Central (also mirrored at fyber.jfrog.io). AdColony's legacy 'adcolony'
-  // artifact remains abandoned — do NOT use it.
-  "    // AdMob mediation — Digital Turbine (DT Exchange, formerly Fyber/AdColony)",
-  "    implementation 'com.fyber:marketplace-sdk:8.4.5'",
-  "    implementation 'com.google.ads.mediation:fyber:8.4.5.0'",
-];
-
-/* ─── Idempotency markers (so re-running prebuild never double-injects) ──────── */
-const ADAPTERS_MARKER_OPEN  = '// [shib-mediation-adapters] injected by withAndroidConfig.js — DO NOT EDIT';
-const ADAPTERS_MARKER_CLOSE = '// [/shib-mediation-adapters]';
-const REPOS_MARKER_OPEN     = '// [shib-mediation-repos] injected by withAndroidConfig.js — DO NOT EDIT';
-const REPOS_MARKER_CLOSE    = '// [/shib-mediation-repos]';
-
-/**
- * Pure transform (exported for tests): inject the mediation adapter
- * `implementation` lines into the top-level `dependencies { }` block of an
- * app/build.gradle file.
- *
- * Returns { contents, changed, alreadyPresent }.
- * THROWS (fail-loud) if no top-level `dependencies {` block exists — we refuse
- * to silently no-op and ship a build with a dead AdMob waterfall.
- */
-function injectMediationDependencies(contents) {
-  if (typeof contents !== 'string' || contents.trim() === '') {
-    throw new Error('[withAndroidConfig] FATAL: app/build.gradle is empty — cannot inject mediation adapters.');
-  }
-  if (contents.includes(ADAPTERS_MARKER_OPEN)) {
-    return { contents, changed: false, alreadyPresent: true };
-  }
-  // Anchor to a top-level (column-0) `dependencies {` so we never match a nested
-  // dependencies block (e.g. inside buildscript {}) or a commented-out line.
-  const depRe = /^dependencies[ \t]*\{[^\n]*$/m;
-  if (!depRe.test(contents)) {
-    throw new Error(
-      '[withAndroidConfig] FATAL: no top-level `dependencies {` block found in app/build.gradle. ' +
-      'Mediation adapters (Unity / InMobi / AppLovin / Meta / ironSource / Digital Turbine) were NOT ' +
-      'injected. Aborting prebuild instead of shipping a broken waterfall.'
-    );
-  }
-  const block = ['    ' + ADAPTERS_MARKER_OPEN, ...MEDIATION_ADAPTERS, '    ' + ADAPTERS_MARKER_CLOSE].join('\n');
-  const out = contents.replace(depRe, (m) => `${m}\n${block}`);
-  return { contents: out, changed: true, alreadyPresent: false };
-}
-
-/* ─── 3. app/build.gradle — add AdMob mediation adapters (fail-loud) ─────────── */
-function withAdMediationAdapters(config) {
-  return withAppBuildGradle(config, (cfg) => {
-    const res = injectMediationDependencies(cfg.modResults.contents); // throws on no-match
-    cfg.modResults.contents = res.contents;
-    if (res.changed) {
-      console.log('[withAndroidConfig] ✓ AdMob mediation adapters injected into app/build.gradle dependencies {}');
-    } else if (res.alreadyPresent) {
-      console.log('[withAndroidConfig] ✓ AdMob mediation adapters already present — idempotent skip');
-    }
-    return cfg;
-  });
-}
-
-/* ─── 3b. Root build.gradle — legacy network Maven repos (now vestigial) ──────── */
-//
-// IMPORTANT (verified June 2026): after the LevelPlay (Unity) and DT Exchange
-// (Fyber) rebrands, ALL six networks' underlying SDKs resolve from Maven Central,
-// which Expo's allprojects {} block already contains:
-//   • ironSource  → com.unity3d.ads-mediation:mediation-sdk  (Maven Central;
-//                    the old android-sdk.is.com endpoint 404s this new coordinate)
-//   • DT Exchange → com.fyber:marketplace-sdk                (Maven Central; also
-//                    mirrored at fyber.jfrog.io)
-//   • Unity / Meta / InMobi / AppLovin → Maven Central
-// So these two custom repos are no longer REQUIRED for any current dependency —
-// they are kept only as harmless belt-and-suspenders fallbacks (Gradle falls
-// through a 404 to mavenCentral()). They can be removed safely in a future
-// cleanup; left in place here to keep this revenue-restoring change minimal.
-//
-// The patch targets the `allprojects { repositories { ... } }` block that the
-// Expo-generated root build.gradle always contains. If a repo URL is already
-// present the function is a no-op (idempotent).
-//
-const EXTRA_MAVEN_REPOS = [
-  // ironSource / LevelPlay legacy endpoint — vestigial (SDK now on Maven Central)
-  { marker: 'android-sdk.is.com', line: "maven { url 'https://android-sdk.is.com/' }" },
-  // Digital Turbine (DT Exchange) legacy endpoint — vestigial (SDK now on Maven Central)
-  { marker: 'fyber.jfrog.io',     line: "maven { url 'https://fyber.jfrog.io/artifactory/inner-active-android-sdk-local' }" },
+const YODO1_MAVEN_REPOS = [
+  { marker: 'artifact.bytedance.com',        line: 'maven { url "https://artifact.bytedance.com/repository/pangle" }' },
+  { marker: 'android-sdk.is.com',            line: 'maven { url "https://android-sdk.is.com" }' },
+  { marker: 'dl-maven-android.mintegral.com', line: 'maven { url "https://dl-maven-android.mintegral.com/repository/mbridge_android_sdk_oversea" }' },
+  { marker: 'artifactory.bidmachine.io',     line: 'maven { url "https://artifactory.bidmachine.io/bidmachine" }' },
+  { marker: 'ysonetwork.s3',                 line: 'maven { url "https://ysonetwork.s3.eu-west-3.amazonaws.com/sdk/android" }' },
+  { marker: 'repo.pubmatic.com',             line: 'maven { url "https://repo.pubmatic.com/artifactory/public-repos" }' },
+  { marker: 'bitbucket.org/sdkcenter',       line: 'maven { url "https://bitbucket.org/sdkcenter/sdkcenter/raw/release" }' },
 ];
 
 /**
- * Brace-aware locator (exported indirectly via injectMediationReposIntoBlock):
- * returns the string index immediately AFTER the `repositories {` opener that
- * lives INSIDE the `blockKeyword { … }` block, or -1 if the block (or its
- * repositories child) is absent.
+ * Brace-aware locator: returns the string index at which to insert the vendor
+ * repos INSIDE the `repositories { }` child of the `blockKeyword { … }` block.
  *
- * Brace-counting bounds the search to the block's own body, so we never match a
- * `repositories {` that sits OUTSIDE the target block — the hazard a lazy
- * `blockKeyword[\s\S]*?repositories {` regex had.
+ * Insertion point preference (to keep vendor repos last-resort):
+ *   1. immediately AFTER the last `mavenCentral()` call, else
+ *   2. immediately AFTER the last `google()` call, else
+ *   3. immediately after the `repositories {` opener.
+ *
+ * Returns -1 if the block (or its repositories child) is absent. Brace-counting
+ * bounds every search to the relevant block body so we never match a
+ * `repositories {` that sits OUTSIDE the target block.
  */
 function findReposInsertIndex(contents, blockKeyword) {
   const open = new RegExp(blockKeyword + '\\s*\\{');
@@ -247,23 +158,44 @@ function findReposInsertIndex(contents, blockKeyword) {
   }
   if (blockStart === -1 || blockEnd === -1) return -1;
 
-  // First `repositories {` strictly within the block body (note: `repositoriesMode`
-  // is not matched because it has no whitespace+`{` after `repositories`).
+  // First `repositories {` strictly within the block body.
   const body = contents.slice(blockStart, blockEnd);
   const rm = /repositories\s*\{/.exec(body);
   if (!rm) return -1;
-  return blockStart + rm.index + rm[0].length;
+
+  // Bound the search to the repositories child block body.
+  const repoOpenAbs = blockStart + rm.index + rm[0].length - 1; // index of its `{`
+  let d = 0, repoEndAbs = -1;
+  for (let i = repoOpenAbs; i < contents.length; i++) {
+    const ch = contents[i];
+    if (ch === '{') d++;
+    else if (ch === '}') { d--; if (d === 0) { repoEndAbs = i; break; } }
+  }
+  if (repoEndAbs === -1) return -1;
+
+  const repoBody = contents.slice(repoOpenAbs, repoEndAbs);
+
+  // Insert after the LAST mavenCentral() (preferred) or google() so the vendor
+  // repos are queried only after the standard repos.
+  for (const re of [/mavenCentral\s*\(\s*\)/g, /google\s*\(\s*\)/g]) {
+    let mm, last = -1;
+    while ((mm = re.exec(repoBody)) !== null) { last = mm.index + mm[0].length; }
+    if (last > -1) return repoOpenAbs + last;
+  }
+
+  // Fallback: right after the `repositories {` opener.
+  return repoOpenAbs + 1;
 }
 
 /**
- * Pure transform (exported for tests): inject EXTRA_MAVEN_REPOS right after the
- * `repositories {` opener INSIDE the `blockKeyword { … }` block, indenting each
+ * Pure transform (exported for tests): inject YODO1_MAVEN_REPOS after
+ * google()/mavenCentral() inside the `blockKeyword { … }` block, indenting each
  * line with `indent`.
  *
  * Returns { contents, changed, alreadyPresent, found }. Never throws — the caller
  * decides whether a missing block is fatal (so it can fall back to another file).
  */
-function injectMediationReposIntoBlock(contents, blockKeyword, indent) {
+function injectYodo1ReposIntoBlock(contents, blockKeyword, indent) {
   if (typeof contents !== 'string') {
     return { contents, changed: false, alreadyPresent: false, found: false };
   }
@@ -274,39 +206,37 @@ function injectMediationReposIntoBlock(contents, blockKeyword, indent) {
   if (insertAt < 0) return { contents, changed: false, alreadyPresent: false, found: false };
 
   const repoLines = [
+    '',
     indent + REPOS_MARKER_OPEN,
-    ...EXTRA_MAVEN_REPOS.map(r => indent + r.line),
+    ...YODO1_MAVEN_REPOS.map(r => indent + r.line),
     indent + REPOS_MARKER_CLOSE,
   ].join('\n');
 
-  const out = contents.slice(0, insertAt) + '\n' + repoLines + contents.slice(insertAt);
+  const out = contents.slice(0, insertAt) + repoLines + contents.slice(insertAt);
   return { contents: out, changed: true, alreadyPresent: false, found: true };
 }
 
-/* ─── 3b. Maven repos — fail-loud, version-proof injection ───────────────────── */
+/* ─── 3. Maven repos — fail-loud, version-proof injection ────────────────────── */
 //
 // Repositories can live in different files depending on the RN/Expo version:
 //   • Expo 54:                 root build.gradle → allprojects { repositories { } }
 //   • newer bare-RN templates: settings.gradle   → dependencyResolutionManagement { repositories { } }
 //
-// Both passes run in-memory through modResults (a withDangerousMod guard is not an
-// option here: config-plugins runs dangerous mods BEFORE the gradle files are
-// flushed to disk, so it would read stale content). The fail-loud throw is
+// Both passes run in-memory through modResults. The fail-loud throw is
 // ORDER-INDEPENDENT — each pass records that it ran, and whichever pass runs LAST
-// throws iff BOTH files were inspected and nothing was injected anywhere. This
-// avoids the previous bug where a throw in the build.gradle pass killed the chain
-// before the settings.gradle fallback could run.
-function withMediationRepositories(config) {
+// throws iff BOTH files were inspected and nothing was injected anywhere.
+//
+function withYodo1Repositories(config) {
   const state = { injected: false, buildGradleRan: false, settingsGradleRan: false };
 
   const failIfBothCheckedAndEmpty = () => {
     if (state.buildGradleRan && state.settingsGradleRan && !state.injected) {
       throw new Error(
-        '[withAndroidConfig] FATAL: could not inject the mediation Maven repositories — no ' +
+        '[withAndroidConfig] FATAL: could not inject the Yodo1 MAS Maven repositories — no ' +
         '`allprojects { repositories { … } }` (root build.gradle) or ' +
-        '`dependencyResolutionManagement { repositories { … } }` (build.gradle / settings.gradle) ' +
-        'block was found in either file. The ironSource + Digital Turbine adapters would fail to ' +
-        'resolve at build time, so the mediation waterfall would be silently broken. Aborting prebuild.'
+        '`dependencyResolutionManagement { repositories { … } }` (settings.gradle) block was ' +
+        'found in either file. Yodo1 mediation-network SDKs would fail to resolve at build time. ' +
+        'Aborting prebuild.'
       );
     }
   };
@@ -316,16 +246,16 @@ function withMediationRepositories(config) {
   config = withProjectBuildGradle(config, (cfg) => {
     state.buildGradleRan = true;
     if (!state.injected) {
-      let res = injectMediationReposIntoBlock(cfg.modResults.contents, 'allprojects', '        ');
+      let res = injectYodo1ReposIntoBlock(cfg.modResults.contents, 'allprojects', '        ');
       if (!res.found) {
-        res = injectMediationReposIntoBlock(cfg.modResults.contents, 'dependencyResolutionManagement', '            ');
+        res = injectYodo1ReposIntoBlock(cfg.modResults.contents, 'dependencyResolutionManagement', '            ');
       }
       if (res.found) {
         cfg.modResults.contents = res.contents;
         state.injected = true;
         console.log(res.changed
-          ? '[withAndroidConfig] ✓ Mediation Maven repos injected into root build.gradle'
-          : '[withAndroidConfig] ✓ Mediation Maven repos already present in root build.gradle');
+          ? '[withAndroidConfig] ✓ Yodo1 MAS Maven repos injected into root build.gradle (after mavenCentral)'
+          : '[withAndroidConfig] ✓ Yodo1 MAS Maven repos already present in root build.gradle');
       }
     }
     failIfBothCheckedAndEmpty();
@@ -337,13 +267,13 @@ function withMediationRepositories(config) {
   config = withSettingsGradle(config, (cfg) => {
     state.settingsGradleRan = true;
     if (!state.injected) {
-      const res = injectMediationReposIntoBlock(cfg.modResults.contents, 'dependencyResolutionManagement', '            ');
+      const res = injectYodo1ReposIntoBlock(cfg.modResults.contents, 'dependencyResolutionManagement', '            ');
       if (res.found) {
         cfg.modResults.contents = res.contents;
         state.injected = true;
         console.log(res.changed
-          ? '[withAndroidConfig] ✓ Mediation Maven repos injected into settings.gradle dependencyResolutionManagement { repositories }'
-          : '[withAndroidConfig] ✓ Mediation Maven repos already present in settings.gradle');
+          ? '[withAndroidConfig] ✓ Yodo1 MAS Maven repos injected into settings.gradle dependencyResolutionManagement { repositories }'
+          : '[withAndroidConfig] ✓ Yodo1 MAS Maven repos already present in settings.gradle');
       }
     }
     failIfBothCheckedAndEmpty();
@@ -353,54 +283,62 @@ function withMediationRepositories(config) {
   return config;
 }
 
-/* ─── 3c. AndroidManifest — ironSource hardware acceleration ─────────────────── */
+/* ─── 4. gradle.properties — Yodo1 / AndroidX flags + dormant toggle ─────────── */
 //
-// ironSource's SDK renders video ads using a SurfaceView / TextureView that
-// requires hardware acceleration at the application level.  React Native sets
-// android:hardwareAccelerated="true" on the <application> tag by default, but
-// this mod ensures it explicitly even if a downstream merge manifest overrides it.
+// Yodo1 MAS + its bundled networks (and the Jetifier-dependent legacy SDKs they
+// pull) require these flags. `enableDexingArtifactTransform=false` is Yodo1's
+// documented workaround for multidex/dexing conflicts with some adapter SDKs.
 //
-function withIronSourceManifest(config) {
-  return withAndroidManifest(config, (mod) => {
-    const app = mod.modResults.manifest.application?.[0];
-    if (!app) return mod;
+// These three flags ALTER THE CURRENT BUILD PIPELINE (Jetifier rewriting + dexing
+// transform behaviour) even when no Yodo1 dependency is present, so they are
+// applied ONLY in Phase 2 (YODO1_ENABLED=true) to keep Phase 1 truly dormant.
+// `enableDexingArtifactTransform=false` is Yodo1's documented workaround for
+// multidex/dexing conflicts with some bundled adapter SDKs.
+//
+const YODO1_GRADLE_PROPERTIES = [
+  { key: 'android.useAndroidX',                  value: 'true'  },
+  { key: 'android.enableJetifier',               value: 'true'  },
+  { key: 'android.enableDexingArtifactTransform', value: 'false' },
+];
 
-    // Ensure hardware acceleration is set on <application>
-    if (!app.$) app.$ = {};
-    app.$['android:hardwareAccelerated'] = 'true';
+/**
+ * Pure transform (exported for tests): idempotently set/overwrite the Yodo1
+ * gradle.properties on an `expo-build-properties`-style PropertiesItem[].
+ *
+ * Always writes the dormant master marker `yodo1Enabled` (mirroring `enabled`).
+ * The pipeline-altering AndroidX/dexing flags are written ONLY when `enabled` is
+ * true (Phase 2), so Phase 1 leaves the existing build pipeline untouched.
+ */
+function applyYodo1GradleProperties(items, enabled = YODO1_ENABLED) {
+  const props = Array.isArray(items) ? items : [];
+  const upsert = (key, value) => {
+    const existing = props.find((i) => i && i.type === 'property' && i.key === key);
+    if (existing) existing.value = value;
+    else props.push({ type: 'property', key, value });
+  };
 
-    return mod;
+  // Master toggle marker — always present, consumed by modules/yodo1-mas build.gradle.
+  upsert('yodo1Enabled', String(enabled));
+
+  // Build-pipeline flags — Phase 2 only.
+  if (enabled) {
+    YODO1_GRADLE_PROPERTIES.forEach(({ key, value }) => upsert(key, value));
+  }
+  return props;
+}
+
+function withYodo1GradleProperties(config) {
+  return withGradleProperties(config, (cfg) => {
+    cfg.modResults = applyYodo1GradleProperties(cfg.modResults, YODO1_ENABLED);
+    console.log(
+      `[withAndroidConfig] ✓ Yodo1 gradle.properties applied (yodo1Enabled=${YODO1_ENABLED}` +
+      (YODO1_ENABLED ? ')' : ' — dormant; AndroidX/dexing flags deferred to Phase 2)')
+    );
+    return cfg;
   });
 }
 
-/* ─── 3d. AndroidManifest — InMobi optional permissions ─────────────────────── */
-//
-// InMobi strongly recommends ACCESS_COARSE_LOCATION and ACCESS_FINE_LOCATION for
-// geo-targeted ads (improves fill rate + eCPM by 15-25% in emerging markets).
-// These are declared as optional <uses-permission> entries — the SDK gracefully
-// degrades if the user has not granted them at runtime.
-//
-function withInMobiPermissions(config) {
-  return withAndroidManifest(config, (mod) => {
-    const manifest = mod.modResults.manifest;
-    if (!manifest['uses-permission']) manifest['uses-permission'] = [];
-
-    const existing = manifest['uses-permission'].map(p => p.$?.['android:name'] || '');
-
-    const toAdd = [
-      'android.permission.ACCESS_COARSE_LOCATION',
-      'android.permission.ACCESS_FINE_LOCATION',
-    ].filter(p => !existing.includes(p));
-
-    toAdd.forEach(permission => {
-      manifest['uses-permission'].push({ $: { 'android:name': permission } });
-    });
-
-    return mod;
-  });
-}
-
-/* ─── 4. Root build.gradle — pin NDK to 26.1.10909125 ───────────────────────── */
+/* ─── 5. Root build.gradle — pin NDK to 26.1.10909125 ───────────────────────── */
 //
 // NDK 27.x ships C++20 standard library headers by default. Several prebuilt
 // .so files bundled with react-native-screens, react-native-reanimated, and
@@ -422,7 +360,7 @@ function withNdkVersion(config) {
   });
 }
 
-/* ─── 5. app/build.gradle — set STL=c++_shared and force C++17 ──────────────── */
+/* ─── 6. app/build.gradle — set STL=c++_shared and force C++17 ──────────────── */
 //
 // Two flags are required together:
 //
@@ -503,39 +441,6 @@ function withCppConfig(config) {
   });
 }
 
-/* ─── 6. Copy adi-registration.properties into Android native assets ─────────── */
-//
-// Google Play ownership verification requires this file to exist at:
-//   android/app/src/main/assets/adi-registration.properties
-//
-// assetBundlePatterns only bundles files into the JS layer — it does NOT place
-// files in the native assets folder. This withDangerousMod writes the file
-// directly during prebuild so it is included in the compiled APK/AAB.
-//
-function withAdiRegistration(config) {
-  return withDangerousMod(config, [
-    'android',
-    async (cfg) => {
-      const assetsDir = path.join(
-        cfg.modRequest.platformProjectRoot,
-        'app',
-        'src',
-        'main',
-        'assets'
-      );
-
-      if (!fs.existsSync(assetsDir)) {
-        fs.mkdirSync(assetsDir, { recursive: true });
-      }
-
-      const destPath = path.join(assetsDir, 'adi-registration.properties');
-      fs.writeFileSync(destPath, 'DI6G2JKTKQSU4AAAAAAAAAAAAA', 'utf8');
-
-      return cfg;
-    },
-  ]);
-}
-
 /* ─── 7. Root build.gradle — force compileSdkVersion 35 for all subprojects ──── */
 //
 // react-native-install-referrer (and sometimes other third-party modules)
@@ -575,6 +480,39 @@ subprojects {
   });
 }
 
+/* ─── 8. Copy adi-registration.properties into Android native assets ─────────── */
+//
+// Google Play ownership verification requires this file to exist at:
+//   android/app/src/main/assets/adi-registration.properties
+//
+// assetBundlePatterns only bundles files into the JS layer — it does NOT place
+// files in the native assets folder. This withDangerousMod writes the file
+// directly during prebuild so it is included in the compiled APK/AAB.
+//
+function withAdiRegistration(config) {
+  return withDangerousMod(config, [
+    'android',
+    async (cfg) => {
+      const assetsDir = path.join(
+        cfg.modRequest.platformProjectRoot,
+        'app',
+        'src',
+        'main',
+        'assets'
+      );
+
+      if (!fs.existsSync(assetsDir)) {
+        fs.mkdirSync(assetsDir, { recursive: true });
+      }
+
+      const destPath = path.join(assetsDir, 'adi-registration.properties');
+      fs.writeFileSync(destPath, 'DI6G2JKTKQSU4AAAAAAAAAAAAA', 'utf8');
+
+      return cfg;
+    },
+  ]);
+}
+
 /* ─── Compose all patches and export ─────────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   // Build system
@@ -584,23 +522,25 @@ module.exports = function withAndroidConfig(config) {
   config = withCppConfig(config);
   config = withSubprojectsCompileSdk(config);
 
-  // AdMob mediation — Gradle dependencies
-  config = withAdMediationAdapters(config);
-  // AdMob mediation — extra Maven repos (ironSource + Digital Turbine)
-  config = withMediationRepositories(config);
+  // Yodo1 MAS — mediation-network Maven repositories. These change the Gradle
+  // resolution environment, so they are injected ONLY in Phase 2. Phase 1 skips
+  // them entirely (no repos, no fail-loud throw) to keep the current build inert.
+  if (YODO1_ENABLED) {
+    config = withYodo1Repositories(config);
+  }
+  // Yodo1 MAS — always writes the `yodo1Enabled` marker; the pipeline-altering
+  // AndroidX/dexing flags are written only when YODO1_ENABLED (Phase 2).
+  config = withYodo1GradleProperties(config);
 
-  // AdMob mediation — AndroidManifest patches
-  config = withIronSourceManifest(config);   // hardware acceleration for video ads
-  config = withInMobiPermissions(config);    // optional location for better fill rate
-
-  // App assets / registration
+  // App assets / Google Play ownership registration
   config = withAdiRegistration(config);
 
   return config;
 };
 
 /* ─── Exported pure transforms (for verification harness / unit tests) ───────── */
-module.exports.injectMediationDependencies   = injectMediationDependencies;
-module.exports.injectMediationReposIntoBlock = injectMediationReposIntoBlock;
-module.exports.MEDIATION_ADAPTERS            = MEDIATION_ADAPTERS;
-module.exports.EXTRA_MAVEN_REPOS             = EXTRA_MAVEN_REPOS;
+module.exports.injectYodo1ReposIntoBlock    = injectYodo1ReposIntoBlock;
+module.exports.findReposInsertIndex         = findReposInsertIndex;
+module.exports.applyYodo1GradleProperties   = applyYodo1GradleProperties;
+module.exports.YODO1_MAVEN_REPOS            = YODO1_MAVEN_REPOS;
+module.exports.YODO1_GRADLE_PROPERTIES      = YODO1_GRADLE_PROPERTIES;
