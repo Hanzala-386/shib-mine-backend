@@ -1,0 +1,42 @@
+Hey Replit Agent,
+
+We are completely shifting away from standard AdMob Mediation and migrating to Yodo1 MAS SDK. Since this is a Managed Expo project, we cannot follow Yodo1's native Android guide directly (creating files inside android/ will get wiped out during prebuild). We must handle this natively via our Config Plugin.
+
+Please read these requirements carefully and update the codebase without breaking anything:
+
+1. CLEAN UP OLD ADMOB MEDIATION:
+Remove the old AdMob waterfall adapters from `plugins/withAndroidConfig.js`. We do not need the old pinned versions for Unity, InMobi, AppLovin, etc., because Yodo1 MAS Full SDK bundles them internally.
+
+2. REWRITE CONFIG PLUGIN (plugins/withAndroidConfig.js) FOR YODO1 MAS:
+Modify the plugin to aggressively inject the following configurations into the generated Android files during prebuild:
+
+   * Project-level build.gradle (withMediationRepositories):
+     Inject these exact Maven URLs inside allprojects/repositories:
+     - maven { url "https://artifact.bytedance.com/repository/pangle" }
+     - maven { url "https://android-sdk.is.com" }
+     - maven { url "https://dl-maven-android.mintegral.com/repository/mbridge_android_sdk_oversea" }
+     - maven { url "https://artifactory.bidmachine.io/bidmachine" }
+     - maven { url "https://ysonetwork.s3.eu-west-3.amazonaws.com/sdk/android" }
+     - maven { url "https://repo.pubmatic.com/artifactory/public-repos" }
+     - maven { url "https://bitbucket.org/sdkcenter/sdkcenter/raw/release" }
+
+   * App-level build.gradle (dependencies block):
+     Inject these exact dependencies:
+     - implementation("com.yodo1.mas:full:4.15.0")
+     - implementation("com.google.android.gms:play-services-ads:23.1.0")
+     - implementation("com.google.ads.mediation:pangle:6.0.0.3.0")
+     - implementation("io.bidmachine:ads:2.7.0")
+
+   * App-level build.gradle (defaultConfig block):
+     Set `multiDexEnabled true` and ensure `minSdkVersion` is at least 24.
+
+3. REPOSITORIES / GRADLE.PROPERTIES:
+Ensure `expo-build-properties` plugin in `app.json` or our custom plugin sets these properties in `gradle.properties`:
+   android.useAndroidX=true
+   android.enableJetifier=true
+   android.enableDexingArtifactTransform=false
+
+4. NATIVE JAVA BRIDGE MODULE:
+Since we need `Yodo1MASAds.java` and `MyAppPackage.java` linked to `MainApplication.java`, implement this using Expo's local native modules structure (inside the `modules/` directory or writing a config plugin modifier for MainApplication) so the Java code survives `expo prebuild`. 
+
+Please audit the files and write the secure implementation. Do not change the JavaScript AdContext logic yet. Just write the native infrastructure and show me what you updated.
