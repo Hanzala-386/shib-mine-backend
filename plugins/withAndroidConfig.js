@@ -462,35 +462,86 @@ function withCppConfig(config) {
 // declare a lower compileSdkVersion in their own build.gradle. When AGP 8.x
 // enforces a strict namespace/compileSdk contract, this causes:
 //   "Namespace not specified … compileSdkVersion must be set"
-// The subprojects block runs afterEvaluate on every included module and
-// upgrades any module whose compileSdkVersion is below 35 to match the app.
+// We upgrade any module whose compileSdkVersion is below 35 to match the app.
+//
+// ⚠️ LIFECYCLE SAFETY (Gradle 8.13 + RN 0.81):
+// We must NOT unconditionally call `project.afterEvaluate(Closure)` from the root
+// build script. Under Gradle 8.13 with RN 0.81 / Expo autolinking, some
+// subprojects are ALREADY EVALUATED by the time the root project's build script
+// reaches this `subprojects { }` block. Registering an afterEvaluate hook on an
+// already-evaluated project throws a hard, build-aborting error:
+//   "Cannot run Project.afterEvaluate(Closure) when the project is already evaluated."
+// So for each subproject we branch on `subproject.state.executed`: apply the
+// compileSdk override IMMEDIATELY for projects already evaluated, and only defer
+// via afterEvaluate for projects not yet evaluated. This keeps every module's
+// evaluation intact regardless of the order Gradle configures them in.
 // This is idempotent — already-patched root gradle files are not re-patched.
 //
-function withSubprojectsCompileSdk(config) {
-  return withProjectBuildGradle(config, (cfg) => {
-    let content = cfg.modResults.contents;
+const SUBPROJECTS_PATCH_MARKER = '// [shib-patch] subprojects compileSdk';
 
-    const PATCH_MARKER = '// [shib-patch] subprojects compileSdk';
-    if (content.includes(PATCH_MARKER)) return cfg;
+/**
+ * Pure transform (exported for tests): append the evaluation-order-safe
+ * subprojects compileSdk-forcing block to the root build.gradle contents.
+ * Idempotent — re-running on already-patched contents is a no-op.
+ *
+ * Returns { contents, changed }.
+ */
+function injectSubprojectsCompileSdk(contents) {
+  if (typeof contents !== 'string') return { contents, changed: false };
+  if (contents.includes(SUBPROJECTS_PATCH_MARKER)) return { contents, changed: false };
 
-    const subprojectsPatch = `
-${PATCH_MARKER}
-subprojects {
-    afterEvaluate { project ->
-        if (project.hasProperty('android')) {
-            project.android {
-                if (compileSdkVersion < 35) {
-                    compileSdkVersion 35
-                }
+  const subprojectsPatch = `
+${SUBPROJECTS_PATCH_MARKER}
+subprojects { subproject ->
+    def forceCompileSdk = {
+        if (!subproject.hasProperty('android')) return
+        try {
+            def ext = subproject.android
+            // Read the CURRENT compileSdk type-safely. AGP 8 exposes an Integer
+            // 'compileSdk' property; older/legacy DSL may surface 'compileSdkVersion'
+            // as a String like "android-34". Normalise both to an int.
+            Integer current = null
+            try { current = ext.compileSdk } catch (ignored) {}
+            if (current == null) {
+                try {
+                    def legacy = ext.compileSdkVersion
+                    if (legacy instanceof Number) {
+                        current = legacy.intValue()
+                    } else if (legacy != null) {
+                        def m = (legacy.toString() =~ /\\d+/)
+                        if (m.find()) current = m.group() as Integer
+                    }
+                } catch (ignored) {}
             }
+            if (current == null || current < 35) {
+                ext.compileSdk = 35
+            }
+        } catch (Throwable t) {
+            // Best-effort only: an already-finalised (early-evaluated) module may
+            // reject a late compileSdk write. Never abort the build over it.
+            subproject.logger.warn("[shib-patch] could not force compileSdk 35 on '" + subproject.name + "': " + t.message)
         }
+    }
+    // Avoid "Cannot run Project.afterEvaluate(Closure) when the project is
+    // already evaluated." — for not-yet-evaluated modules defer via afterEvaluate
+    // (runs AFTER the module declares its own compileSdk, so the override sticks);
+    // for already-evaluated modules apply immediately (best-effort, see try/catch).
+    if (subproject.state.executed) {
+        forceCompileSdk()
+    } else {
+        subproject.afterEvaluate { forceCompileSdk() }
     }
 }
 `;
 
-    // Append before the last closing brace of the file
-    content = content.trimEnd() + '\n' + subprojectsPatch;
-    cfg.modResults.contents = content;
+  // Append after the last closing brace of the file.
+  return { contents: contents.trimEnd() + '\n' + subprojectsPatch, changed: true };
+}
+
+function withSubprojectsCompileSdk(config) {
+  return withProjectBuildGradle(config, (cfg) => {
+    const res = injectSubprojectsCompileSdk(cfg.modResults.contents);
+    cfg.modResults.contents = res.contents;
     return cfg;
   });
 }
@@ -587,5 +638,8 @@ module.exports = function withAndroidConfig(config) {
 module.exports.injectYodo1ReposIntoBlock    = injectYodo1ReposIntoBlock;
 module.exports.findReposInsertIndex         = findReposInsertIndex;
 module.exports.applyYodo1GradleProperties   = applyYodo1GradleProperties;
+module.exports.injectSubprojectsCompileSdk  = injectSubprojectsCompileSdk;
+module.exports.SUBPROJECTS_PATCH_MARKER     = SUBPROJECTS_PATCH_MARKER;
 module.exports.YODO1_MAVEN_REPOS            = YODO1_MAVEN_REPOS;
 module.exports.YODO1_GRADLE_PROPERTIES      = YODO1_GRADLE_PROPERTIES;
+module.exports.REPOS_MARKER_OPEN            = REPOS_MARKER_OPEN;
