@@ -28,8 +28,15 @@ interface ShibaYodo1MasNativeModule {
   /** Synchronous: true only when the REAL Yodo1 bridge is compiled in (Phase 2). */
   isAvailable(): boolean;
   isInitialized(): Promise<boolean>;
-  /** Initialize Yodo1 MAS with the app key; resolves true once ready. */
-  initialize(appKey: string): Promise<boolean>;
+  /**
+   * Initialize Yodo1 MAS with the app key + privacy/legal-framework consent flags
+   * (applied BEFORE the SDK's first ad request for Google Play compliance):
+   *  - gdpr:  true = user granted personalized-ads consent (EEA/UK).
+   *  - coppa: true = user is age-restricted / child-directed.
+   *  - ccpa:  true = "do not sell my personal information" (California).
+   * Resolves true once ready.
+   */
+  initialize(appKey: string, gdpr: boolean, coppa: boolean, ccpa: boolean): Promise<boolean>;
   loadInterstitial(): Promise<boolean>;
   /** Resolves true once the interstitial has been shown and closed. */
   showInterstitial(): Promise<boolean>;

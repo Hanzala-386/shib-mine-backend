@@ -1,5 +1,6 @@
 - [Tournament points prod sync](tournament-points-prod-sync.md) — PB datetime filters need a SPACE separator not ISO `T` (else 0 rows); recompute points client-side in prod; filter by `updated` (claim-time) not `start_time`.
 - [Tournament history & finalize quirks](tournament-history.md) — duplicate finalize rows, no cycle_id, earliest-in-cluster key, phase-none-leads-history stale window, prizes auto-credited (claim must be cosmetic).
 - [Expo/Metro dev server recovery](frontend-dev-server.md) — preview stuck on "Your app is starting" = Metro EADDRINUSE :8081; free port then restart; blank web preview ≈ reanimated-on-web, not a crash.
+- [AGP gradle config-plugin pitfalls](agp-gradle-config-plugin.md) — enableDexingArtifactTransform removed in AGP 8.3 hard-fails; an upsert-only gradle.properties plugin must also FILTER deprecated keys from cached modResults.
 - [Yodo1 MAS migration](yodo1-migration.md) — Android ad stack moving AdMob→Yodo1 via a phased DORMANT foundation; build-env changes (repos, jetifier/dexing props) are NOT dormant — gate them behind one phase toggle.
 - [AdMob mediation config plugin](admob-mediation-plugin.md) — SUPERSEDED by Yodo1 migration (mediation injection removed); still useful for Expo-54 gradle ground-truth + verify-without-CLI technique.

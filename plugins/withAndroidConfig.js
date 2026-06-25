@@ -287,20 +287,29 @@ function withYodo1Repositories(config) {
 /* ─── 4. gradle.properties — Yodo1 / AndroidX flags + dormant toggle ─────────── */
 //
 // Yodo1 MAS + its bundled networks (and the Jetifier-dependent legacy SDKs they
-// pull) require these flags. `enableDexingArtifactTransform=false` is Yodo1's
-// documented workaround for multidex/dexing conflicts with some adapter SDKs.
+// pull) require AndroidX + Jetifier to be enabled.
 //
-// These three flags ALTER THE CURRENT BUILD PIPELINE (Jetifier rewriting + dexing
-// transform behaviour) even when no Yodo1 dependency is present, so they are
-// applied ONLY in Phase 2 (YODO1_ENABLED=true) to keep Phase 1 truly dormant.
-// `enableDexingArtifactTransform=false` is Yodo1's documented workaround for
-// multidex/dexing conflicts with some bundled adapter SDKs.
+// ⚠️ `android.enableDexingArtifactTransform` was DELIBERATELY REMOVED. That option
+// was deprecated and then REMOVED in Android Gradle Plugin 8.3, so setting it at
+// all (even to `false`) makes AGP 8.3+ fail the build with a hard error:
+//   "The option 'android.enableDexingArtifactTransform' is deprecated.
+//    It was removed in version 8.3 of the Android Gradle plugin."
+// Modern AGP manages the dexing artifact transform automatically — no replacement
+// flag is needed. Do NOT re-add it.
+//
+// These flags ALTER THE CURRENT BUILD PIPELINE (Jetifier rewriting) even when no
+// Yodo1 dependency is present, so they are applied ONLY in Phase 2
+// (YODO1_ENABLED=true) to keep Phase 1 truly dormant.
 //
 const YODO1_GRADLE_PROPERTIES = [
-  { key: 'android.useAndroidX',                  value: 'true'  },
-  { key: 'android.enableJetifier',               value: 'true'  },
-  { key: 'android.enableDexingArtifactTransform', value: 'false' },
+  { key: 'android.useAndroidX',    value: 'true' },
+  { key: 'android.enableJetifier', value: 'true' },
 ];
+
+// Keys that must NEVER appear in gradle.properties — actively filtered out of any
+// existing/cached modResults so a stale file can't re-introduce them. AGP 8.3+
+// hard-fails the build if android.enableDexingArtifactTransform is present at all.
+const DEPRECATED_GRADLE_KEYS = ['android.enableDexingArtifactTransform'];
 
 /**
  * Pure transform (exported for tests): idempotently set/overwrite the Yodo1
@@ -311,7 +320,12 @@ const YODO1_GRADLE_PROPERTIES = [
  * true (Phase 2), so Phase 1 leaves the existing build pipeline untouched.
  */
 function applyYodo1GradleProperties(items, enabled = YODO1_ENABLED) {
-  const props = Array.isArray(items) ? items : [];
+  // Drop any deprecated/removed flags from an existing (possibly cached/generated)
+  // gradle.properties first, so a stale file can never re-introduce a property
+  // that fails the modern build (e.g. android.enableDexingArtifactTransform).
+  const props = (Array.isArray(items) ? items : []).filter(
+    (i) => !(i && i.type === 'property' && DEPRECATED_GRADLE_KEYS.includes(i.key))
+  );
   const upsert = (key, value) => {
     const existing = props.find((i) => i && i.type === 'property' && i.key === key);
     if (existing) existing.value = value;

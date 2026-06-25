@@ -61,6 +61,18 @@ export const TEST_IDS = {
 
 const YODO1_APP_KEY = 'wUO7rM9IND';
 
+// ── Yodo1 privacy / legal-framework defaults (applied at SDK init) ────────────
+// COPPA is a factual app property: Shiba Hit is NOT a child-directed app → false.
+// GDPR/CCPA are placeholders here. For true EEA/UK + California compliance these
+// must reflect REAL user consent — enable Yodo1's built-in Privacy Dialog Manager
+// (Yodo1 dashboard → Privacy Compliance) or wire a CMP, then drive these values
+// from the recorded consent BEFORE shipping to those regions.
+const YODO1_PRIVACY = {
+  gdprConsent: true,   // TODO(pre-EEA-release): replace with real consent source
+  isChildDirected: false, // COPPA — app is not child-directed
+  ccpaDoNotSell: false,   // TODO(pre-CA-release): replace with real CCPA opt-out
+};
+
 const DEFAULT_SETTINGS: AdSettings = {
   showAds: false,
   activeAdNetwork: '',
@@ -172,7 +184,14 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
       setSdkReady(true);
       return;
     }
-    yodo1.initialize(YODO1_APP_KEY)
+    // Privacy / legal-framework consent applied at init for Google Play compliance.
+    // Values come from YODO1_PRIVACY (see notes there re: real consent before EEA/CA release).
+    yodo1.initialize(
+      YODO1_APP_KEY,
+      YODO1_PRIVACY.gdprConsent,
+      YODO1_PRIVACY.isChildDirected,
+      YODO1_PRIVACY.ccpaDoNotSell,
+    )
       .then(() => {
         console.log('[AdContext] Yodo1 MAS initialized');
         setSdkReady(true);
