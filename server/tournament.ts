@@ -621,25 +621,37 @@ async function runEndOfCycleImpl(): Promise<void> {
     }
   }
 
-  // 7. Reset ALL joined users (best-effort — must not abort the wipe)
+  // 7. Reset ALL joined users (best-effort — must not abort the wipe).
+  //    Drain by ALWAYS re-reading page 1 of the matching filter: every patched
+  //    row leaves the filter, so the next page-1 read returns the next un-reset
+  //    batch. This avoids the paginate-while-mutating index-shift bug (advancing
+  //    `page` while the result set shrinks skips ~half the rows each iteration —
+  //    the same class of bug wipeAllParticipants avoids by reading ids up front).
+  //    Uses an OR filter so a row with stale points but joined=false is caught too.
   try {
-    let page = 1;
+    let totalReset = 0;
     while (true) {
       const batch = await pbGet(
-        `/api/collections/users/records?filter=${encodeURIComponent('tournament_joined=true')}&perPage=100&page=${page}&fields=id`,
+        `/api/collections/users/records?filter=${encodeURIComponent('tournament_joined=true || weekly_tournament_points>0')}&perPage=100&page=1&fields=id`,
       );
       const items: any[] = batch?.items ?? [];
       if (!items.length) break;
-      await Promise.allSettled(items.map((u: any) =>
+      const results = await Promise.allSettled(items.map((u: any) =>
         pbPatch(`/api/collections/users/records/${u.id}`, {
           tournament_joined: false,
           weekly_tournament_points: 0,
         }),
       ));
-      if (items.length < 100) break;
-      page++;
+      const ok = results.filter((r) => r.status === 'fulfilled').length;
+      totalReset += ok;
+      // Guard: if an entire batch fails to patch (e.g. transient PB error), stop
+      // draining so we never spin forever on the same un-resettable rows.
+      if (ok === 0) {
+        console.error('[tournament] reset: a full batch failed to patch — aborting drain to avoid an infinite loop.');
+        break;
+      }
     }
-    console.log('[tournament] All points + joined flags reset ✓');
+    console.log(`[tournament] All points + joined flags reset ✓ (${totalReset} users)`);
   } catch (e: any) {
     console.error('[tournament] runEndOfCycle reset error (continuing to wipe):', e.message);
   }
