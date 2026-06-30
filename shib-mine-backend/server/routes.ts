@@ -3513,42 +3513,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         final_tokens: safeAmount,
       }).catch(() => {});
 
-      // 10% referral commission on game earnings → referral_balance (claimable)
-      if (user.referred_by) {
-        (async () => {
-          try {
-            let referrer: any = null;
-            const direct = await pbGet(`/api/collections/users/records/${user.referred_by}`);
-            if (!direct.code && direct.id) {
-              referrer = direct;
-            } else {
-              const byCode = await pbGet(
-                `/api/collections/users/records?filter=referral_code="${encodeURIComponent(user.referred_by)}"&perPage=1`,
-              );
-              referrer = byCode.items?.[0] || null;
-            }
-            if (referrer) {
-              const commission = Math.round(safeAmount * 0.1);
-              if (commission > 0) {
-                await pbPatch(`/api/collections/users/records/${referrer.id}`, {
-                  power_tokens:      (referrer.power_tokens || 0) + commission,
-                  referral_balance:  (referrer.referral_balance || 0) + commission,
-                  referral_earnings: (referrer.referral_earnings || 0) + commission,
-                });
-                // Log referral commission for admin analytics
-                pbPost("/api/collections/referral_history/records", {
-                  referrer_id:    referrer.id,
-                  claimer_id:     pbId,
-                  referrer_email: referrer.email || "",
-                  claimer_email:  user.email || "",
-                  amount:         commission,
-                  source:         "game_reward",
-                }).catch(() => {});
-              }
-            }
-          } catch (_) {}
-        })();
-      }
+      // ── NO referral commission on gameplay ──────────────────────────────
+      // Referral commission is paid EXCLUSIVELY on a referee's mining rewards
+      // (see /api/app/mine/claim). Power tokens / game scores are deliberately
+      // EXCLUDED from the referral base so gameplay loops can never trigger a
+      // referral payout. Do not re-add a referral credit here.
 
       res.json({ success: true, newPowerTokens: newPT });
     } catch (e: any) {
