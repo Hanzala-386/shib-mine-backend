@@ -2304,6 +2304,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ serverTime: Date.now() });
   });
 
+  // ── Tournament: server-time + config ──────────────────────────────────────
+  // Returns the current tournament config (including cycle_id) enriched with
+  // server-authoritative time. Fully-manual model: the client derives phase
+  // (none / prestart / live) from is_active + start_time/end_time + cycle_id.
+  app.get("/api/app/tournament/config", async (_req: Request, res: Response) => {
+    const serverTime = Date.now();
+    try {
+      const cfgRes = await pbGet(
+        "/api/collections/tournament_config/records?sort=-created&perPage=1",
+      );
+      const raw = cfgRes?.items?.[0];
+      if (!raw) return res.json({ config: null, serverTime });
+
+      // IMPORTANT: reward_structure is returned as the RAW JSON STRING exactly as
+      // stored in PocketBase. The mobile client runs `JSON.parse(reward_structure)`
+      // in TournamentContext.loadConfig. If we pre-parse it into an object here,
+      // JSON.parse("[object Object]") throws, the catch swallows it, and every rank
+      // prize falls back to 0 — the winning amounts render blank on the leaderboard.
+      // This shape MUST stay identical to the PocketBase-direct fallback.
+      return res.json({
+        config: {
+          id:               raw.id,
+          cycle_id:         raw.cycle_id || "",
+          prize_pool_total: Number(raw.prize_pool_total) || 0,
+          winners_count:    Number(raw.winners_count)    || 3,
+          reward_structure: raw.reward_structure || "{}",
+          banner:           raw.banner     || "",
+          banner_url:       raw.banner_url || "",
+          week_start:       raw.week_start || "",
+          start_time:       raw.start_time || raw.week_start || "",
+          end_time:         raw.end_time   || "",
+          is_active:        !!raw.is_active,
+        },
+        serverTime,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/tournament/config]", e?.message);
+      return res.json({ config: null, serverTime });
+    }
+  });
+
   // ── Temporary SMTP debug — shows Railway env var state (key masked) ────────
   app.get("/api/debug/smtp-config", (_req: Request, res: Response) => {
     const rawUser = process.env.SMTP_USER || '(not set)';
