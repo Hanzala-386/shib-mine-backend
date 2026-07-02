@@ -1,0 +1,30 @@
+Hey Agent,
+
+We are planning a massive architectural expansion for our project. We want to introduce a fully real-time Multiplayer Game Hub right inside our application, alongside our existing setup. Before we start, since this is a high-stakes, secure production project involving user balances and peer-to-peer betting, we need to audit your capabilities and get your expert architectural recommendations. 
+
+Please answer this detailed questionnaire comprehensively so we can chart out the development roadmap:
+
+### 1. Engine & 3D Capabilities
+* Can you build and fully manage a real-time multiplayer system inside this project?
+* If we provide you with custom-made or downloaded 3D objects, can you integrate and render them smoothly within the game environment?
+* Can you seamlessly integrate live reward video ads (Google AdMob / Unity Ads) within this new multiplayer flow?
+
+### 2. Multi-Game UI & Betting Lobby Architecture
+The user flow will be: Single Player (existing) vs. Multiplayer Selection -> Opens a Game Hub (Ludo, Chess, Tic-Tac-Toe, etc.) -> Selecting a game opens a Betting Lobby with tiered rooms (e.g., Room 1: 500 PT, Room 2: 1000 PT, Room 3: 2000 PT) -> Matchmaking pairs two live opponents face-to-face.
+* Can you design and implement this entire nested lobby navigation and user-matching system within our current project structure?
+* How do you recommend building these specific games? Should they be embedded as highly optimized lightweight HTML5 games (like our current knife hit game), or should they be developed directly as native modules/views within the main app architecture for maximum performance? Which approach ensures 0% lag and a 100% smooth UI experience?
+
+### 3. Anti-Cheat, Security & Fair Play (Critical)
+Since users are putting up stakes (e.g., 500 or 1000 tokens), preventing client-side exploitation is our highest priority.
+* How will you ensure that no user can use modified clients, memory editors, hacks, or trainers to cheat the outcome?
+* Will you implement authoritative server-side validation (where the server controls the game state/moves, not the player's phone) to guarantee absolute security?
+
+### 4. Server Infrastructure & Scalability (Railway vs. VPS)
+Currently, our primary database runs on a self-hosted VPS, our API server runs on Railway, and our legacy game assets sit on shared hosting.
+* For handling thousands of concurrent live multiplayer matches, do you recommend we run the real-time game server (WebSockets/Socket.io) on our Railway instance or migrate it entirely to a dedicated high-performance VPS?
+* What protocol do you propose to keep server overhead and resource usage to an absolute minimum while ensuring instant synchronization (e.g., Socket.io, WebSockets, or WebRTC)? How will we optimize server power so the bills stay low while handling high player volume?
+
+### 5. Capabilities vs. External AI Agents
+* Are you fully capable of writing, compiling, testing, and optimizing both the real-time backend state engine and the frontend gameplay views for this multiplayer hub ourselves, or do you recommend we split the gameplay logic creation out to an external dedicated gaming agent/framework? Where do your core strengths lie for a large-scale project like this?
+
+Please give us a detailed technical breakdown of your approach for each section so we can take the next definitive steps.
