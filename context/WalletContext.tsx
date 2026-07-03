@@ -2,9 +2,11 @@ import React, { createContext, useContext, useState, useEffect, useRef, useMemo,
 import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { api } from '@/lib/api';
+import { apiRequest } from '@/lib/query-client';
 import { pb } from '@/lib/pocketbase';
 import { notifyWithdrawalCancelled } from '@/lib/notifications';
 import { lockedBalanceForVipLevel, availableBalanceAfterVipLock, normalizeVipLevel } from '@shared/vip';
+import { ticketsToShib, validateRedeem } from '@shared/gamehub';
 
 export interface WithdrawalRecord {
   id: string;
@@ -20,6 +22,7 @@ interface WalletContextValue {
   lockedShibBalance: number;
   availableShibBalance: number;
   powerTokens: number;
+  hitTickets: number;
   withdrawals: WithdrawalRecord[];
   withdrawalTier: number;
   minWithdrawalAmount: number;
@@ -27,6 +30,7 @@ interface WalletContextValue {
   spendPowerTokens: (amount: number) => Promise<boolean>;
   addPowerTokens: (amount: number, type?: string) => Promise<void>;
   createWithdrawal: (method: string, addressOrEmail: string, amount: number, netAmount: number) => Promise<{ success: boolean; error?: string }>;
+  redeem: (tickets: number) => Promise<{ success: boolean; shib?: number; error?: string }>;
   refetch: () => Promise<void>;
 }
 
@@ -59,8 +63,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const uid = user?.uid ?? null;
   const rawShib = pbUser?.shibBalance;
   const rawPT = pbUser?.powerTokens;
+  const rawHitTickets = pbUser?.hitTickets;
   const shibBalance = typeof rawShib === 'number' && isFinite(rawShib) ? rawShib : 0;
   const powerTokens = typeof rawPT === 'number' && isFinite(rawPT) ? rawPT : 10;
+  const hitTickets = typeof rawHitTickets === 'number' && isFinite(rawHitTickets) ? rawHitTickets : 0;
   // VIP wallet lock: the active tier's required SHIB balance is locked; only the
   // remainder is withdrawable. Mirrors the server-side withdrawal gate.
   const vipLevel = normalizeVipLevel(pbUser?.vipLevel);
@@ -294,11 +300,72 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // Redeem Hit Tickets for SHIB. Express-first, PocketBase SDK fallback —
+  // mirrors the Express-first/PB-fallback pattern used by createWithdrawal above.
+  async function redeem(
+    tickets: number,
+  ): Promise<{ success: boolean; shib?: number; error?: string }> {
+    if (!pbId) return { success: false, error: 'Not authenticated' };
+
+    // Validate locally against the in-memory balance first.
+    const check = validateRedeem(tickets, hitTickets);
+    if (!check.ok) return { success: false, error: check.error };
+
+    const refId = `redeem_${pbId}_${Date.now()}`;
+    try {
+      // Express-first — apiRequest attaches the PB session cookie (credentials:'include').
+      const res = await apiRequest('POST', '/api/app/hub/redeem', { pbId, tickets, refId });
+      const data: any = await res.json().catch(() => ({}));
+      await refreshBalance();
+      await fetchWalletData();
+      return { success: true, shib: typeof data?.shib === 'number' ? data.shib : ticketsToShib(tickets) };
+    } catch {
+      // PB SDK fallback — debit hit_tickets + create a pending SHIB withdrawal directly.
+      try {
+        const userRec = await pb.collection('users').getOne(pbId, { fields: 'id,hit_tickets' });
+        const currentTickets = Number(userRec.hit_tickets) || 0;
+
+        // Re-validate against the authoritative balance from PocketBase.
+        const serverCheck = validateRedeem(tickets, currentTickets);
+        if (!serverCheck.ok) return { success: false, error: serverCheck.error };
+
+        const shib = ticketsToShib(tickets);
+
+        // Debit Hit Tickets first.
+        await pb.collection('users').update(pbId, {
+          hit_tickets: currentTickets - tickets,
+        });
+
+        // Create a pending withdrawal for the SHIB payout.
+        try {
+          await pb.collection('withdrawals').create({
+            user: pbId,
+            method: 'Hit Ticket Redeem',
+            address_or_email: pbUser?.email ?? '',
+            amount: shib,
+            status: 'pending',
+          });
+        } catch (createErr) {
+          // Rollback the ticket debit on failure.
+          await pb.collection('users').update(pbId, { hit_tickets: currentTickets }).catch(() => {});
+          throw createErr;
+        }
+
+        await refreshBalance();
+        await fetchWalletData();
+        return { success: true, shib };
+      } catch (e: any) {
+        return { success: false, error: e?.message ?? 'Redemption failed' };
+      }
+    }
+  }
+
   const value = useMemo(() => ({
     shibBalance,
     lockedShibBalance,
     availableShibBalance,
     powerTokens,
+    hitTickets,
     withdrawals,
     withdrawalTier,
     minWithdrawalAmount,
@@ -306,8 +373,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     spendPowerTokens,
     addPowerTokens,
     createWithdrawal,
+    redeem,
     refetch: fetchWalletData,
-  }), [shibBalance, lockedShibBalance, availableShibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, isLoading, pbId]);
+  }), [shibBalance, lockedShibBalance, availableShibBalance, powerTokens, hitTickets, withdrawals, withdrawalTier, minWithdrawalAmount, isLoading, pbId]);
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }

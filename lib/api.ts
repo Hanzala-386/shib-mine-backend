@@ -674,6 +674,7 @@ function pbFormatUserLite(u: any): PBUser {
     referralEarnings: u.referral_earnings || 0,
     shibBalance: u.shib_balance || 0,
     powerTokens: u.power_tokens ?? 10,
+    hitTickets: u.hit_tickets ?? 0,
     totalClaims: u.total_claims || 0,
     totalWins: u.total_wins || 0,
     is_verified: !!u.is_verified,
@@ -812,6 +813,7 @@ export interface PBUser {
   referralEarnings: number;
   shibBalance: number;
   powerTokens: number;
+  hitTickets: number;
   totalClaims: number;
   totalWins: number;
   is_verified: boolean;
