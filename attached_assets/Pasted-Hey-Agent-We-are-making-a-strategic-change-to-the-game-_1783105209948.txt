@@ -1,0 +1,25 @@
+Hey Agent,
+
+We are making a strategic change to the game catalog based on user engagement math and server overhead:
+
+1. REMOVE Chess & Tic-Tac-Toe completely. Chess is too long and complex for casual players, leading to a low user base. Tic-Tac-Toe has a high statistical probability of ending in a draw; resetting and refunding matches continuously triggers zero-fee transactions, wasting server resources with no platform commission.
+2. Target: We want a final lineup of 6 casual, highly popular multiplayer games. Ludo is confirmed. We need you to suggest the rest.
+
+Please address these specific requests before writing code:
+
+### Q1. Native Top-Tier Casual Game Suggestions (10 Options)
+Please suggest exactly 10 popular, highly addictive casual games that meet these strict conditions:
+* Must be 100% Turn-Based or Round-Based (Server-Authoritative, making client-side hacking/macros practically impossible).
+* Must be natively built (Skia/Reanimated), NOT HTML5/WebViews, ensuring premium, top-tier, ultra-smooth graphics and minimalist aesthetic.
+* Must be highly accessible with massive market appeal (games that everyday casual users already love playing).
+* Out of your 10 suggestions, specify which ONE game you recommend we build first as our true vertical slice instead of Tic-Tac-Toe.
+
+### Q2. PUBG-Style Reconnect & Resume Logic (For Major Games)
+For longer games like Ludo, we want to prevent user dropouts due to temporary network issues. If a user accidentally closes the app or crashes, we want a PUBG-style recovery flow:
+* If the user re-opens the app while their match is active on the server, the app must immediately bypass the Home screen, re-authenticate via the WebSocket endpoint, and drop them right back into their active game board state.
+* Turn Expiry & Grace Period: Explain your backend architecture for a "Grace Timer" (e.g., giving a disconnected player 30 seconds or 2 skipped turns to reconnect before forfeiting their entry fee and awarding the prize tickets to the opponent).
+
+### Q3. Refund & Forfeit Matrix based on Game Timings
+Since different games have different durations, how will you structure the database or state machine to handle game lifecycle aborts cleanly? If a player leaves early, it shouldn't trigger a refund; it should be a forfeit (the remaining player wins). A full refund should only occur if the server/matchmaking fails to spin up the room. Please confirm how this logic will be mapped.
+
+Please provide your 10 game suggestions and the reconnect/forfeit framework design.
