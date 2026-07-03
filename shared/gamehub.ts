@@ -100,7 +100,7 @@ export type HubClientMsg =
 
 export type HubServerMsg =
   | { type: 'QUEUED'; tier: number; game: HubGameId }
-  | { type: 'MATCH_FOUND'; matchId: string; tier: number; youAre: Seat; opponent: { name: string }; state: TableState; turn: Seat; startAt: number }
+  | { type: 'MATCH_FOUND'; matchId: string; tier: number; youAre: Seat; opponent: { name: string }; state: TableState; turn: Seat; ballInHand?: boolean; startAt: number }
   | { type: 'TURN'; matchId: string; turn: Seat; turnEndsAt: number }
   | { type: 'SHOT_RESULT'; matchId: string; by: Seat; shot: ShotInput; events: SimEvent[]; finalState: TableState; pocketed: number[]; cuePocketed: boolean; nextTurn: Seat; ballInHand: boolean }
   | { type: 'GAME_OVER'; matchId: string; winner: Seat; reason: 'eight_ball' | 'forfeit' | 'timeout'; winnerTickets: number }

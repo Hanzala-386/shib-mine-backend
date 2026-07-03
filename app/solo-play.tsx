@@ -5,11 +5,13 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { useWallet } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import { pb } from '@/lib/pocketbase';
 import { api } from '@/lib/api';
+import { getApiUrl } from '@/lib/query-client';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
 import { useSecurity } from '@/context/SecurityContext';
@@ -49,7 +51,7 @@ function formatTime(s: number): string {
   return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
 }
 
-export default function GamesScreen() {
+export default function SoloPlayScreen() {
   const insets = useSafeAreaInsets();
   const { addPowerTokens, powerTokens } = useWallet();
   const { pbUser, refreshBalance } = useAuth();
@@ -575,6 +577,16 @@ export default function GamesScreen() {
   return (
     <View style={S.root}>
       {renderGame()}
+
+      {/* ── Back to Game Arena ── */}
+      <Pressable
+        onPress={() => router.back()}
+        hitSlop={12}
+        style={[S.ptBadge, { top: HUDTOP, left: 14, right: undefined }]}
+        testID="solo-back"
+      >
+        <Ionicons name="chevron-back" size={16} color={Colors.gold} />
+      </Pressable>
 
       {/* ── Game unavailable overlay (HTTP error / 404) ── */}
       {gameError && (

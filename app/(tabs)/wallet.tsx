@@ -6,11 +6,13 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
+import { router } from 'expo-router';
 import { useWallet, type WithdrawalRecord } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import { useAds } from '@/context/AdContext';
 import Colors from '@/constants/colors';
 import SpinningCoin from '@/components/SpinningCoin';
+import TicketIcon from '@/components/TicketIcon';
 import { InlineBannerAd } from '@/components/StickyBannerAd';
 import { pb } from '@/lib/pocketbase';
 import type { MiningHistoryRecord } from '@/lib/api';
@@ -105,7 +107,7 @@ function MiningHistoryItem({ item }: { item: MiningHistoryRecord }) {
 
 export default function WalletScreen() {
   const insets = useSafeAreaInsets();
-  const { shibBalance, lockedShibBalance, availableShibBalance, powerTokens, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
+  const { shibBalance, lockedShibBalance, availableShibBalance, powerTokens, hitTickets, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
   const { pbUser } = useAuth();
   const { showMiningInterstitial } = useAds();
   const [showWithdraw, setShowWithdraw] = useState(false);
@@ -368,6 +370,42 @@ export default function WalletScreen() {
               </View>
               <Text style={styles.ptValue}>{powerTokens}</Text>
             </View>
+          </LinearGradient>
+        </Animated.View>
+
+        {/* ── Hit Tickets ── */}
+        <Animated.View entering={FadeInDown.delay(350).springify()} style={styles.htCard}>
+          <LinearGradient
+            colors={['rgba(244,196,48,0.15)', 'rgba(255,107,0,0.05)']}
+            style={styles.ptCardInner}
+          >
+            <View style={styles.ptRow}>
+              <View style={styles.htIconWrap}>
+                <TicketIcon size={24} color={Colors.gold} />
+              </View>
+              <View style={styles.ptInfo}>
+                <Text style={styles.ptLabel}>Hit Tickets</Text>
+                <Text style={styles.ptSub}>Redeem for SHIB in the Redemption Center</Text>
+              </View>
+              <Text style={styles.htValue}>{hitTickets}</Text>
+            </View>
+            <Pressable
+              testID="redemption-center-button"
+              accessibilityRole="button"
+              accessibilityLabel="Open Redemption Center"
+              style={({ pressed }) => [styles.redeemBtn, { opacity: pressed ? 0.85 : 1 }]}
+              onPress={() => router.push('/redeem' as any)}
+            >
+              <LinearGradient
+                colors={[Colors.gold, Colors.neonOrange]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.redeemBtnGradient}
+              >
+                <Ionicons name="gift-outline" size={16} color="#000" />
+                <Text style={styles.redeemBtnText}>Redemption Center</Text>
+              </LinearGradient>
+            </Pressable>
           </LinearGradient>
         </Animated.View>
 
@@ -720,6 +758,13 @@ const styles = StyleSheet.create({
   ptLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: Colors.textPrimary },
   ptSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted, marginTop: 2 },
   ptValue: { fontFamily: 'Inter_700Bold', fontSize: 28, color: Colors.neonOrange },
+
+  htCard: { borderRadius: 18, overflow: 'hidden', marginBottom: 24, borderWidth: 1, borderColor: 'rgba(244,196,48,0.3)' },
+  htIconWrap: { width: 46, height: 46, borderRadius: 23, backgroundColor: 'rgba(244,196,48,0.15)', alignItems: 'center', justifyContent: 'center' },
+  htValue: { fontFamily: 'Inter_700Bold', fontSize: 28, color: Colors.gold },
+  redeemBtn: { marginTop: 14 },
+  redeemBtnGradient: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 46, borderRadius: 12 },
+  redeemBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#000' },
 
   sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 },
   emptyState: { backgroundColor: Colors.darkCard, borderRadius: 18, padding: 40, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: Colors.darkBorder },

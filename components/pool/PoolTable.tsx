@@ -1,23 +1,16 @@
 /* ────────────────────────────────────────────────────────────────────────────
- * PoolTable — Skia renderer for the 8-Ball table.
+ * PoolTable — portrait 8-Ball table renderer (pure React Native Views).
  *
- * Pure presentation: it draws whatever ball positions (in TABLE units) it is
- * handed. All physics/animation lives in the parent (app/hub/pool-match.tsx).
- * The table is drawn in PORTRAIT: the long axis (PLAY_W) runs vertically.
+ * Uses plain Views (not Skia) so it renders identically on web preview, Expo Go,
+ * and the production APK with zero native deps. It is pure presentation: it draws
+ * whatever ball positions (in TABLE units) it is handed. All physics/animation
+ * lives in the parent (app/hub/pool-match.tsx). The table is drawn PORTRAIT: the
+ * long axis (PLAY_W) runs vertically.
  * ──────────────────────────────────────────────────────────────────────────── */
 
-import React, { useMemo } from 'react';
-import {
-  Canvas,
-  Group,
-  Circle,
-  RoundedRect,
-  Rect,
-  Path,
-  Skia,
-} from '@shopify/react-native-skia';
+import React from 'react';
+import { View } from 'react-native';
 import { TABLE, POCKETS } from '@shared/pool/physics';
-import Colors from '@/constants/colors';
 
 export interface Projection {
   scale: number;
@@ -62,7 +55,6 @@ interface PoolTableProps {
   proj: Projection;
   balls: RenderBall[];
   aimPath?: { x: number; y: number }[] | null; // TABLE-space points
-  power?: number; // 0..1
   showGhost?: boolean;
 }
 
@@ -74,53 +66,38 @@ const BALL_COLORS: Record<number, string> = {
 };
 const isStripe = (id: number) => id >= 9 && id <= 15;
 
-export default function PoolTable({ proj, balls, aimPath, power = 0, showGhost }: PoolTableProps) {
+export default function PoolTable({ proj, balls, aimPath, showGhost }: PoolTableProps) {
   const R = TABLE.BALL_R * proj.scale;
 
-  // Ball clip paths (memoised per screen radius) for stripe rendering.
-  const cuePath = useMemo(() => aimPath ?? [], [aimPath]);
-
   return (
-    <Canvas style={{ width: proj.canvasW, height: proj.canvasH }}>
+    <View style={{ width: proj.canvasW, height: proj.canvasH }}>
       {/* Rail / frame */}
-      <RoundedRect
-        x={proj.offX - 16}
-        y={proj.offY - 16}
-        width={proj.tableW + 32}
-        height={proj.tableH + 32}
-        r={18}
-        color="#170F06"
+      <View
+        style={{
+          position: 'absolute',
+          left: proj.offX - 14,
+          top: proj.offY - 14,
+          width: proj.tableW + 28,
+          height: proj.tableH + 28,
+          borderRadius: 20,
+          backgroundColor: '#170F06',
+          borderWidth: 2,
+          borderColor: 'rgba(244,196,48,0.35)',
+        }}
       />
-      <RoundedRect
-        x={proj.offX - 16}
-        y={proj.offY - 16}
-        width={proj.tableW + 32}
-        height={proj.tableH + 32}
-        r={18}
-        style="stroke"
-        strokeWidth={2}
-        color="rgba(244,196,48,0.35)"
-      />
-
       {/* Felt */}
-      <RoundedRect
-        x={proj.offX}
-        y={proj.offY}
-        width={proj.tableW}
-        height={proj.tableH}
-        r={8}
-        color="#0C5C39"
-      />
-      {/* Felt inner shade for depth */}
-      <RoundedRect
-        x={proj.offX + 6}
-        y={proj.offY + 6}
-        width={proj.tableW - 12}
-        height={proj.tableH - 12}
-        r={6}
-        style="stroke"
-        strokeWidth={4}
-        color="rgba(0,0,0,0.18)"
+      <View
+        style={{
+          position: 'absolute',
+          left: proj.offX,
+          top: proj.offY,
+          width: proj.tableW,
+          height: proj.tableH,
+          borderRadius: 10,
+          backgroundColor: '#0C5C39',
+          borderWidth: 4,
+          borderColor: '#08462B',
+        }}
       />
 
       {/* Pockets */}
@@ -128,62 +105,98 @@ export default function PoolTable({ proj, balls, aimPath, power = 0, showGhost }
         const s = proj.toScreen(p.x, p.y);
         const pr = p.r * proj.scale;
         return (
-          <Group key={`pk${i}`}>
-            <Circle cx={s.x} cy={s.y} r={pr} color="#050505" />
-            <Circle cx={s.x} cy={s.y} r={pr} style="stroke" strokeWidth={2} color="rgba(244,196,48,0.4)" />
-          </Group>
+          <View
+            key={`pk${i}`}
+            style={{
+              position: 'absolute',
+              left: s.x - pr,
+              top: s.y - pr,
+              width: pr * 2,
+              height: pr * 2,
+              borderRadius: pr,
+              backgroundColor: '#050505',
+              borderWidth: 1.5,
+              borderColor: 'rgba(244,196,48,0.4)',
+            }}
+          />
         );
       })}
 
-      {/* Aim guide (dotted line + ghost ball) */}
-      {cuePath.length > 1 && (
-        <Group>
-          {cuePath.map((pt, i) => {
-            if (i % 2 !== 0) return null;
-            const s = proj.toScreen(pt.x, pt.y);
-            return <Circle key={`aim${i}`} cx={s.x} cy={s.y} r={2.5} color="rgba(255,255,255,0.75)" />;
-          })}
-          {showGhost && (() => {
-            const end = cuePath[cuePath.length - 1];
-            const s = proj.toScreen(end.x, end.y);
-            return <Circle cx={s.x} cy={s.y} r={R} style="stroke" strokeWidth={1.5} color="rgba(255,255,255,0.5)" />;
-          })()}
-        </Group>
-      )}
+      {/* Aim guide dots */}
+      {aimPath && aimPath.length > 1 && aimPath.map((pt, i) => {
+        if (i % 2 !== 0) return null;
+        const s = proj.toScreen(pt.x, pt.y);
+        return (
+          <View
+            key={`aim${i}`}
+            style={{
+              position: 'absolute',
+              left: s.x - 2,
+              top: s.y - 2,
+              width: 4,
+              height: 4,
+              borderRadius: 2,
+              backgroundColor: 'rgba(255,255,255,0.75)',
+            }}
+          />
+        );
+      })}
+
+      {/* Ghost target ball */}
+      {showGhost && aimPath && aimPath.length > 1 && (() => {
+        const end = aimPath[aimPath.length - 1];
+        const s = proj.toScreen(end.x, end.y);
+        return (
+          <View
+            style={{
+              position: 'absolute',
+              left: s.x - R,
+              top: s.y - R,
+              width: R * 2,
+              height: R * 2,
+              borderRadius: R,
+              borderWidth: 1.5,
+              borderColor: 'rgba(255,255,255,0.5)',
+            }}
+          />
+        );
+      })()}
 
       {/* Balls */}
       {balls.filter((b) => b.active).map((b) => {
         const s = proj.toScreen(b.x, b.y);
+        const left = s.x - R;
+        const top = s.y - R;
+        const base = {
+          position: 'absolute' as const,
+          left,
+          top,
+          width: R * 2,
+          height: R * 2,
+          borderRadius: R,
+        };
         if (b.id === 0) {
           return (
-            <Group key="ball0">
-              <Circle cx={s.x} cy={s.y} r={R} color="#F5F5F5" />
-              <Circle cx={s.x - R * 0.3} cy={s.y - R * 0.3} r={R * 0.28} color="rgba(255,255,255,0.9)" />
-            </Group>
+            <View key="ball0" style={{ ...base, backgroundColor: '#F5F5F5' }}>
+              <View style={{ position: 'absolute', left: R * 0.4, top: R * 0.4, width: R * 0.55, height: R * 0.55, borderRadius: R * 0.3, backgroundColor: 'rgba(255,255,255,0.9)' }} />
+            </View>
           );
         }
         const color = BALL_COLORS[b.id] ?? '#888';
         if (isStripe(b.id)) {
-          const clip = Skia.Path.Make();
-          clip.addCircle(s.x, s.y, R);
           return (
-            <Group key={`ball${b.id}`}>
-              <Circle cx={s.x} cy={s.y} r={R} color="#F5F5F5" />
-              <Group clip={clip}>
-                <Rect x={s.x - R} y={s.y - R * 0.45} width={R * 2} height={R * 0.9} color={color} />
-              </Group>
-              <Circle cx={s.x - R * 0.3} cy={s.y - R * 0.3} r={R * 0.22} color="rgba(255,255,255,0.55)" />
-              <Circle cx={s.x} cy={s.y} r={R} style="stroke" strokeWidth={1} color="rgba(0,0,0,0.25)" />
-            </Group>
+            <View key={`ball${b.id}`} style={{ ...base, backgroundColor: '#F5F5F5', overflow: 'hidden', borderWidth: 0.5, borderColor: 'rgba(0,0,0,0.25)' }}>
+              <View style={{ position: 'absolute', left: 0, right: 0, top: R * 0.55, height: R * 0.9, backgroundColor: color }} />
+              <View style={{ position: 'absolute', left: R * 0.4, top: R * 0.35, width: R * 0.4, height: R * 0.4, borderRadius: R * 0.2, backgroundColor: 'rgba(255,255,255,0.45)' }} />
+            </View>
           );
         }
         return (
-          <Group key={`ball${b.id}`}>
-            <Circle cx={s.x} cy={s.y} r={R} color={color} />
-            <Circle cx={s.x - R * 0.3} cy={s.y - R * 0.3} r={R * 0.24} color="rgba(255,255,255,0.4)" />
-          </Group>
+          <View key={`ball${b.id}`} style={{ ...base, backgroundColor: color }}>
+            <View style={{ position: 'absolute', left: R * 0.4, top: R * 0.4, width: R * 0.5, height: R * 0.5, borderRadius: R * 0.3, backgroundColor: 'rgba(255,255,255,0.4)' }} />
+          </View>
         );
       })}
-    </Canvas>
+    </View>
   );
 }

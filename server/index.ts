@@ -2,6 +2,7 @@ import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { registerRoutes, setupGameWebSocket } from "./routes";
 import { setupTournamentSchema, startTournamentCron } from "./tournament";
+import { setupGameHubWebSocket, ensureGameHubSchema } from "./gamehub";
 import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
@@ -298,18 +299,31 @@ function setupErrorHandler(app: express.Application) {
   );
   startTournamentCron();
 
+  // ── Game Hub (8-Ball multiplayer) schema ────────────────────────────────
+  ensureGameHubSchema().catch((e) =>
+    console.warn("[gamehub] schema setup failed:", e?.message),
+  );
+
   // ── WebSocket server for server-authoritative game scoring ──────────────
   // Path: /api/ws/game — starts with /api so the Metro proxy pathFilter
   // excludes it and lets our noServer handler pick it up instead.
   const gameWss = new WebSocketServer({ noServer: true });
   setupGameWebSocket(gameWss);
 
+  // ── Game Hub WebSocket (8-Ball multiplayer) — path /api/ws/hub ──────────
+  const hubWss = new WebSocketServer({ noServer: true });
+  setupGameHubWebSocket(hubWss);
+
   // Handle WebSocket upgrade requests for the game scoring path.
   // The Metro proxy upgrade handler skips paths starting with /api (pathFilter),
   // so this listener receives /api/ws/game upgrades cleanly.
   server.on("upgrade", (request, socket, head) => {
     const url = request.url || "";
-    if (url.startsWith("/api/ws/game")) {
+    if (url.startsWith("/api/ws/hub")) {
+      hubWss.handleUpgrade(request, socket as any, head, (ws) => {
+        hubWss.emit("connection", ws, request);
+      });
+    } else if (url.startsWith("/api/ws/game")) {
       gameWss.handleUpgrade(request, socket as any, head, (ws) => {
         gameWss.emit("connection", ws, request);
       });
