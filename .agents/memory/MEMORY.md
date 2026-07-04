@@ -7,4 +7,4 @@
 - [AGP gradle config-plugin pitfalls](agp-gradle-config-plugin.md) — enableDexingArtifactTransform removed in AGP 8.3 hard-fails; an upsert-only gradle.properties plugin must also FILTER deprecated keys from cached modResults.
 - [Yodo1 MAS migration](yodo1-migration.md) — Android ad stack moving AdMob→Yodo1 via a phased DORMANT foundation; build-env changes (repos, jetifier/dexing props) are NOT dormant — gate them behind one phase toggle.
 - [AdMob mediation config plugin](admob-mediation-plugin.md) — SUPERSEDED by Yodo1 migration (mediation injection removed); still useful for Expo-54 gradle ground-truth + verify-without-CLI technique.
-- [Pool/Game-Hub money invariants](pool-hub-money-invariants.md) — atomic PB modifiers only; pbHttp never rejects (checked wrapper); settle latch before await; RESUME within GRACE + MATCH_FOUND must carry ballInHand.
+- [Pool/Game-Hub money invariants](pool-hub-money-invariants.md) — atomic PB modifiers; checked pbHttp wrapper; settle-latch before first await; RESUME MATCH_FOUND must carry ballInHand.

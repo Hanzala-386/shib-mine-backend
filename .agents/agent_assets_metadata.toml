@@ -6,3 +6,21 @@ id = "stg5f5dwQykswOQ_uXUMe"
 uri = "file://ADMIN_PANEL_GUIDE.md"
 type = "text"
 title = "Admin Panel Technical Guide"
+
+[[outputs]]
+id = "GuOcTlphPOTHGuB2ZoIMr"
+uri = "file://assets/pool/sfx/cue_strike.mp3"
+type = "audio"
+title = "pool cue strike"
+
+[[outputs]]
+id = "s_QXpR7M0rOQ_nRIFtV-s"
+uri = "file://assets/pool/sfx/cushion.mp3"
+type = "audio"
+title = "pool cushion bounce"
+
+[[outputs]]
+id = "pVsAdjS_ca8gXrNmGDUPq"
+uri = "file://assets/pool/sfx/pocket.mp3"
+type = "audio"
+title = "pool pocket drop"

@@ -8,6 +8,7 @@ import {
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
+import * as ScreenOrientation from "expo-screen-orientation";
 import React, { useEffect, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -31,7 +32,7 @@ import { TournamentProvider } from "@/context/TournamentContext";
 import { TournamentBannerPopup } from "@/components/TournamentBannerPopup";
 import { TournamentWinPopup } from "@/components/TournamentWinPopup";
 import { DailyRewardWidget } from "@/components/DailyRewardWidget";
-import { View, StyleSheet } from "react-native";
+import { View, StyleSheet, Platform } from "react-native";
 import SpinningCoin from "@/components/SpinningCoin";
 
 SplashScreen.preventAutoHideAsync();
@@ -45,6 +46,13 @@ function RootLayoutNav() {
   // Request notification permission once when app loads
   useEffect(() => {
     requestNotificationPermission().catch(() => {});
+  }, []);
+
+  // Lock the whole app to portrait. Individual screens (e.g. the pool match) opt
+  // into landscape and re-lock portrait on unmount. No-op on web (lockAsync throws).
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
   }, []);
 
   // BOOT INTERCEPTION: hold the splash until BOTH auth AND the announcement audit

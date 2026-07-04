@@ -1,46 +1,82 @@
 /* ────────────────────────────────────────────────────────────────────────────
- * PoolTable — portrait 8-Ball table renderer (pure React Native Views).
+ * PoolTable — LANDSCAPE 8-Ball table renderer built on the supplied premium art.
  *
- * Uses plain Views (not Skia) so it renders identically on web preview, Expo Go,
- * and the production APK with zero native deps. It is pure presentation: it draws
- * whatever ball positions (in TABLE units) it is handed. All physics/animation
- * lives in the parent (app/hub/pool-match.tsx). The table is drawn PORTRAIT: the
- * long axis (PLAY_W) runs vertically.
+ * Pure presentation: it draws whatever ball positions (in TABLE units) it is
+ * handed. All physics/animation lives in the parent (app/hub/pool-match.tsx).
+ *
+ * The table long axis (PLAY_W = 800) runs HORIZONTALLY. The felt PNG is the
+ * complete table (rails + pockets baked in); the physics play-area is mapped onto
+ * the blue playfield sub-rectangle of that image (measured fractions below), so
+ * balls bounce at the visible cushions and drop into the drawn pockets.
+ *
+ * Art: photoreal PNG sprites for the cue ball + solids 1-6 (as supplied) and the
+ * cue stick / felt. Balls 7, 8 and the stripes 9-15 were NOT supplied, so they
+ * are drawn as glossy vector balls in a matching style.
  * ──────────────────────────────────────────────────────────────────────────── */
 
 import React from 'react';
-import { View } from 'react-native';
-import { TABLE, POCKETS } from '@shared/pool/physics';
+import { View, Text, Image } from 'react-native';
+import { TABLE } from '@shared/pool/physics';
+
+const FELT = require('../../assets/pool/sprites/felt.png');
+const CUE_STICK = require('../../assets/pool/sprites/cue_stick.png');
+const BALL_SRC: Record<number, any> = {
+  0: require('../../assets/pool/sprites/cue_ball_white.png'),
+  1: require('../../assets/pool/sprites/ball_1_yellow.png'),
+  2: require('../../assets/pool/sprites/ball_2_blue.png'),
+  3: require('../../assets/pool/sprites/ball_3_red.png'),
+  4: require('../../assets/pool/sprites/ball_4_purple.png'),
+  5: require('../../assets/pool/sprites/ball_5_orange.png'),
+  6: require('../../assets/pool/sprites/ball_6_green.png'),
+};
+
+// Felt image is 2816x1536; blue playfield trim-box = 2483x1281 +167+126.
+const FELT_AR = 2816 / 1536;
+const PF = { x0: 167 / 2816, y0: 126 / 1536, x1: 2650 / 2816, y1: 1407 / 1536 };
+// Ball sprites: content fills ~92% of the 240px box (transparent margin), so the
+// on-screen box must be slightly larger than the desired visible diameter.
+const SPRITE_BOX = 1 / 0.9167;
+// Cue stick sprite is 1522x72 (butt→tip, tip on the right).
+const STICK_AR = 1522 / 72;
 
 export interface Projection {
   scale: number;
   offX: number;
   offY: number;
-  tableW: number;
-  tableH: number;
+  feltX: number;
+  feltY: number;
+  feltW: number;
+  feltH: number;
   canvasW: number;
   canvasH: number;
   toScreen: (tx: number, ty: number) => { x: number; y: number };
   toTable: (sx: number, sy: number) => { x: number; y: number };
 }
 
-/** Portrait projection: table-x (long, 0..PLAY_W) → screen-y, table-y → screen-x. */
+/** Landscape projection: table-x (long, 0..PLAY_W) → screen-x, table-y → screen-y. */
 export function makeProjection(canvasW: number, canvasH: number): Projection {
-  const scale = Math.min(canvasW / TABLE.PLAY_H, canvasH / TABLE.PLAY_W);
-  const tableW = TABLE.PLAY_H * scale; // horizontal extent on screen
-  const tableH = TABLE.PLAY_W * scale; // vertical extent on screen
-  const offX = (canvasW - tableW) / 2;
-  const offY = (canvasH - tableH) / 2;
+  // Fit the felt image into the canvas preserving its aspect ratio.
+  let feltW = canvasW;
+  let feltH = canvasW / FELT_AR;
+  if (feltH > canvasH) { feltH = canvasH; feltW = canvasH * FELT_AR; }
+  const feltX = (canvasW - feltW) / 2;
+  const feltY = (canvasH - feltH) / 2;
+
+  // Blue playfield rect on screen.
+  const blueX = feltX + PF.x0 * feltW;
+  const blueY = feltY + PF.y0 * feltH;
+  const blueW = (PF.x1 - PF.x0) * feltW;
+  const blueH = (PF.y1 - PF.y0) * feltH;
+
+  // Uniform scale so the play area fits inside the blue rect; centered.
+  const scale = Math.min(blueW / TABLE.PLAY_W, blueH / TABLE.PLAY_H);
+  const offX = blueX + (blueW - TABLE.PLAY_W * scale) / 2;
+  const offY = blueY + (blueH - TABLE.PLAY_H * scale) / 2;
+
   return {
-    scale,
-    offX,
-    offY,
-    tableW,
-    tableH,
-    canvasW,
-    canvasH,
-    toScreen: (tx, ty) => ({ x: offX + ty * scale, y: offY + tx * scale }),
-    toTable: (sx, sy) => ({ x: (sy - offY) / scale, y: (sx - offX) / scale }),
+    scale, offX, offY, feltX, feltY, feltW, feltH, canvasW, canvasH,
+    toScreen: (tx, ty) => ({ x: offX + tx * scale, y: offY + ty * scale }),
+    toTable: (sx, sy) => ({ x: (sx - offX) / scale, y: (sy - offY) / scale }),
   };
 }
 
@@ -56,71 +92,68 @@ interface PoolTableProps {
   balls: RenderBall[];
   aimPath?: { x: number; y: number }[] | null; // TABLE-space points
   showGhost?: boolean;
+  aim?: { angle: number; power: number } | null; // drives the cue stick
 }
 
-const BALL_COLORS: Record<number, string> = {
-  1: '#F4C430', 2: '#1E5AA8', 3: '#C81E1E', 4: '#5B2A86',
-  5: '#E8720C', 6: '#1B7A3D', 7: '#7A1F2B', 8: '#0A0A0A',
+// Colors for the vector-drawn balls (7, 8, stripes) that were not supplied as art.
+const VEC_COLOR: Record<number, string> = {
+  7: '#7A1F2B', 8: '#0A0A0A',
   9: '#F4C430', 10: '#1E5AA8', 11: '#C81E1E', 12: '#5B2A86',
   13: '#E8720C', 14: '#1B7A3D', 15: '#7A1F2B',
 };
-const isStripe = (id: number) => id >= 9 && id <= 15;
 
-export default function PoolTable({ proj, balls, aimPath, showGhost }: PoolTableProps) {
+function VectorBall({ id, size }: { id: number; size: number }) {
+  const R = size / 2;
+  const stripe = id >= 9 && id <= 15;
+  const color = VEC_COLOR[id] ?? '#888';
+  const disc = size * 0.42;
+  return (
+    <View
+      style={{
+        width: size, height: size, borderRadius: R, overflow: 'hidden',
+        backgroundColor: stripe ? '#FBFBF3' : color,
+        borderWidth: 0.5, borderColor: 'rgba(0,0,0,0.35)',
+      }}
+    >
+      {stripe && (
+        <View style={{ position: 'absolute', left: 0, right: 0, top: size * 0.28, height: size * 0.44, backgroundColor: color }} />
+      )}
+      {/* number disc */}
+      <View
+        style={{
+          position: 'absolute', left: (size - disc) / 2, top: (size - disc) / 2,
+          width: disc, height: disc, borderRadius: disc / 2, backgroundColor: '#FBFBF3',
+          alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        <Text style={{ fontSize: size * 0.26, fontWeight: '900', color: '#111', lineHeight: size * 0.3 }}>{id}</Text>
+      </View>
+      {/* specular highlight */}
+      <View style={{ position: 'absolute', left: size * 0.16, top: size * 0.1, width: size * 0.36, height: size * 0.24, borderRadius: size * 0.18, backgroundColor: 'rgba(255,255,255,0.5)' }} />
+    </View>
+  );
+}
+
+export default function PoolTable({ proj, balls, aimPath, showGhost, aim }: PoolTableProps) {
   const R = TABLE.BALL_R * proj.scale;
+  const box = R * 2 * SPRITE_BOX;
+
+  const cue = balls.find((b) => b.id === 0 && b.active);
+  const cueS = cue ? proj.toScreen(cue.x, cue.y) : null;
+
+  // Cue stick geometry (behind the ball, tip pointing toward it; pull ∝ power).
+  const stickLen = R * 26;
+  const stickThick = stickLen / STICK_AR;
+  const gap = R * 0.6 + (aim?.power ?? 0) * R * 6;
 
   return (
     <View style={{ width: proj.canvasW, height: proj.canvasH }}>
-      {/* Rail / frame */}
-      <View
-        style={{
-          position: 'absolute',
-          left: proj.offX - 14,
-          top: proj.offY - 14,
-          width: proj.tableW + 28,
-          height: proj.tableH + 28,
-          borderRadius: 20,
-          backgroundColor: '#170F06',
-          borderWidth: 2,
-          borderColor: 'rgba(244,196,48,0.35)',
-        }}
+      {/* Table (felt + rails + pockets are all baked into the art) */}
+      <Image
+        source={FELT}
+        resizeMode="contain"
+        style={{ position: 'absolute', left: proj.feltX, top: proj.feltY, width: proj.feltW, height: proj.feltH }}
       />
-      {/* Felt */}
-      <View
-        style={{
-          position: 'absolute',
-          left: proj.offX,
-          top: proj.offY,
-          width: proj.tableW,
-          height: proj.tableH,
-          borderRadius: 10,
-          backgroundColor: '#0C5C39',
-          borderWidth: 4,
-          borderColor: '#08462B',
-        }}
-      />
-
-      {/* Pockets */}
-      {POCKETS.map((p, i) => {
-        const s = proj.toScreen(p.x, p.y);
-        const pr = p.r * proj.scale;
-        return (
-          <View
-            key={`pk${i}`}
-            style={{
-              position: 'absolute',
-              left: s.x - pr,
-              top: s.y - pr,
-              width: pr * 2,
-              height: pr * 2,
-              borderRadius: pr,
-              backgroundColor: '#050505',
-              borderWidth: 1.5,
-              borderColor: 'rgba(244,196,48,0.4)',
-            }}
-          />
-        );
-      })}
 
       {/* Aim guide dots */}
       {aimPath && aimPath.length > 1 && aimPath.map((pt, i) => {
@@ -130,13 +163,8 @@ export default function PoolTable({ proj, balls, aimPath, showGhost }: PoolTable
           <View
             key={`aim${i}`}
             style={{
-              position: 'absolute',
-              left: s.x - 2,
-              top: s.y - 2,
-              width: 4,
-              height: 4,
-              borderRadius: 2,
-              backgroundColor: 'rgba(255,255,255,0.75)',
+              position: 'absolute', left: s.x - 2.5, top: s.y - 2.5, width: 5, height: 5,
+              borderRadius: 2.5, backgroundColor: 'rgba(255,255,255,0.8)',
             }}
           />
         );
@@ -149,14 +177,8 @@ export default function PoolTable({ proj, balls, aimPath, showGhost }: PoolTable
         return (
           <View
             style={{
-              position: 'absolute',
-              left: s.x - R,
-              top: s.y - R,
-              width: R * 2,
-              height: R * 2,
-              borderRadius: R,
-              borderWidth: 1.5,
-              borderColor: 'rgba(255,255,255,0.5)',
+              position: 'absolute', left: s.x - R, top: s.y - R, width: R * 2, height: R * 2,
+              borderRadius: R, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.55)',
             }}
           />
         );
@@ -165,38 +187,36 @@ export default function PoolTable({ proj, balls, aimPath, showGhost }: PoolTable
       {/* Balls */}
       {balls.filter((b) => b.active).map((b) => {
         const s = proj.toScreen(b.x, b.y);
-        const left = s.x - R;
-        const top = s.y - R;
-        const base = {
-          position: 'absolute' as const,
-          left,
-          top,
-          width: R * 2,
-          height: R * 2,
-          borderRadius: R,
-        };
-        if (b.id === 0) {
+        const src = BALL_SRC[b.id];
+        if (src) {
           return (
-            <View key="ball0" style={{ ...base, backgroundColor: '#F5F5F5' }}>
-              <View style={{ position: 'absolute', left: R * 0.4, top: R * 0.4, width: R * 0.55, height: R * 0.55, borderRadius: R * 0.3, backgroundColor: 'rgba(255,255,255,0.9)' }} />
-            </View>
-          );
-        }
-        const color = BALL_COLORS[b.id] ?? '#888';
-        if (isStripe(b.id)) {
-          return (
-            <View key={`ball${b.id}`} style={{ ...base, backgroundColor: '#F5F5F5', overflow: 'hidden', borderWidth: 0.5, borderColor: 'rgba(0,0,0,0.25)' }}>
-              <View style={{ position: 'absolute', left: 0, right: 0, top: R * 0.55, height: R * 0.9, backgroundColor: color }} />
-              <View style={{ position: 'absolute', left: R * 0.4, top: R * 0.35, width: R * 0.4, height: R * 0.4, borderRadius: R * 0.2, backgroundColor: 'rgba(255,255,255,0.45)' }} />
-            </View>
+            <Image
+              key={`ball${b.id}`}
+              source={src}
+              resizeMode="contain"
+              style={{ position: 'absolute', left: s.x - box / 2, top: s.y - box / 2, width: box, height: box }}
+            />
           );
         }
         return (
-          <View key={`ball${b.id}`} style={{ ...base, backgroundColor: color }}>
-            <View style={{ position: 'absolute', left: R * 0.4, top: R * 0.4, width: R * 0.5, height: R * 0.5, borderRadius: R * 0.3, backgroundColor: 'rgba(255,255,255,0.4)' }} />
+          <View key={`ball${b.id}`} style={{ position: 'absolute', left: s.x - R, top: s.y - R }}>
+            <VectorBall id={b.id} size={R * 2} />
           </View>
         );
       })}
+
+      {/* Cue stick — only while aiming */}
+      {aim && cueS && (
+        <View
+          style={{ position: 'absolute', left: cueS.x, top: cueS.y, width: 0, height: 0, pointerEvents: 'none', transform: [{ rotate: `${aim.angle}rad` }] }}
+        >
+          <Image
+            source={CUE_STICK}
+            resizeMode="contain"
+            style={{ position: 'absolute', width: stickLen, height: stickThick, left: -(R + gap + stickLen), top: -stickThick / 2 }}
+          />
+        </View>
+      )}
     </View>
   );
 }

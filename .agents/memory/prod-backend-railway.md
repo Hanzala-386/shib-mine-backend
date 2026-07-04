@@ -24,3 +24,18 @@ description: The shipped APK calls the Express /api/app/* routes in PRODUCTION v
 # Referral commission policy (this app)
 - 10% referral commission is paid **only** on a referee's **mining** claim (`/api/app/mine/claim`, base `serverReward * 0.1`). Gameplay / power-token earnings must **never** credit referral (the old `/api/app/game/reward` `safeAmount * 0.1` block was removed from both copies).
 - SEPARATE and intentional: a one-time **+30 Power Token signup bonus** to the referrer fires in `/api/app/auth/sync` when a new user registers with a referrer's code. That is not the 10% commission and is unrelated — do not conflate or remove it when touching referral commission.
+
+## Pool 8-Ball Game Hub is dev-only (NOT in prod backend)
+The server-authoritative 8-Ball pool Game Hub lives ONLY in the root dev server:
+`server/gamehub.ts`, WS path `/api/ws/hub`, wired via `setupGameHubWebSocket` +
+`ensureGameHubSchema` in `server/index.ts`. The prod copy `shib-mine-backend/` has
+NO gamehub — it only wires the Knife-Hit scoring WS (`/api/ws/game`,
+`setupGameWebSocket` in `shib-mine-backend/server/routes.ts`).
+
+So online real-money pool CANNOT work in the published APK until the whole hub
+(gamehub.ts + shared/pool/{physics,rules}.ts + the `/api/ws/hub` upgrade handler +
+index.ts hookup) is ported into shib-mine-backend and deployed to Railway.
+**Why:** the two Express trees diverged and the pool slice was built dev-only.
+pool-match.tsx re-derives its animation from the server-echoed shot, so with no
+prod hub online mode simply never matches (falls back to practice/idle) — a silent
+gap, not a crash. Tracked by the "Deploy backend to Railway" follow-up.

@@ -32,6 +32,10 @@ import {
   POOL_TIERS, computePoolSettlement, TURN_SECONDS, GRACE_SECONDS, MAX_SKIPPED_TURNS,
   type Seat, type HubServerMsg, type HubClientMsg, type MatchPhase,
 } from '../shared/gamehub';
+import {
+  applyShotRules, groupCleared, isBreakState,
+  type Group, type RuleState,
+} from '../shared/pool/rules';
 
 const PB_URL = 'https://api.webcod.in';
 
@@ -135,7 +139,6 @@ async function safeRefund(pbId: string, amount: number, ctx: string): Promise<vo
 }
 
 /* ── In-memory match state ────────────────────────────────────────────────── */
-type Group = 'solids' | 'stripes';
 interface Player {
   seat: Seat;
   pbId: string;
@@ -169,8 +172,6 @@ const matches = new Map<string, Match>();
 const ctxOf = new WeakMap<WebSocket, WsCtx>();
 
 const other = (s: Seat): Seat => (s === 'A' ? 'B' : 'A');
-const groupIds = (g: Group): number[] => (g === 'solids' ? [1, 2, 3, 4, 5, 6, 7] : [9, 10, 11, 12, 13, 14, 15]);
-const ballGroup = (id: number): Group | null => (id >= 1 && id <= 7 ? 'solids' : id >= 9 && id <= 15 ? 'stripes' : null);
 
 function send(ws: WebSocket | null, msg: HubServerMsg): void {
   try { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); } catch { /* noop */ }
@@ -368,12 +369,7 @@ async function createMatch(
   startTurnTimer(m);
 }
 
-/* ── Shot resolution (authoritative 8-ball rules) ─────────────────────────── */
-function allGroupPocketed(state: TableState, g: Group): boolean {
-  const ids = groupIds(g);
-  return ids.every((id) => { const b = state.balls.find((x) => x.id === id); return !b || !b.active; });
-}
-
+/* ── Shot resolution (authoritative 8-ball rules via shared/pool/rules.ts) ── */
 function seatOf(m: Match, ws: WebSocket): Seat | null {
   if (m.players.A.ws === ws) return 'A';
   if (m.players.B.ws === ws) return 'B';
@@ -391,26 +387,36 @@ function handleShot(ws: WebSocket, msg: Extract<HubClientMsg, { type: 'SHOT' }>)
   if (!cue || !cue.active) { send(ws, { type: 'ERROR', code: 'place_cue_first', message: 'Place the cue ball first' }); return; }
 
   const shot: ShotInput = { angle: Number(msg.shot?.angle) || 0, power: Math.max(0, Math.min(1, Number(msg.shot?.power) || 0)) };
-  const result = simulateShot(m.state, shot);
+
+  // Snapshot the pre-shot rule state — shooter-on-8 and break detection MUST read
+  // the state BEFORE the balls move (finalState has already sunk them).
+  const preState = m.state;
+  const shooterGroupBefore = m.players[seat].group;
+  const rs: RuleState = {
+    openTable: m.openTable,
+    shooterGroup: shooterGroupBefore,
+    shooterOnEight: shooterGroupBefore !== null && groupCleared(preState, shooterGroupBefore),
+    isBreak: isBreakState(preState),
+  };
+
+  const result = simulateShot(preState, shot);
   m.state = result.finalState;
   m.players[seat].skipped = 0;
 
-  const shooterGroupBefore = m.players[seat].group;
-  const foulScratch = result.cuePocketed;
-  const foulNoContact = result.firstContactId === null;
-  let foulWrongFirst = false;
-  if (!m.openTable && shooterGroupBefore && result.firstContactId !== null && result.firstContactId !== 8) {
-    const fg = ballGroup(result.firstContactId);
-    if (fg && fg !== shooterGroupBefore) foulWrongFirst = true;
-  }
-  const foul = foulScratch || foulNoContact || foulWrongFirst;
+  // Authoritative turn transition from the SHARED rules engine (the same module
+  // the client replays for offline practice — one source of truth).
+  const tr = applyShotRules(rs, result);
 
-  // 8-ball resolution.
-  if (result.pocketed.includes(8)) {
-    const onEight = shooterGroupBefore !== null && allGroupPocketed(m.state, shooterGroupBefore);
-    // finalState already has the 8 removed; onEight checks the 7 group balls only.
-    const legalWin = onEight && !foulScratch && !foul;
-    const winner: Seat = legalWin ? seat : other(seat);
+  // Apply an open-table group assignment.
+  if (tr.assignedGroup) {
+    m.players[seat].group = tr.assignedGroup;
+    m.players[other(seat)].group = tr.assignedGroup === 'solids' ? 'stripes' : 'solids';
+    m.openTable = false;
+  }
+
+  // 8-ball resolution ends the match.
+  if (tr.gameOver) {
+    const winner: Seat = tr.gameOver.shooterWins ? seat : other(seat);
     broadcast(m, {
       type: 'SHOT_RESULT', matchId: m.id, by: seat, shot,
       events: result.events, finalState: m.state, pocketed: result.pocketed,
@@ -420,34 +426,14 @@ function handleShot(ws: WebSocket, msg: Extract<HubClientMsg, { type: 'SHOT' }>)
     return;
   }
 
-  // Open-table group assignment on a clean pot.
-  const nonEightPocketed = result.pocketed.filter((id) => id !== 8);
-  if (m.openTable && !foul && nonEightPocketed.length > 0) {
-    const firstType = ballGroup(nonEightPocketed.sort((x, y) => x - y)[0]);
-    if (firstType) {
-      m.players[seat].group = firstType;
-      m.players[other(seat)].group = firstType === 'solids' ? 'stripes' : 'solids';
-      m.openTable = false;
-    }
-  }
-
-  // Did the shooter legally pot one of their own group?
-  const shooterGroup = m.players[seat].group;
-  const pottedOwn = !foul && shooterGroup !== null && nonEightPocketed.some((id) => groupIds(shooterGroup).includes(id));
-
-  let nextTurn: Seat;
-  let ballInHand: boolean;
-  if (foul) { nextTurn = other(seat); ballInHand = true; }
-  else if (pottedOwn) { nextTurn = seat; ballInHand = false; }
-  else { nextTurn = other(seat); ballInHand = false; }
-
+  const nextTurn: Seat = tr.keepTurn ? seat : other(seat);
   m.turn = nextTurn;
-  m.ballInHand = ballInHand;
+  m.ballInHand = tr.ballInHand;
 
   broadcast(m, {
     type: 'SHOT_RESULT', matchId: m.id, by: seat, shot,
     events: result.events, finalState: m.state, pocketed: result.pocketed,
-    cuePocketed: result.cuePocketed, nextTurn, ballInHand,
+    cuePocketed: result.cuePocketed, nextTurn, ballInHand: tr.ballInHand,
   });
   startTurnTimer(m);
   send(m.players.A.ws, { type: 'TURN', matchId: m.id, turn: nextTurn, turnEndsAt: m.turnEndsAt });
