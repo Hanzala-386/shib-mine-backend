@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Flappy Bounce</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Poppins:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+    <link href="assets/style.css" rel="stylesheet">
+    <link rel="icon" href="assets/icon.png">
+</head>
+
+<body>
+
+    <div class="game-wrapper">
+        <div class="game-container" id="gameContainer">
+
+            <canvas id="gameCanvas" width="400" height="640"></canvas>
+
+            <div class="hud">
+                <div class="hud-title"><span>🐦</span> Flappy Bounce</div>
+                <div class="hud-score">🏆 <span id="scoreDisplay">0</span></div>
+            </div>
+
+            <div class="hud-lives" id="livesDisplay">
+                <span class="heart-icon" data-i="0">❤️</span>
+                <span class="heart-icon" data-i="1">❤️</span>
+                <span class="heart-icon" data-i="2">❤️</span>
+            </div>
+
+            <div class="hud-secondary">
+                <button class="icon-btn" id="muteBtn" title="Toggle sound">🔊</button>
+                <button class="icon-btn" id="helpBtn" title="How to play">❓</button>
+            </div>
+
+            <!-- Preloader -->
+            <div class="preloader" id="preloader">
+                <div class="preloader-bird">🐦</div>
+                <div class="preloader-title">FLAPPY BOUNCE</div>
+                <div class="preloader-bar-track">
+                    <div class="preloader-bar-fill" id="preloaderFill"></div>
+                </div>
+                <div class="preloader-percent" id="preloaderPercent">0%</div>
+                <div class="preloader-tip" id="preloaderTip">Polishing feathers...</div>
+            </div>
+
+            <!-- Bird selection -->
+            <div class="birdselect-overlay" id="birdSelectOverlay">
+                <div class="birdselect-box">
+                    <h2>Choose Your Bird</h2>
+                    <p class="birdselect-sub">Pick a flyer before you take off</p>
+                    <div class="bird-options" id="birdOptions">
+                        <button class="bird-option" data-skin="0" type="button">
+                            <canvas class="bird-preview-canvas" id="birdPreview0" width="160" height="160"></canvas>
+                            <span class="bird-option-name">Skyler</span>
+                        </button>
+                        <button class="bird-option" data-skin="1" type="button">
+                            <canvas class="bird-preview-canvas" id="birdPreview1" width="160" height="160"></canvas>
+                            <span class="bird-option-name">Blaze</span>
+                        </button>
+                        <button class="bird-option" data-skin="2" type="button">
+                            <canvas class="bird-preview-canvas" id="birdPreview2" width="160" height="160"></canvas>
+                            <span class="bird-option-name">Sunny</span>
+                        </button>
+                    </div>
+                    <button class="btn-start" id="birdSelectContinueBtn">Continue ➜</button>
+                </div>
+            </div>
+
+            <!-- How to play / Pause -->
+            <div class="howto-overlay" id="howtoOverlay">
+                <div class="howto-box">
+                    <div class="howto-bird-icon">🐦</div>
+                    <h2 id="howtoTitle">How To Play</h2>
+                    <div class="howto-rows">
+                        <div class="howto-row">
+                            <div class="howto-icon">👆</div>
+                            <div class="howto-text">
+                                <strong>Tap or Press Space</strong>
+                                <span>Flap your wings and rise into the sky</span>
+                            </div>
+                        </div>
+                        <div class="howto-row">
+                            <div class="howto-icon">🚧</div>
+                            <div class="howto-text">
+                                <strong>Dodge the Pipes</strong>
+                                <span>Glide through the gaps without touching anything</span>
+                            </div>
+                        </div>
+                        <div class="howto-row">
+                            <div class="howto-icon">⭐</div>
+                            <div class="howto-text">
+                                <strong>Score Points</strong>
+                                <span>Earn a point for every pipe you clear</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="btn-start" id="startBtn">Let's Fly 🚀</button>
+                </div>
+            </div>
+
+            <!-- Game Over -->
+            <div class="game-over-overlay" id="gameOverOverlay">
+                <div class="game-over-box">
+                    <span class="medal" id="medalIcon">🥉</span>
+                    <h2>Game Over</h2>
+                    <div class="new-best-badge" id="newBestBadge">✨ NEW BEST! ✨</div>
+                    <div class="final-label">Score</div>
+                    <div class="final-score" id="finalScore">0</div>
+                    <div class="medal-label" id="medalLabel">Rising Flyer</div>
+                    <div class="best-score">🏅 Best: <span id="bestScore">0</span></div>
+                    <button class="btn-restart" id="restartBtn">↻ Play Again</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    <script src="arcade-sdk.js"></script>
+    <script src="assets/script.js"></script>
+
+
+</body>
+
+</html>

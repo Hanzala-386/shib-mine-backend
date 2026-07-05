@@ -61,7 +61,7 @@ function pbHttp(method: string, path: string, body: object | null, token?: strin
 
 let _adminToken = '';
 let _tokenExpiry = 0;
-async function getAdminToken(): Promise<string> {
+export async function getAdminToken(): Promise<string> {
   if (_adminToken && Date.now() < _tokenExpiry) return _adminToken;
   const res = await pbHttp('POST', '/api/admins/auth-with-password', {
     identity: process.env.PB_ADMIN_EMAIL,
@@ -72,9 +72,9 @@ async function getAdminToken(): Promise<string> {
   _tokenExpiry = Date.now() + 23 * 60 * 60 * 1000;
   return _adminToken;
 }
-async function pbGet(path: string) { return pbHttp('GET', path, null, await getAdminToken()); }
-async function pbPost(path: string, body: object) { return pbHttp('POST', path, body, await getAdminToken()); }
-async function pbPatch(path: string, body: object) { return pbHttp('PATCH', path, body, await getAdminToken()); }
+export async function pbGet(path: string) { return pbHttp('GET', path, null, await getAdminToken()); }
+export async function pbPost(path: string, body: object) { return pbHttp('POST', path, body, await getAdminToken()); }
+export async function pbPatch(path: string, body: object) { return pbHttp('PATCH', path, body, await getAdminToken()); }
 
 /* ── Schema: ensure users.hit_tickets exists ──────────────────────────────── */
 export async function ensureGameHubSchema(): Promise<void> {
@@ -96,8 +96,8 @@ export async function ensureGameHubSchema(): Promise<void> {
 }
 
 /* ── User balance helpers ─────────────────────────────────────────────────── */
-interface HubUser { id: string; power_tokens: number; hit_tickets: number; display_name: string }
-async function fetchUser(pbId: string): Promise<HubUser | null> {
+export interface HubUser { id: string; power_tokens: number; hit_tickets: number; display_name: string }
+export async function fetchUser(pbId: string): Promise<HubUser | null> {
   try {
     const r = await pbGet(`/api/collections/users/records/${pbId}`);
     if (!r?.id) return null;
@@ -105,7 +105,7 @@ async function fetchUser(pbId: string): Promise<HubUser | null> {
   } catch { return null; }
 }
 /** Verify a PB auth token actually belongs to pbId (real-money safety). */
-async function verifyToken(token: string, pbId: string): Promise<boolean> {
+export async function verifyToken(token: string, pbId: string): Promise<boolean> {
   try {
     const r = await pbHttp('GET', `/api/collections/users/records/${pbId}`, null, token);
     return r?.id === pbId;
@@ -113,27 +113,27 @@ async function verifyToken(token: string, pbId: string): Promise<boolean> {
 }
 /** PATCH that THROWS on any PB error response. pbHttp resolves on ALL HTTP statuses, so any
  *  money write MUST verify PB echoed the record back (failures return {code,message}, no id). */
-async function pbPatchChecked(path: string, body: object): Promise<any> {
+export async function pbPatchChecked(path: string, body: object): Promise<any> {
   const r = await pbPatch(path, body);
   if (!r || r.code || !r.id) throw new Error(`PB PATCH failed (${path}): ${JSON.stringify(r).slice(0, 200)}`);
   return r;
 }
 /** Debit via an ATOMIC field modifier (never read-modify-write) so concurrent balance writes
  *  can't clobber each other. Returns false only for insufficient funds; THROWS on write failure. */
-async function debitPT(pbId: string, amount: number): Promise<boolean> {
+export async function debitPT(pbId: string, amount: number): Promise<boolean> {
   const u = await fetchUser(pbId);
   if (!u || u.power_tokens < amount) return false;
   await pbPatchChecked(`/api/collections/users/records/${pbId}`, { 'power_tokens-': amount });
   return true;
 }
-async function creditPT(pbId: string, amount: number): Promise<void> {
+export async function creditPT(pbId: string, amount: number): Promise<void> {
   await pbPatchChecked(`/api/collections/users/records/${pbId}`, { 'power_tokens+': amount });
 }
-async function creditTickets(pbId: string, amount: number): Promise<void> {
+export async function creditTickets(pbId: string, amount: number): Promise<void> {
   await pbPatchChecked(`/api/collections/users/records/${pbId}`, { 'hit_tickets+': amount });
 }
 /** Refund that never throws — logs CRITICAL on failure so a lost stake is at least recoverable by hand. */
-async function safeRefund(pbId: string, amount: number, ctx: string): Promise<void> {
+export async function safeRefund(pbId: string, amount: number, ctx: string): Promise<void> {
   try { await creditPT(pbId, amount); console.log(`[gamehub] refunded ${amount} PT → ${pbId} (${ctx})`); }
   catch (e: any) { console.error(`[gamehub] CRITICAL refund FAILED ${amount} PT → ${pbId} (${ctx}):`, e?.message); }
 }

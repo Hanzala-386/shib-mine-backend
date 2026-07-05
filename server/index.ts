@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { registerRoutes, setupGameWebSocket } from "./routes";
 import { setupTournamentSchema, startTournamentCron } from "./tournament";
 import { setupGameHubWebSocket, ensureGameHubSchema } from "./gamehub";
+import { setupArcadeHubWebSocket, ensureSuspiciousUsersCollection } from "./arcadehub";
 import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
@@ -224,6 +225,7 @@ function configureExpoAndLanding(app: express.Application) {
   app.use("/assets", express.static(path.resolve(process.cwd(), "assets")));
   app.use("/game", express.static(path.resolve(process.cwd(), "public/game/Knife hit Template")));
   app.use("/arcade", express.static(path.resolve(process.cwd(), "public/arcade")));
+  app.use("/flappy", express.static(path.resolve(process.cwd(), "public/flappy")));
   app.use(express.static(path.resolve(process.cwd(), "static-build")));
 
   log("Expo routing: Checking expo-platform header on / and /manifest");
@@ -255,6 +257,7 @@ function setupErrorHandler(app: express.Application) {
   // in both dev and production without Metro intercepting /game and /arcade.
   app.use("/game",   express.static(path.resolve(process.cwd(), "public/game/Knife hit Template")));
   app.use("/arcade", express.static(path.resolve(process.cwd(), "public/arcade")));
+  app.use("/flappy", express.static(path.resolve(process.cwd(), "public/flappy")));
 
   // ── DEV-ONLY: Metro proxy — registered FIRST so it wins before anything else ──
   // Non-API requests are forwarded directly to Metro on :8081.
@@ -268,7 +271,8 @@ function setupErrorHandler(app: express.Application) {
       pathFilter: (pathname) =>
         !pathname.startsWith("/api") &&
         !pathname.startsWith("/game") &&
-        !pathname.startsWith("/arcade"),
+        !pathname.startsWith("/arcade") &&
+        !pathname.startsWith("/flappy"),
       on: {
         error: (_err, _req, res) => {
           if (res && "status" in res) {
@@ -280,7 +284,7 @@ function setupErrorHandler(app: express.Application) {
       },
     });
     app.use(metroProxy);
-    log("Dev proxy: Metro on :8081 registered (excludes /api, /game, /arcade)");
+    log("Dev proxy: Metro on :8081 registered (excludes /api, /game, /arcade, /flappy)");
   }
 
   setupCors(app);
@@ -304,6 +308,11 @@ function setupErrorHandler(app: express.Application) {
     console.warn("[gamehub] schema setup failed:", e?.message),
   );
 
+  // ── Arcade PvP anti-cheat log collection ────────────────────────────────
+  ensureSuspiciousUsersCollection().catch((e) =>
+    console.warn("[arcade] suspicious_users setup failed:", e?.message),
+  );
+
   // ── WebSocket server for server-authoritative game scoring ──────────────
   // Path: /api/ws/game — starts with /api so the Metro proxy pathFilter
   // excludes it and lets our noServer handler pick it up instead.
@@ -314,12 +323,20 @@ function setupErrorHandler(app: express.Application) {
   const hubWss = new WebSocketServer({ noServer: true });
   setupGameHubWebSocket(hubWss);
 
+  // ── Arcade PvP WebSocket — path /api/ws/hub-arcade ──────────────────────
+  const arcadeWss = new WebSocketServer({ noServer: true });
+  setupArcadeHubWebSocket(arcadeWss);
+
   // Handle WebSocket upgrade requests for the game scoring path.
   // The Metro proxy upgrade handler skips paths starting with /api (pathFilter),
   // so this listener receives /api/ws/game upgrades cleanly.
   server.on("upgrade", (request, socket, head) => {
     const url = request.url || "";
-    if (url.startsWith("/api/ws/hub")) {
+    if (url.startsWith("/api/ws/hub-arcade")) {
+      arcadeWss.handleUpgrade(request, socket as any, head, (ws) => {
+        arcadeWss.emit("connection", ws, request);
+      });
+    } else if (url.startsWith("/api/ws/hub")) {
       hubWss.handleUpgrade(request, socket as any, head, (ws) => {
         hubWss.emit("connection", ws, request);
       });
