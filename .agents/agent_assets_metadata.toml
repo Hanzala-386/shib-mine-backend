@@ -24,3 +24,9 @@ id = "pVsAdjS_ca8gXrNmGDUPq"
 uri = "file://assets/pool/sfx/pocket.mp3"
 type = "audio"
 title = "pool pocket drop"
+
+[[outputs]]
+id = "aOFewH0Ug8GaBQfhkwrg9"
+uri = "file://dist/flappy-webcod-update.zip"
+type = "unspecified"
+title = "Flappy webcod.in update (arcade-sdk.js + assets/script.js)"

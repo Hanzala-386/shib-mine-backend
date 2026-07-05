@@ -57,6 +57,14 @@ args = "Start App"
 task = "workflow.run"
 args = "Start Frontend"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "prod-backend-build"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "dev-backend-build"
+
 [[workflows.workflow]]
 name = "Start App"
 author = "agent"
@@ -91,6 +99,28 @@ args = "npm run expo:dev"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow]]
+name = "prod-backend-build"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd shib-mine-backend && npm run server:build && rm -rf server_dist"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "dev-backend-build"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm run server:build && rm -rf server_dist"
+
+[workflows.workflow.metadata]
+isValidation = true
 
 [userenv]
 

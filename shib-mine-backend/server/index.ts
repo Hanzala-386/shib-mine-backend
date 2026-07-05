@@ -1,6 +1,7 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { registerRoutes, setupGameWebSocket } from "./routes";
+import { setupArcadeHubWebSocket, ensureSuspiciousUsersCollection } from "./arcadehub";
 import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
@@ -300,12 +301,24 @@ function setupErrorHandler(app: express.Application) {
   const gameWss = new WebSocketServer({ noServer: true });
   setupGameWebSocket(gameWss);
 
+  // ── Arcade PvP WebSocket — path /api/ws/hub-arcade ──────────────────────
+  // Score-matching PvP arcade engine (Flappy Bounce + future CodeCanyon games).
+  const arcadeWss = new WebSocketServer({ noServer: true });
+  setupArcadeHubWebSocket(arcadeWss);
+  ensureSuspiciousUsersCollection().catch((e: any) =>
+    console.warn("[arcade] suspicious_users setup failed:", e?.message),
+  );
+
   // Handle WebSocket upgrade requests for the game scoring path.
   // The Metro proxy upgrade handler skips paths starting with /api (pathFilter),
   // so this listener receives /api/ws/game upgrades cleanly.
   server.on("upgrade", (request, socket, head) => {
     const url = request.url || "";
-    if (url.startsWith("/api/ws/game")) {
+    if (url.startsWith("/api/ws/hub-arcade")) {
+      arcadeWss.handleUpgrade(request, socket as any, head, (ws) => {
+        arcadeWss.emit("connection", ws, request);
+      });
+    } else if (url.startsWith("/api/ws/game")) {
       gameWss.handleUpgrade(request, socket as any, head, (ws) => {
         gameWss.emit("connection", ws, request);
       });

@@ -25,17 +25,23 @@ description: The shipped APK calls the Express /api/app/* routes in PRODUCTION v
 - 10% referral commission is paid **only** on a referee's **mining** claim (`/api/app/mine/claim`, base `serverReward * 0.1`). Gameplay / power-token earnings must **never** credit referral (the old `/api/app/game/reward` `safeAmount * 0.1` block was removed from both copies).
 - SEPARATE and intentional: a one-time **+30 Power Token signup bonus** to the referrer fires in `/api/app/auth/sync` when a new user registers with a referrer's code. That is not the 10% commission and is unrelated — do not conflate or remove it when touching referral commission.
 
-## Pool 8-Ball Game Hub is dev-only (NOT in prod backend)
-The server-authoritative 8-Ball pool Game Hub lives ONLY in the root dev server:
-`server/gamehub.ts`, WS path `/api/ws/hub`, wired via `setupGameHubWebSocket` +
-`ensureGameHubSchema` in `server/index.ts`. The prod copy `shib-mine-backend/` has
-NO gamehub — it only wires the Knife-Hit scoring WS (`/api/ws/game`,
-`setupGameWebSocket` in `shib-mine-backend/server/routes.ts`).
+## Pool + Arcade Game Hubs: ported to prod SOURCE, pending Railway deploy
+Both server-authoritative real-money hubs now exist in BOTH Express copies and are
+kept BYTE-IDENTICAL (always verify with `diff -q` after any change):
+- Pool 8-Ball: `gamehub.ts` (WS `/api/ws/hub`) + `shared/pool/{physics,rules}.ts`.
+- Async score-match arcade (Flappy Bounce): `arcadehub.ts` (WS `/api/ws/hub-arcade`)
+  + `shared/arcade.ts`; reuses gamehub's PB money helpers (fetchUser/debitPT/
+  creditTickets/safeRefund/pbPatchChecked/pbDeleteChecked).
+Each is wired in its own `server/index.ts` via `setupGameHubWebSocket` /
+`setupArcadeHubWebSocket` (+ the matching `ensure*Schema`).
 
-So online real-money pool CANNOT work in the published APK until the whole hub
-(gamehub.ts + shared/pool/{physics,rules}.ts + the `/api/ws/hub` upgrade handler +
-index.ts hookup) is ported into shib-mine-backend and deployed to Railway.
-**Why:** the two Express trees diverged and the pool slice was built dev-only.
-pool-match.tsx re-derives its animation from the server-echoed shot, so with no
-prod hub online mode simply never matches (falls back to practice/idle) — a silent
-gap, not a crash. Tracked by the "Deploy backend to Railway" follow-up.
+**Status:** the prod SOURCE (`shib-mine-backend/`) HAS both hubs, but they only go
+LIVE after that nested repo is committed and pushed to GitHub → Railway (the "Deploy
+backend to Railway" follow-up). Until then online modes fall back to practice/idle in
+the published APK — a silent gap, not a crash.
+
+**Rule:** any hub/engine change must be copied byte-identical into `shib-mine-backend/`
+(`diff -q server/<f> shib-mine-backend/server/<f>`) AND the prod esbuild
+(`cd shib-mine-backend && npm run server:build`) must exit 0 before it can be deployed.
+See `arcade-escrow-money-safety.md` for the shared-PB sweep / delete-as-claim / checked-
+write invariants that make these hubs money-safe.

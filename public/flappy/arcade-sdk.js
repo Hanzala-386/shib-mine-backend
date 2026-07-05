@@ -22,6 +22,7 @@
   var inMatch = false;   // true only after the RN host confirms a live PvP match
   var freezeCb = null;
   var lastScore = -1;
+  var matchLives = 1;    // server-defined lives for the live PvP match (sudden death = 1)
 
   function postRN(msg) {
     if (RN && RN.postMessage) {
@@ -38,6 +39,8 @@
       case 'ARCADE_MATCH_START':
         inMatch = true;
         lastScore = -1;
+        // PvP lives come from the authoritative server (default sudden-death 1).
+        matchLives = (Number(data.lives) > 0) ? Number(data.lives) : 1;
         break;
       case 'ARCADE_FREEZE':
         if (typeof freezeCb === 'function') { try { freezeCb(); } catch (e) { /* noop */ } }
@@ -69,6 +72,11 @@
     },
     onFreeze: function (cb) { freezeCb = cb; },
     isMatch: function () { return inMatch; },
+    // Effective max lives: PvP uses the server value (sudden-death 1); offline
+    // uses the game's own default so practice mode stays 3 lives.
+    maxLives: function (offlineDefault) {
+      return inMatch ? matchLives : (Number(offlineDefault) > 0 ? Number(offlineDefault) : matchLives);
+    },
   };
 
   // Announce load so the host knows the WebView is ready to receive a match.

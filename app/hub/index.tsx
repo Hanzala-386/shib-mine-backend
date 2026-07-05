@@ -1,21 +1,29 @@
-/* Multiplayer Tournament Hub — game grid (8-Ball live, others coming soon). */
+/* Multiplayer Tournament Hub — game grid (Flappy Bounce + 8-Ball live, others coming soon). */
 
 import React from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, Platform } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, Platform, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import Colors from '@/constants/colors';
 
-type HubGame = { id: string; name: string; icon: keyof typeof Ionicons.glyphMap; active: boolean };
+const FLAPPY_ICON = require('@/assets/images/flappy_icon.png');
+
+type HubGame = {
+  id: string;
+  name: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  image?: any;
+  active: boolean;
+};
 
 const GAMES: HubGame[] = [
+  { id: 'flappy', name: 'Flappy Bounce', icon: 'airplane', image: FLAPPY_ICON, active: true },
   { id: 'pool8', name: '8-Ball Pool', icon: 'ellipse', active: true },
   { id: 'ludo', name: 'Ludo', icon: 'dice', active: false },
   { id: 'carrom', name: 'Carrom', icon: 'disc', active: false },
   { id: 'chess', name: 'Chess', icon: 'grid', active: false },
-  { id: 'snooker', name: 'Snooker', icon: 'ellipse-outline', active: false },
   { id: 'archery', name: 'Archery', icon: 'locate', active: false },
 ];
 
@@ -26,7 +34,8 @@ export default function HubScreen() {
 
   const openGame = (g: HubGame) => {
     if (!g.active) return;
-    if (g.id === 'pool8') router.push('/hub/pool-lobby');
+    if (g.id === 'flappy') router.push('/hub/arcade-lobby');
+    else if (g.id === 'pool8') router.push('/hub/pool-lobby');
   };
 
   return (
@@ -59,7 +68,11 @@ export default function HubScreen() {
                 style={[styles.cellBg, g.active && styles.cellActive]}
               >
                 <View style={[styles.iconWrap, { backgroundColor: g.active ? 'rgba(244,196,48,0.14)' : 'rgba(255,255,255,0.04)' }]}>
-                  <Ionicons name={g.icon} size={30} color={g.active ? Colors.gold : Colors.textMuted} />
+                  {g.image ? (
+                    <Image source={g.image} style={styles.iconImg} resizeMode="cover" />
+                  ) : (
+                    <Ionicons name={g.icon} size={30} color={g.active ? Colors.gold : Colors.textMuted} />
+                  )}
                 </View>
                 <Text style={[styles.cellName, { color: g.active ? Colors.textPrimary : Colors.textMuted }]}>{g.name}</Text>
                 {g.active ? (
@@ -92,7 +105,8 @@ const styles = StyleSheet.create({
   cell: { width: '47.5%' },
   cellBg: { aspectRatio: 1, borderRadius: 18, borderWidth: 1, borderColor: Colors.darkBorder, alignItems: 'center', justifyContent: 'center', padding: 12 },
   cellActive: { borderColor: 'rgba(244,196,48,0.45)' },
-  iconWrap: { width: 64, height: 64, borderRadius: 20, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
+  iconWrap: { width: 64, height: 64, borderRadius: 20, alignItems: 'center', justifyContent: 'center', marginBottom: 12, overflow: 'hidden' },
+  iconImg: { width: 64, height: 64, borderRadius: 20 },
   cellName: { fontSize: 15, fontWeight: '700', textAlign: 'center' },
   liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 8, backgroundColor: 'rgba(0,230,118,0.12)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
   liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.success },

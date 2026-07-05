@@ -100,6 +100,8 @@ function RootLayoutNav() {
         <Stack.Screen name="hub/index" />
         <Stack.Screen name="hub/pool-lobby" />
         <Stack.Screen name="hub/pool-match" options={{ gestureEnabled: false }} />
+        <Stack.Screen name="hub/arcade-lobby" />
+        <Stack.Screen name="hub/arcade-match" options={{ gestureEnabled: false }} />
         <Stack.Screen name="redeem" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
       </Stack>
       <TermsGateModal />

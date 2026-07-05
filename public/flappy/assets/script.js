@@ -512,6 +512,13 @@
     // chances are gone.
     function handleHit() {
         if (gameState !== 'playing') return;
+        // ─── Arcade PvP: sudden death — first collision is fatal (1 life) ───
+        if (window.Arcade && window.Arcade.isMatch && window.Arcade.isMatch()) {
+            lives = 0;
+            updateLivesDisplay(0);
+            setGameOver();
+            return;
+        }
         lives--;
 
         if (lives <= 0) {
@@ -552,7 +559,10 @@
         jumpQueued = false;
         shakeAmount = 0;
         flashAlpha = 0;
-        lives = MAX_LIVES;
+        // Arcade PvP = server-defined lives (sudden-death 1); practice keeps MAX_LIVES.
+        lives = (window.Arcade && window.Arcade.isMatch && window.Arcade.isMatch())
+            ? window.Arcade.maxLives(MAX_LIVES)
+            : MAX_LIVES;
         invincibleTimer = 0;
         updateLivesDisplay();
         gameOverOverlay.classList.remove('active');
