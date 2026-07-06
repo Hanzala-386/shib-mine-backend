@@ -19,15 +19,16 @@
  * ──────────────────────────────────────────────────────────────────────────── */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Platform, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Platform, ActivityIndicator, Animated, Easing, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import Colors from '@/constants/colors';
-import { pb } from '@/lib/pocketbase';
+import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 import { useWallet } from '@/context/WalletContext';
 import { useAds } from '@/context/AdContext';
+import { useAuth } from '@/context/AuthContext';
 import TicketIcon from '@/components/TicketIcon';
 import { InlineBannerAd } from '@/components/StickyBannerAd';
 import { ArcadeSocket } from '@/lib/arcadeClient';
@@ -45,10 +46,57 @@ if (Platform.OS !== 'web') {
   WebView = require('react-native-webview').WebView;
 }
 
-type Mode = 'connecting' | 'queued' | 'playing' | 'practice' | 'gameover' | 'error';
+type Mode = 'connecting' | 'queued' | 'matchfound' | 'playing' | 'practice' | 'gameover' | 'error';
 
 const tierCfg = (tier: number) =>
   TIER_CONFIGS.find((t) => t.entryPT === tier) ?? TIER_CONFIGS[0];
+
+/* ── Avatar helpers (mirrors the leaderboard's deterministic-neon style) ──── */
+const AV_COLORS = [
+  '#FF6B00', '#F4C430', '#00C853', '#2979FF',
+  '#E040FB', '#FF3B30', '#00BCD4', '#FF8F00',
+  '#76FF03', '#FFEA00',
+];
+function avatarColor(seed: string): string {
+  let h = 5381;
+  for (let i = 0; i < seed.length; i++) h = (((h << 5) + h) ^ seed.charCodeAt(i)) >>> 0;
+  return AV_COLORS[h % AV_COLORS.length];
+}
+
+function PlayerAvatar({ name, seed, uri, size = 84, ring, dim }: {
+  name: string; seed: string; uri?: string; size?: number; ring?: string; dim?: boolean;
+}) {
+  const color = ring || avatarColor(seed);
+  const box = {
+    width: size, height: size, borderRadius: size / 2,
+    borderWidth: 2.5, borderColor: color,
+    backgroundColor: color + '1F',
+    alignItems: 'center' as const, justifyContent: 'center' as const,
+    overflow: 'hidden' as const,
+    opacity: dim ? 0.85 : 1,
+  };
+  if (uri) {
+    return (
+      <View style={box}>
+        <Image source={{ uri }} style={{ width: size, height: size }} resizeMode="cover" />
+      </View>
+    );
+  }
+  return (
+    <View style={box}>
+      <Text style={{ fontFamily: 'Inter_700Bold', fontSize: Math.round(size * 0.32), color, fontWeight: '800' }}>
+        {(name || '??').slice(0, 2).toUpperCase()}
+      </Text>
+    </View>
+  );
+}
+
+// Flickering "searching…" opponent pool — purely cosmetic while matchmaking.
+const FAKE_OPPONENTS = [
+  'CryptoNinja', 'ShibaLord', 'MoonRider', 'PixelHawk', 'NeonBlaze', 'GoldRush',
+  'TokenKing', 'FlapMaster', 'ByteRunner', 'StormWolf', 'AceViper', 'LuckySeven',
+  'TurboFox', 'MegaBounce', 'ZenArcher', 'RocketPaws', 'VoltStrike', 'JadeFalcon',
+];
 
 export default function ArcadeMatchScreen() {
   const insets = useSafeAreaInsets();
@@ -61,10 +109,16 @@ export default function ArcadeMatchScreen() {
   const isPracticeParam = params.practice === '1';
   const cfg = tierCfg(tier);
 
+  const { user } = useAuth();
+  const myId = pb.authStore.record?.id || (pb.authStore as any).model?.id || 'me';
+  const myName = user?.displayName || pb.authStore.record?.display_name || 'You';
+  const [myAvatarUri, setMyAvatarUri] = useState<string | undefined>(undefined);
+
   const [mode, setMode] = useState<Mode>(isPracticeParam ? 'practice' : 'connecting');
   const [statusMsg, setStatusMsg] = useState('Connecting to the arena…');
   const [errorMsg, setErrorMsg] = useState('');
   const [opponentName, setOpponentName] = useState('Opponent');
+  const [flicker, setFlicker] = useState<string>(FAKE_OPPONENTS[0]);
   const [myScore, setMyScore] = useState(0);
   const [oppScore, setOppScore] = useState(0);
   const [iAmOut, setIAmOut] = useState(false);
@@ -93,10 +147,59 @@ export default function ArcadeMatchScreen() {
   const matchAckedRef = useRef(false);     // game acknowledged match mode (first score/out relayed)
   const startAttemptsRef = useRef(0);      // ARCADE_MATCH_START (re)send count
   const startTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // match-found reveal
   const iAmOutRef = useRef(false);
+
+  // Cosmetic animations (native driver where supported; web falls back to JS driver).
+  const useNative = Platform.OS !== 'web';
+  const vsGlow = useRef(new Animated.Value(0)).current;   // pulsing VS glow
+  const flyProgress = useRef(new Animated.Value(0)).current; // stakes → pot on match found
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { iAmOutRef.current = iAmOut; }, [iAmOut]);
+
+  /* ── current user's real avatar (avatar2), falls back to initials ─────────── */
+  useEffect(() => {
+    const id = pb.authStore.record?.id;
+    if (!id) return;
+    (async () => {
+      try {
+        const u = await pb.collection('users').getOne(id, { fields: 'id,avatar2' });
+        const fn = Array.isArray(u.avatar2) ? u.avatar2[0] : (u as any).avatar2;
+        if (fn) setMyAvatarUri(`${POCKETBASE_URL}/api/files/users/${u.id}/${fn}`);
+      } catch { /* initials fallback */ }
+    })();
+  }, []);
+
+  /* ── flickering fake opponent while searching ─────────────────────────────── */
+  useEffect(() => {
+    if (mode !== 'queued' && mode !== 'connecting') return;
+    const t = setInterval(() => {
+      setFlicker(FAKE_OPPONENTS[Math.floor(Math.random() * FAKE_OPPONENTS.length)]);
+    }, 130);
+    return () => clearInterval(t);
+  }, [mode]);
+
+  /* ── pulsing VS glow while searching / match found ────────────────────────── */
+  useEffect(() => {
+    if (mode !== 'queued' && mode !== 'connecting' && mode !== 'matchfound') return;
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(vsGlow, { toValue: 1, duration: 850, easing: Easing.inOut(Easing.ease), useNativeDriver: useNative }),
+      Animated.timing(vsGlow, { toValue: 0, duration: 850, easing: Easing.inOut(Easing.ease), useNativeDriver: useNative }),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [mode, vsGlow, useNative]);
+
+  /* ── stakes fly into the shared pot the moment a match is found ────────────── */
+  useEffect(() => {
+    if (mode === 'matchfound') {
+      flyProgress.setValue(0);
+      Animated.timing(flyProgress, { toValue: 1, duration: 1200, delay: 450, easing: Easing.out(Easing.cubic), useNativeDriver: useNative }).start();
+    } else if (mode === 'queued' || mode === 'connecting') {
+      flyProgress.setValue(0);
+    }
+  }, [mode, flyProgress, useNative]);
 
   /* ── RN → game bridge ─────────────────────────────────────────────────── */
   const sendToGame = useCallback((msg: object) => {
@@ -191,8 +294,23 @@ export default function ArcadeMatchScreen() {
         setOpponentName(msg.opponent?.name || 'Opponent');
         setIAmOut(false); iAmOutRef.current = false;
         setOppOut(false); setOppLeft(false); setReconnecting(false);
-        setMode('playing');
-        maybeStartGame();
+        if (matchAckedRef.current) {
+          // Mid-match RESUME — the game is already live; skip the reveal, keep playing.
+          setMode('playing');
+          maybeStartGame();
+        } else {
+          // Fresh match — show the VS reveal + stake-fly, THEN launch the game.
+          // 2.1s < ARCADE_GRACE_SECONDS(30s), so the delayed start is never penalized.
+          setMode('matchfound');
+          if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+          revealTimerRef.current = setTimeout(() => {
+            revealTimerRef.current = null;
+            // Never clobber a result/error that landed during the reveal window.
+            if (modeRef.current !== 'matchfound') return;
+            setMode('playing');
+            maybeStartGame();
+          }, 2100);
+        }
         break;
       case 'OPPONENT_SCORE':
         setOppScore(Math.max(0, Math.floor(msg.score))); break;
@@ -256,7 +374,11 @@ export default function ArcadeMatchScreen() {
     });
     sockRef.current = sock;
     sock.connect();
-    return () => { sock.close(); if (startTimerRef.current) clearTimeout(startTimerRef.current); };
+    return () => {
+      sock.close();
+      if (startTimerRef.current) clearTimeout(startTimerRef.current);
+      if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -277,6 +399,7 @@ export default function ArcadeMatchScreen() {
     matchAckedRef.current = false;
     startAttemptsRef.current = 0;
     if (startTimerRef.current) { clearTimeout(startTimerRef.current); startTimerRef.current = null; }
+    if (revealTimerRef.current) { clearTimeout(revealTimerRef.current); revealTimerRef.current = null; }
     setMode('practice');
   }, []);
 
@@ -345,10 +468,109 @@ export default function ArcadeMatchScreen() {
   };
 
   const showQueue = mode === 'connecting' || mode === 'queued';
+  const showVS = showQueue || mode === 'matchfound';
   const showGame = mode === 'playing' || mode === 'practice';
+  const showBanners = showVS || showGame;
+  const matchFound = mode === 'matchfound';
+
+  // Keep ONE WebView mounted across queue → matchfound → playing → gameover so it
+  // never remounts (reloads) at match start. It's just toggled visible vs offscreen.
+  const gameVisible = showGame;
+  const gameMounted = isPracticeParam ? showGame : (showVS || showGame || mode === 'gameover');
+
+  // Stake-fly interpolations (left chip slides right into pot, right chip slides left).
+  const leftChipX = flyProgress.interpolate({ inputRange: [0, 1], outputRange: [0, 44] });
+  const rightChipX = flyProgress.interpolate({ inputRange: [0, 1], outputRange: [0, -44] });
+  const chipOpacity = flyProgress.interpolate({ inputRange: [0, 0.55, 1], outputRange: [1, 1, 0.15] });
+  const potScale = flyProgress.interpolate({ inputRange: [0, 1], outputRange: [1, 1.16] });
+  const glowOpacity = vsGlow.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0.85] });
+  const glowScale = vsGlow.interpolate({ inputRange: [0, 1], outputRange: [1, 1.28] });
+
+  const rightName = matchFound ? opponentName : flicker;
+  const rightSeed = matchFound ? opponentName : flicker;
+
+  const vsContent = (
+    <View style={styles.vsBody}>
+      <Text style={styles.vsHeader}>{matchFound ? 'MATCH FOUND!' : 'FINDING MATCH'}</Text>
+      <Text style={styles.vsSub}>
+        Staking {tier.toLocaleString()} PT · winner takes {cfg.winnerTickets} tickets
+      </Text>
+
+      <View style={styles.vsRow}>
+        {/* Left — you */}
+        <View style={styles.playerCol}>
+          <PlayerAvatar name={myName} seed={myId} uri={myAvatarUri} ring={Colors.gold} />
+          <Text style={styles.playerName} numberOfLines={1}>{myName}</Text>
+          <Text style={styles.playerTag}>YOU</Text>
+        </View>
+
+        {/* Center — glowing VS */}
+        <View style={styles.vsCenter}>
+          <Animated.View style={[styles.vsGlow, { opacity: glowOpacity, transform: [{ scale: glowScale }] }]} />
+          <LinearGradient
+            colors={[Colors.gold, Colors.neonOrange]}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+            style={styles.vsBadge}
+          >
+            <Text style={styles.vsBadgeTxt}>VS</Text>
+          </LinearGradient>
+        </View>
+
+        {/* Right — searching flicker → locked opponent */}
+        <View style={styles.playerCol}>
+          <PlayerAvatar name={rightName} seed={rightSeed} ring={Colors.neonOrange} dim={!matchFound} />
+          <Text style={styles.playerName} numberOfLines={1}>{rightName}</Text>
+          {matchFound ? (
+            <Text style={[styles.playerTag, { color: Colors.neonOrange }]}>OPPONENT</Text>
+          ) : (
+            <View style={styles.searchTag}>
+              <ActivityIndicator size="small" color={Colors.neonOrange} />
+              <Text style={styles.searchTagTxt}>Searching…</Text>
+            </View>
+          )}
+        </View>
+      </View>
+
+      {/* Stake pool — both stakes fly into the shared pot on match found */}
+      <View style={styles.stakeArea}>
+        <Animated.View style={[styles.stakeChip, { transform: [{ translateX: leftChipX }], opacity: chipOpacity }]}>
+          <Text style={styles.stakeChipTxt}>{tier.toLocaleString()} PT</Text>
+        </Animated.View>
+        <Animated.View style={[styles.potBox, { transform: [{ scale: potScale }] }]}>
+          <Ionicons name="lock-closed" size={11} color={Colors.gold} />
+          <Text style={styles.potTxt}>{(tier * 2).toLocaleString()} PT</Text>
+          <Text style={styles.potLabel}>PRIZE POOL</Text>
+        </Animated.View>
+        <Animated.View style={[styles.stakeChip, { transform: [{ translateX: rightChipX }], opacity: chipOpacity }]}>
+          <Text style={styles.stakeChipTxt}>{tier.toLocaleString()} PT</Text>
+        </Animated.View>
+      </View>
+
+      {/* Actions — only while searching; match-found auto-launches into the game */}
+      {matchFound ? (
+        <View style={styles.launchRow}>
+          <ActivityIndicator size="small" color={Colors.gold} />
+          <Text style={styles.launchTxt}>Get ready…</Text>
+        </View>
+      ) : (
+        <View style={styles.vsActions}>
+          <Pressable style={styles.primaryBtn} onPress={goPractice} testID="arcade-play-practice">
+            <LinearGradient colors={[Colors.gold, Colors.neonOrange]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.primaryBtnBg}>
+              <Ionicons name="game-controller" size={18} color="#1a1200" />
+              <Text style={styles.primaryBtnTxt}>Practice Offline</Text>
+            </LinearGradient>
+          </Pressable>
+          <Pressable style={styles.ghostBtn} onPress={leave}><Text style={styles.ghostBtnTxt}>Cancel</Text></Pressable>
+        </View>
+      )}
+    </View>
+  );
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + webTop }]}>
+      {/* TOP banner — matchmaking + gameplay */}
+      {showBanners && <View style={styles.bannerTop}><InlineBannerAd /></View>}
+
       {/* Top HUD (during play / practice) */}
       {showGame && (
         <View style={styles.hud}>
@@ -381,14 +603,21 @@ export default function ArcadeMatchScreen() {
         </View>
       )}
 
-      {/* Game surface */}
-      {(showGame || (!isPracticeParam && !showQueue && mode !== 'error')) && (
-        <View style={styles.gameArea}>{renderGame()}</View>
-      )}
-      {/* Keep the WebView mounted during queue so it's ready the instant a match starts */}
-      {!isPracticeParam && showQueue && (
-        <View style={styles.gameHidden} pointerEvents="none">{renderGame()}</View>
-      )}
+      {/* Body — the game surface, the VS screen, and the warm (hidden) WebView */}
+      <View style={styles.body}>
+        {showVS && vsContent}
+        {gameMounted && (
+          <View
+            style={gameVisible ? styles.gameArea : styles.gameHidden}
+            pointerEvents={gameVisible ? 'auto' : 'none'}
+          >
+            {renderGame()}
+          </View>
+        )}
+      </View>
+
+      {/* BOTTOM banner — matchmaking + gameplay */}
+      {showBanners && <View style={styles.bannerBottom}><InlineBannerAd /></View>}
 
       {/* I'm out, waiting for opponent to finish */}
       {mode === 'playing' && iAmOut && !oppOut && (
@@ -424,23 +653,6 @@ export default function ArcadeMatchScreen() {
             </LinearGradient>
           </Pressable>
           <Pressable style={styles.ghostBtn} onPress={leave}><Text style={styles.ghostBtnTxt}>Back to Lobby</Text></Pressable>
-        </View>
-      )}
-
-      {/* Matchmaking / connecting overlay */}
-      {showQueue && (
-        <View style={styles.overlay}>
-          <ActivityIndicator color={Colors.gold} size="large" />
-          <Text style={styles.overlayTitle}>{statusMsg}</Text>
-          <Text style={styles.overlaySub}>Staking {tier.toLocaleString()} PT · winner takes {cfg.winnerTickets} tickets</Text>
-          <Pressable style={styles.primaryBtn} onPress={goPractice} testID="arcade-play-practice">
-            <LinearGradient colors={[Colors.gold, Colors.neonOrange]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.primaryBtnBg}>
-              <Ionicons name="game-controller" size={18} color="#1a1200" />
-              <Text style={styles.primaryBtnTxt}>Practice Offline</Text>
-            </LinearGradient>
-          </Pressable>
-          <Pressable style={styles.ghostBtn} onPress={leave}><Text style={styles.ghostBtnTxt}>Cancel</Text></Pressable>
-          <View style={styles.bannerSlot}><InlineBannerAd /></View>
         </View>
       )}
 
@@ -540,6 +752,9 @@ export default function ArcadeMatchScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.darkBg },
+  body: { flex: 1 },
+  bannerTop: { alignItems: 'center' },
+  bannerBottom: { alignItems: 'center' },
   hud: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 10, paddingVertical: 8, gap: 8 },
   iconBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   scoreRow: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
@@ -554,7 +769,35 @@ const styles = StyleSheet.create({
   gameHidden: { position: 'absolute', width: 1, height: 1, opacity: 0, left: -9999, top: -9999 },
   loader: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.darkBg },
   loaderTxt: { color: Colors.textSecondary, fontSize: 14, marginTop: 12 },
-  waitBanner: { position: 'absolute', left: 16, right: 16, bottom: 24, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(10,10,15,0.92)', borderColor: Colors.darkBorder, borderWidth: 1, borderRadius: 14, padding: 12 },
+
+  /* VS matchmaking screen */
+  vsBody: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, gap: 6 },
+  vsHeader: { color: Colors.textPrimary, fontSize: 22, fontWeight: '900', letterSpacing: 1, textAlign: 'center' },
+  vsSub: { color: Colors.textSecondary, fontSize: 13, textAlign: 'center', marginBottom: 18 },
+  vsRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', width: '100%', maxWidth: 420 },
+  playerCol: { flex: 1, alignItems: 'center', gap: 8 },
+  playerName: { color: Colors.textPrimary, fontSize: 15, fontWeight: '800', maxWidth: 120, textAlign: 'center' },
+  playerTag: { color: Colors.gold, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  searchTag: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  searchTagTxt: { color: Colors.neonOrange, fontSize: 11, fontWeight: '700' },
+  vsCenter: { width: 78, alignItems: 'center', justifyContent: 'center', marginTop: 18 },
+  vsGlow: { position: 'absolute', width: 66, height: 66, borderRadius: 33, backgroundColor: 'rgba(255,107,0,0.45)' },
+  vsBadge: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'rgba(255,255,255,0.25)' },
+  vsBadgeTxt: { color: '#1a1200', fontSize: 20, fontWeight: '900', letterSpacing: 0.5 },
+
+  /* Stake pool */
+  stakeArea: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 30, minHeight: 66 },
+  stakeChip: { backgroundColor: Colors.darkCard, borderColor: 'rgba(244,196,48,0.4)', borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10 },
+  stakeChipTxt: { color: Colors.gold, fontSize: 14, fontWeight: '800' },
+  potBox: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(244,196,48,0.12)', borderColor: 'rgba(244,196,48,0.55)', borderWidth: 1.5, borderRadius: 16, paddingHorizontal: 18, paddingVertical: 8, minWidth: 96 },
+  potTxt: { color: Colors.gold, fontSize: 18, fontWeight: '900' },
+  potLabel: { color: Colors.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 1, marginTop: 1 },
+
+  vsActions: { width: '100%', maxWidth: 320, alignItems: 'center', marginTop: 26 },
+  launchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 26 },
+  launchTxt: { color: Colors.textSecondary, fontSize: 14, fontWeight: '700' },
+
+  waitBanner: { position: 'absolute', left: 16, right: 16, bottom: 96, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(10,10,15,0.92)', borderColor: Colors.darkBorder, borderWidth: 1, borderRadius: 14, padding: 12 },
   waitTxt: { flex: 1, color: Colors.textSecondary, fontSize: 13 },
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(6,6,10,0.94)', alignItems: 'center', justifyContent: 'center', padding: 24, gap: 10 },
   overlayTitle: { color: Colors.textPrimary, fontSize: 18, fontWeight: '800', textAlign: 'center', marginTop: 6 },

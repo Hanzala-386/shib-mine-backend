@@ -60,3 +60,17 @@ one point every `minIntervalMs` — it wins every match with zero violations fla
 **How to apply:** treat the clamp as necessary-not-sufficient; the open future
 hardening is to flag perfectly metronomic (exactly-at-limit) cadence to
 `suspicious_users`, not to tighten the clamp.
+
+## 5. A cosmetic client-side delay between MATCH_START and game-start is money-safe
+The arcade-match screen may hold a short reveal (e.g. a ~2s "VS" animation) AFTER the
+server's MATCH_START and BEFORE it injects `ARCADE_MATCH_START` into the game WebView.
+**Why:** the server debits BOTH stakes BEFORE it emits MATCH_START, and settlement is
+gated on either the 30s disconnect grace (ARCADE_GRACE_SECONDS) or real gameplay
+scores — so no REFUND/MATCH_RESULT can arrive inside a short reveal window, and the
+delayed start is never penalized. The staked player therefore cannot be stranded by a
+UI delay as long as it stays well under the grace period.
+**How to apply:** keep any pre-start reveal ≪ 30s; guard the reveal timer with
+`if (modeRef.current !== 'matchfound') return;` so a result/error that DID land can't
+be clobbered; on mid-match RESUME (matchAcked) skip the reveal entirely. Keep the game
+WebView in ONE positionally-stable JSX slot toggled visible/offscreen (never a second
+mount) so it doesn't reload at match start.
