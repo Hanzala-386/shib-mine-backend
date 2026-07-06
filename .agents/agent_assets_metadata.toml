@@ -30,3 +30,9 @@ id = "aOFewH0Ug8GaBQfhkwrg9"
 uri = "file://dist/flappy-webcod-update.zip"
 type = "unspecified"
 title = "Flappy webcod.in update (arcade-sdk.js + assets/script.js)"
+
+[[outputs]]
+id = "ep_I_rFVESsGEkcm4tM1I"
+uri = "file://dist/flappy-arcade.zip"
+type = "unspecified"
+title = "Flappy Arcade — full game package (updated for PvP)"
