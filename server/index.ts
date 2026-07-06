@@ -226,6 +226,7 @@ function configureExpoAndLanding(app: express.Application) {
   app.use("/game", express.static(path.resolve(process.cwd(), "public/game/Knife hit Template")));
   app.use("/arcade", express.static(path.resolve(process.cwd(), "public/arcade")));
   app.use("/flappy", express.static(path.resolve(process.cwd(), "public/flappy")));
+  app.use("/fruitcut", express.static(path.resolve(process.cwd(), "public/fruitcut")));
   app.use(express.static(path.resolve(process.cwd(), "static-build")));
 
   log("Expo routing: Checking expo-platform header on / and /manifest");
@@ -258,6 +259,7 @@ function setupErrorHandler(app: express.Application) {
   app.use("/game",   express.static(path.resolve(process.cwd(), "public/game/Knife hit Template")));
   app.use("/arcade", express.static(path.resolve(process.cwd(), "public/arcade")));
   app.use("/flappy", express.static(path.resolve(process.cwd(), "public/flappy")));
+  app.use("/fruitcut", express.static(path.resolve(process.cwd(), "public/fruitcut")));
 
   // ── DEV-ONLY: Metro proxy — registered FIRST so it wins before anything else ──
   // Non-API requests are forwarded directly to Metro on :8081.
@@ -272,7 +274,8 @@ function setupErrorHandler(app: express.Application) {
         !pathname.startsWith("/api") &&
         !pathname.startsWith("/game") &&
         !pathname.startsWith("/arcade") &&
-        !pathname.startsWith("/flappy"),
+        !pathname.startsWith("/flappy") &&
+        !pathname.startsWith("/fruitcut"),
       on: {
         error: (_err, _req, res) => {
           if (res && "status" in res) {
@@ -284,7 +287,7 @@ function setupErrorHandler(app: express.Application) {
       },
     });
     app.use(metroProxy);
-    log("Dev proxy: Metro on :8081 registered (excludes /api, /game, /arcade, /flappy)");
+    log("Dev proxy: Metro on :8081 registered (excludes /api, /game, /arcade, /flappy, /fruitcut)");
   }
 
   setupCors(app);

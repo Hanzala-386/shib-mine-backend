@@ -1,13 +1,13 @@
-/* Flappy Bounce arcade lobby — pick a PT stake tier, then enter matchmaking.
- * Mirrors the 8-Ball pool lobby; economy (PT stake / Hit Ticket payout / 10% fee)
- * is shared via ARCADE_TIERS + TIER_CONFIGS from @shared/arcade. */
+/* Arcade PvP lobby (Flappy Bounce / Fruit Cut) — pick a PT stake tier, then enter
+ * matchmaking. Mirrors the 8-Ball pool lobby; economy (PT stake / Hit Ticket
+ * payout / 10% fee) is shared via ARCADE_TIERS + TIER_CONFIGS from @shared/arcade. */
 
 import React from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, Platform, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useWallet } from '@/context/WalletContext';
 import TicketIcon from '@/components/TicketIcon';
@@ -15,7 +15,25 @@ import { InlineBannerAd, BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import { TIER_CONFIGS } from '@shared/arcade';
 
 const FLAPPY_ICON = require('@/assets/images/flappy_icon.png');
-const GAME_ID = 'flappy';
+const FRUITCUT_ICON = require('@/assets/images/fruitcut_icon.jpg');
+
+type GameMeta = { name: string; icon: any; heroTitle: string; heroSub: string; practiceNote: string };
+const GAME_META: Record<string, GameMeta> = {
+  flappy: {
+    name: 'Flappy Bounce',
+    icon: FLAPPY_ICON,
+    heroTitle: 'Sudden Death 1v1',
+    heroSub: 'One life. Outscore your opponent — first hit ends your run.',
+    practiceNote: 'Free · 3 lives · no PT staked, no tickets',
+  },
+  fruitcut: {
+    name: 'Fruit Cut',
+    icon: FRUITCUT_ICON,
+    heroTitle: 'Slice-Off 1v1',
+    heroSub: '3 lives. Slice fruit, dodge the bombs — highest score wins the pot.',
+    practiceNote: 'Free · 3 lives · no PT staked, no tickets',
+  },
+};
 
 export default function ArcadeLobbyScreen() {
   const insets = useSafeAreaInsets();
@@ -23,10 +41,14 @@ export default function ArcadeLobbyScreen() {
   const webTop = Platform.OS === 'web' ? 67 : 0;
   const webBottom = Platform.OS === 'web' ? 34 : 0;
 
+  const params = useLocalSearchParams<{ gameId?: string }>();
+  const gameId = typeof params.gameId === 'string' && GAME_META[params.gameId] ? params.gameId : 'flappy';
+  const meta = GAME_META[gameId];
+
   const openMatch = (tier: number, practice: boolean) => {
     router.push({
       pathname: '/hub/arcade-match',
-      params: { gameId: GAME_ID, tier: String(tier), practice: practice ? '1' : '0' },
+      params: { gameId, tier: String(tier), practice: practice ? '1' : '0' },
     } as any);
   };
 
@@ -37,7 +59,7 @@ export default function ArcadeLobbyScreen() {
           <Ionicons name="chevron-back" size={24} color={Colors.gold} />
         </Pressable>
         <View style={styles.headTitle}>
-          <Text style={styles.title}>Flappy Bounce</Text>
+          <Text style={styles.title}>{meta.name}</Text>
           <Text style={styles.sub}>Stake PT · win Hit Tickets</Text>
         </View>
         <View style={styles.ptPill}>
@@ -49,10 +71,10 @@ export default function ArcadeLobbyScreen() {
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 24 + webBottom + BANNER_HEIGHT, gap: 12 }} showsVerticalScrollIndicator={false}>
         {/* Hero */}
         <LinearGradient colors={['#1E1508', '#12121A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.hero}>
-          <Image source={FLAPPY_ICON} style={styles.heroIcon} resizeMode="cover" />
+          <Image source={meta.icon} style={styles.heroIcon} resizeMode="cover" />
           <View style={{ flex: 1 }}>
-            <Text style={styles.heroTitle}>Sudden Death 1v1</Text>
-            <Text style={styles.heroSub}>One life. Outscore your opponent — first hit ends your run.</Text>
+            <Text style={styles.heroTitle}>{meta.heroTitle}</Text>
+            <Text style={styles.heroSub}>{meta.heroSub}</Text>
           </View>
         </LinearGradient>
 
@@ -97,7 +119,7 @@ export default function ArcadeLobbyScreen() {
             <Ionicons name="game-controller-outline" size={20} color={Colors.textSecondary} />
             <View style={{ flex: 1 }}>
               <Text style={styles.practiceTitle}>Practice offline</Text>
-              <Text style={styles.practiceNote}>Free · 3 lives · no PT staked, no tickets</Text>
+              <Text style={styles.practiceNote}>{meta.practiceNote}</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
           </View>

@@ -1,4 +1,4 @@
-/* Multiplayer Tournament Hub — game grid (Flappy Bounce + 8-Ball live, others coming soon). */
+/* Multiplayer Tournament Hub — game grid (Flappy Bounce + Fruit Cut arcade PvP). */
 
 import React from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, Platform, Image } from 'react-native';
@@ -9,6 +9,7 @@ import { router } from 'expo-router';
 import Colors from '@/constants/colors';
 
 const FLAPPY_ICON = require('@/assets/images/flappy_icon.png');
+const FRUITCUT_ICON = require('@/assets/images/fruitcut_icon.jpg');
 
 type HubGame = {
   id: string;
@@ -20,11 +21,7 @@ type HubGame = {
 
 const GAMES: HubGame[] = [
   { id: 'flappy', name: 'Flappy Bounce', icon: 'airplane', image: FLAPPY_ICON, active: true },
-  { id: 'pool8', name: '8-Ball Pool', icon: 'ellipse', active: true },
-  { id: 'ludo', name: 'Ludo', icon: 'dice', active: false },
-  { id: 'carrom', name: 'Carrom', icon: 'disc', active: false },
-  { id: 'chess', name: 'Chess', icon: 'grid', active: false },
-  { id: 'archery', name: 'Archery', icon: 'locate', active: false },
+  { id: 'fruitcut', name: 'Fruit Cut', icon: 'nutrition', image: FRUITCUT_ICON, active: true },
 ];
 
 export default function HubScreen() {
@@ -34,8 +31,8 @@ export default function HubScreen() {
 
   const openGame = (g: HubGame) => {
     if (!g.active) return;
-    if (g.id === 'flappy') router.push('/hub/arcade-lobby');
-    else if (g.id === 'pool8') router.push('/hub/pool-lobby');
+    // Both live games run on the shared arcade PvP engine — one lobby, per-game id.
+    router.push({ pathname: '/hub/arcade-lobby', params: { gameId: g.id } } as any);
   };
 
   return (

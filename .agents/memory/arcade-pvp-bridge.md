@@ -1,14 +1,17 @@
 ---
-name: Arcade PvP game ↔ React Native bridge (Flappy Bounce)
-description: How the HTML5 arcade game talks to the RN WebView host for real-money PvP, and the non-obvious gotchas (external hosting, lives-HUD re-sync, no local replay in-match).
+name: Arcade PvP game ↔ React Native bridge (Flappy Bounce, Fruit Cut)
+description: How HTML5 arcade games talk to the RN WebView host for real-money PvP, and the non-obvious gotchas (external hosting, lives-HUD re-sync, no local replay in-match, AFK margin rule).
 ---
 
 # Arcade PvP game ↔ RN bridge
 
-The arcade PvP game (Flappy Bounce) is a plain HTML5/canvas game embedded in the RN app
-via a WebView (native) / iframe (web). RN side is `app/hub/arcade-match.tsx`; game side is
-`public/flappy/arcade-sdk.js` (the drop-in bridge) + `public/flappy/assets/script.js`
-(the game). The server relays scores over a socket and is authoritative for the result.
+The arcade PvP games (Flappy Bounce, Fruit Cut) are plain HTML5/canvas games embedded in
+the RN app via a WebView (native) / iframe (web). RN side is `app/hub/arcade-match.tsx`
+(per-game GAME_HOSTS map); game side is `arcade-sdk.js` (the drop-in bridge, byte-identical
+across games) + the game's own JS. The server relays scores over a socket and is
+authoritative for the result. Adding a game = register spec in `shared/arcade.ts` (BOTH
+backend copies), add GAME_HOSTS + lobby GAME_META entries, inject the SDK adapter into the
+game's start/score/death/exit hooks.
 
 ## CRITICAL: the live game is NOT served from this repo
 - The game runs from shared hosting: `GAME_URL = https://webcod.in/flappy/index.html`.
@@ -68,3 +71,18 @@ via a WebView (native) / iframe (web). RN side is `app/hub/arcade-match.tsx`; ga
   host renders the authoritative result.
 - On `ARCADE_END` the SDK calls the freeze callback BEFORE clearing `inMatch`, so a
   still-alive game (forfeit/timeout settlement) freezes without popping the local overlay.
+
+## AFK margin rule (client timer MUST be well under the server backstop)
+- The server (arcadehub) arms a per-seat TAP-TO-START AFK backstop (`spec.readyAfkSeconds`)
+  and clears it only on the first relayed SCORE/OUT — `ARCADE_STARTED` is engagement-only
+  and never reaches the server's AFK timer.
+- **Why:** a player who taps at the last client second still needs several seconds to land
+  a first score (spawn delay + action + report throttle). If client afkMs ≈ server window,
+  an engaged player gets server-forfeited at 0 mid-play. Keep a wide gap like Flappy
+  (client 30s < server 45s; Fruit Cut client 40s < server 47s).
+- Games with menu screens (CTL templates like Fruit Cut) skip the menu in-match
+  (preloader → gotoGame) and treat their help/tutorial panel tap as TAP-TO-START →
+  `Arcade.onStart()`.
+- Score reporting for burst-scoring games: throttle cumulative-score reports to >
+  the server's `scoreDelta.minIntervalMs` (e.g. 600ms vs 500ms) so every report lands in a
+  fresh server window; size `maxIncrement` off honest peak rate per report, not per event.

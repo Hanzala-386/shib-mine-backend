@@ -1,5 +1,5 @@
 /* ────────────────────────────────────────────────────────────────────────────
- * Flappy Bounce arcade match screen — async score-matching PvP.
+ * Arcade match screen (Flappy Bounce / Fruit Cut) — async score-matching PvP.
  *
  * This screen is the RN "host" that owns the authenticated arcade WebSocket and
  * bridges a plain HTML5 game (hosted at webcod.in) running inside a WebView:
@@ -37,9 +37,24 @@ import {
   type ArcadeServerMsg, type ArcadeOutcome, type ArcadeEndReason,
 } from '@shared/arcade';
 
-// Game is served from shared hosting (a different domain from the PB API), so the
-// URL is hardcoded and NOT derived from getApiUrl().
-const GAME_URL = 'https://webcod.in/flappy/index.html';
+// Games are served from shared hosting (a different domain from the PB API), so
+// the URLs are hardcoded and NOT derived from getApiUrl(). `v` busts the shared
+// host's cache of index.html (its <script src> tags are versioned separately).
+// `afkMs` is the client-side TAP-TO-START AFK forfeit (fast UX path); the server
+// runs its own authoritative backstop (spec.readyAfkSeconds in @shared/arcade:
+// flappy 45s, fruitcut 47s). The client value MUST sit well BELOW the server
+// window: the server only clears its AFK timer on the first relayed SCORE, and
+// a player who taps at the last moment still needs several seconds to land
+// their first score (fruit spawn + slice + report throttle). 40s < 47s keeps
+// the same safety ratio Flappy uses (30s < 45s).
+const GAME_HOSTS: Record<string, { url: string; v: number; afkMs: number }> = {
+  flappy:   { url: 'https://webcod.in/flappy/index.html',   v: 6, afkMs: 30000 },
+  fruitcut: { url: 'https://webcod.in/fruitcut/index.html', v: 1, afkMs: 40000 },
+};
+
+// One shared iframe title for the web host's postMessage channel (per-game lookup
+// would silently break sendToGame if it ever diverged from the rendered title).
+const IFRAME_TITLE = 'ArcadeGame';
 
 let WebView: any = null;
 if (Platform.OS !== 'web') {
@@ -104,7 +119,8 @@ export default function ArcadeMatchScreen() {
   const webBottom = Platform.OS === 'web' ? 34 : 0;
 
   const params = useLocalSearchParams<{ gameId?: string; tier?: string; practice?: string }>();
-  const gameId = params.gameId || 'flappy';
+  const gameId = typeof params.gameId === 'string' && GAME_HOSTS[params.gameId] ? params.gameId : 'flappy';
+  const gameHost = GAME_HOSTS[gameId];
   const tier = Number(params.tier) || ARCADE_TIERS[0];
   const isPracticeParam = params.practice === '1';
   const cfg = tierCfg(tier);
@@ -124,7 +140,7 @@ export default function ArcadeMatchScreen() {
   // game reloads with 3 lives + local replay. `?v=` busts shared-hosting caches of
   // index.html (its <script src> tags are versioned to bust the JS too).
   const practiceActive = isPracticeParam || mode === 'practice';
-  const gameSrc = `${GAME_URL}?v=6${practiceActive ? '' : '&arcade=1'}`;
+  const gameSrc = `${gameHost.url}?v=${gameHost.v}${practiceActive ? '' : '&arcade=1'}`;
 
   const [statusMsg, setStatusMsg] = useState('Connecting to the arena…');
   const [errorMsg, setErrorMsg] = useState('');
@@ -223,7 +239,7 @@ export default function ArcadeMatchScreen() {
         `window.__arcadeHostMessage && window.__arcadeHostMessage(${JSON.stringify(json)});true;`
       );
     } else {
-      const frame = document.querySelector<HTMLIFrameElement>('iframe[title="FlappyBounce"]');
+      const frame = document.querySelector<HTMLIFrameElement>(`iframe[title="${IFRAME_TITLE}"]`);
       frame?.contentWindow?.postMessage(json, '*');
     }
   }, []);
@@ -246,7 +262,8 @@ export default function ArcadeMatchScreen() {
     }
   }, [sendToGame]);
 
-  /* ── 30s AFK auto-forfeit on the TAP-TO-START ready screen ─────────────────
+  /* ── Per-game AFK auto-forfeit on the TAP-TO-START ready screen ────────────
+   * (Flappy 30s, Fruit Cut 40s — see GAME_HOSTS.afkMs; server backstops at 45s/47s.)
    * The SERVER (arcadehub) is the real authority via its own AFK backstop; this
    * client timer is the fast UX path AND the only enforcement while the hosted
    * game is still served from a pre-countdown cached build. On fire we send
@@ -267,8 +284,8 @@ export default function ArcadeMatchScreen() {
       setIAmOut(true); iAmOutRef.current = true;
       sockRef.current?.send({ type: 'PLAYER_OUT', matchId: matchIdRef.current, score: 0 });
       sendToGame({ type: 'ARCADE_FREEZE' }); // stop the local run so there's no zombie play
-    }, 30000);
-  }, [clearAfk, sendToGame]);
+    }, gameHost.afkMs);
+  }, [clearAfk, sendToGame, gameHost.afkMs]);
 
   /* ── game → RN bridge ─────────────────────────────────────────────────── */
   const onGameMessage = useCallback((rawData: string) => {
@@ -486,7 +503,7 @@ export default function ArcadeMatchScreen() {
         <iframe
           key={wvKey}
           src={gameSrc}
-          title="FlappyBounce"
+          title={IFRAME_TITLE}
           style={{ border: 'none', width: '100%', height: '100%' } as any}
           allow="autoplay"
         />

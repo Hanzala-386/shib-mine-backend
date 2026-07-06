@@ -256,9 +256,11 @@ function acceptScore(m: ArcadeMatch, p: ArcadePlayer, raw: number): number {
 
 /* ── AFK auto-forfeit (TAP-TO-START ready screen) ─────────────────────────── */
 // Idle on the ready screen past this window → the seat is locked at its current
-// score (0 if never tapped). Backstop only: the RN host runs a faster 30s timer
-// and normally sends PLAYER_OUT(0) first; this covers a client that never reports.
-const ARCADE_READY_AFK_MS = 45000;
+// score (0 if never tapped). The window is PER-GAME (spec.readyAfkSeconds:
+// Flappy 45s, Fruit Cut 47s); the RN host runs its own client-side timer and
+// normally sends PLAYER_OUT(0) first — this covers a client that never reports.
+const readyAfkMs = (spec: GameSpec): number =>
+  (Number(spec.readyAfkSeconds) > 0 ? Number(spec.readyAfkSeconds) : 45) * 1000;
 
 function forfeitSeat(m: ArcadeMatch, seat: Seat): void {
   if (m.settled) return;
@@ -487,7 +489,7 @@ async function createMatch(
 
   // AFK backstop: auto-forfeit any seat that never engages within the ready window.
   (['A', 'B'] as Seat[]).forEach((s) => {
-    m.afkTimer[s] = setTimeout(() => forfeitSeat(m, s), ARCADE_READY_AFK_MS);
+    m.afkTimer[s] = setTimeout(() => forfeitSeat(m, s), readyAfkMs(spec));
   });
 }
 

@@ -54,7 +54,7 @@ export default function GamesScreen() {
             <View style={[styles.cardIcon, { backgroundColor: 'rgba(26,18,0,0.15)' }]}><Ionicons name="trophy" size={28} color="#1a1200" /></View>
             <View style={styles.cardBody}>
               <Text style={[styles.cardTitle, { color: '#1a1200' }]}>Multiplayer Hub</Text>
-              <Text style={[styles.cardSub, { color: 'rgba(26,18,0,0.7)' }]}>8-Ball Pool · win Hit Tickets</Text>
+              <Text style={[styles.cardSub, { color: 'rgba(26,18,0,0.7)' }]}>Flappy Bounce & Fruit Cut · win Hit Tickets</Text>
             </View>
             <Ionicons name="chevron-forward" size={22} color="rgba(26,18,0,0.7)" />
           </LinearGradient>

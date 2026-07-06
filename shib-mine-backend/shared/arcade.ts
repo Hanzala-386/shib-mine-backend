@@ -50,6 +50,9 @@ export interface GameSpec {
   scoreDelta: ScoreDeltaSpec;
   /** null = no gameplay timer (the frozen spec for Flappy). */
   timerSeconds: number | null;
+  /** TAP-TO-START ready window (seconds): a seat that never engages within this
+   *  window is server-side forfeited — locked at its current score (0). */
+  readyAfkSeconds: number;
 }
 
 export const ARCADE_GAMES: Record<string, GameSpec> = {
@@ -64,6 +67,25 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     // Flappy spawns a scoring pipe roughly every ~1.5s and only ever scores +1.
     scoreDelta: { maxIncrement: 1, minIntervalMs: 1200 },
     timerSeconds: null,
+    readyAfkSeconds: 45,
+  },
+  fruitcut: {
+    gameId: 'fruitcut',
+    name: 'Fruit Cut',
+    path: 'fruitcut',
+    // Matches the game's native NUM_LIVES (3): a missed fruit costs a life,
+    // slicing a bomb is an instant game over regardless of lives left.
+    lives: 3,
+    maxScore: 99999,
+    // Fruit waves launch every ~3s (up to 10 fruits at max difficulty); each fruit
+    // scores 10–40 and combos add +10×n. The game adapter reports the CUMULATIVE
+    // score throttled to one message per ~600ms, so with 500ms windows every
+    // message earns ≥1 window. 120/window ≈ 240 pts/s budget — comfortably above
+    // the ~170 pts/s theoretical honest peak, and a 3s quiet gap banks 6 windows
+    // (720) so a monster multi-slice never gets clamped.
+    scoreDelta: { maxIncrement: 120, minIntervalMs: 500 },
+    timerSeconds: null,
+    readyAfkSeconds: 47,
   },
 };
 export function getGameSpec(gameId: string): GameSpec | null {

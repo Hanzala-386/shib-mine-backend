@@ -181,6 +181,13 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 - `StickyBannerAd` BannerSlot renders `<UnityBanner/>` under the same condition (no AdMob fallback).
 - When the Unity native module is absent, forced-Unity no-ops → **NO ad shown** (intended "AdMob bypassed"), never AdMob. iOS is unchanged (always AdMob; Unity helpers no-op off Android).
 
+## Session 6 — Fruit Cut Arcade PvP Game
+- Second arcade PvP game (CTL "Katana Fruit" template) alongside Flappy Bounce; hub (`app/hub/index.tsx`) shows ONLY these two games.
+- **gameId `fruitcut`** registered in `shared/arcade.ts` (BOTH backend copies, byte-identical): `{lives:3, maxScore:99999, scoreDelta:{maxIncrement:120, minIntervalMs:500}, timerSeconds:null, readyAfkSeconds:47}`. `GameSpec` gained required `readyAfkSeconds` (flappy 45); `server/arcadehub.ts` uses `readyAfkMs(spec)` per-game instead of the old shared const.
+- **Client screens**: `arcade-lobby.tsx` GAME_META per-game (name/icon/hero/practice note), gameId from route param validated; `arcade-match.tsx` GAME_HOSTS map — fruitcut `https://webcod.in/fruitcut/index.html?v=1`, client AFK 40s (MUST stay well under server 47s backstop — server clears its AFK timer only on first SCORE; late tappers need seconds to land a first slice).
+- **Game adapter** (`public/fruitcut/`): `arcade-sdk.js` (byte-identical to Flappy's) loads first in index.html (CRLF file — use sed, edit tool fails); `CMain._onRemovePreloader` skips menu → gotoGame in match; `CGame` — lives from `Arcade.maxLives(3)`, help-panel tap = TAP-TO-START → `Arcade.onStart()`, 600ms-throttled cumulative score reporter (beats server 500ms window; honest peak ~170pts/s vs 240 budget), match gameOver → `Arcade.onPlayerOut(_iScore)` once + no local end panel, onExit/`CInterface._onExit` early-return in match; `arcade:matchstart` listener resyncs lives only pre-start.
+- **Deploy**: `dist/fruitcut-arcade.zip` must be manually uploaded to webcod.in so `/fruitcut/index.html` resolves; dev Express serves `/fruitcut` statically (Metro pathFilter excludes it). Railway prod backend needs redeploy for the new spec.
+
 ## Ports
 - Frontend (Expo): 8081
 - Backend (Express): 5000
