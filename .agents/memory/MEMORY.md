@@ -9,3 +9,4 @@
 - [Yodo1 MAS migration](yodo1-migration.md) — Android ad stack moving AdMob→Yodo1 via a phased DORMANT foundation; build-env changes (repos, jetifier/dexing props) are NOT dormant — gate them behind one phase toggle.
 - [AdMob mediation config plugin](admob-mediation-plugin.md) — SUPERSEDED by Yodo1 migration (mediation injection removed); still useful for Expo-54 gradle ground-truth + verify-without-CLI technique.
 - [Pool/Game-Hub money invariants](pool-hub-money-invariants.md) — atomic PB modifiers; checked pbHttp wrapper; settle-latch before first await; RESUME MATCH_FOUND must carry ballInHand.
+- [Replit firewall URLs break Railway npm ci](replit-firewall-lockfile-deploy.md) — package-lock resolved URLs can be package-firewall.replit.local so external hosts get ENOTFOUND; host-rewrite to registry.npmjs.org (integrity stays valid); Railway installs from the ROOT lockfile.
