@@ -160,6 +160,8 @@ export default function ArcadeMatchScreen() {
   const startTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // match-found reveal
   const iAmOutRef = useRef(false);
+  const afkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // 30s TAP-TO-START AFK forfeit
+  const afkFiredRef = useRef(false);
 
   // Cosmetic animations (native driver where supported; web falls back to JS driver).
   const useNative = Platform.OS !== 'web';
@@ -244,6 +246,30 @@ export default function ArcadeMatchScreen() {
     }
   }, [sendToGame]);
 
+  /* ── 30s AFK auto-forfeit on the TAP-TO-START ready screen ─────────────────
+   * The SERVER (arcadehub) is the real authority via its own AFK backstop; this
+   * client timer is the fast UX path AND the only enforcement while the hosted
+   * game is still served from a pre-countdown cached build. On fire we send
+   * PLAYER_OUT(0): the server locks the idle seat at 0 and settles fairly — an
+   * engaged opponent wins, both-idle → draw refund. Cancelled the instant the
+   * player engages (ARCADE_STARTED tap / first score / out). */
+  const clearAfk = useCallback(() => {
+    if (afkTimerRef.current) { clearTimeout(afkTimerRef.current); afkTimerRef.current = null; }
+  }, []);
+
+  const armAfk = useCallback(() => {
+    clearAfk();
+    afkFiredRef.current = false;
+    afkTimerRef.current = setTimeout(() => {
+      afkTimerRef.current = null;
+      if (afkFiredRef.current || iAmOutRef.current || !matchIdRef.current) return;
+      afkFiredRef.current = true;
+      setIAmOut(true); iAmOutRef.current = true;
+      sockRef.current?.send({ type: 'PLAYER_OUT', matchId: matchIdRef.current, score: 0 });
+      sendToGame({ type: 'ARCADE_FREEZE' }); // stop the local run so there's no zombie play
+    }, 30000);
+  }, [clearAfk, sendToGame]);
+
   /* ── game → RN bridge ─────────────────────────────────────────────────── */
   const onGameMessage = useCallback((rawData: string) => {
     let msg: any;
@@ -259,10 +285,14 @@ export default function ArcadeMatchScreen() {
     if (modeRef.current !== 'playing' || !matchIdRef.current) return;
 
     // First gameplay signal proves ARCADE_MATCH_START landed — stop the start retries.
-    if (msg.type === 'ARCADE_SCORE' || msg.type === 'ARCADE_OUT') {
+    if (msg.type === 'ARCADE_SCORE' || msg.type === 'ARCADE_OUT' || msg.type === 'ARCADE_STARTED') {
       matchAckedRef.current = true;
       if (startTimerRef.current) { clearTimeout(startTimerRef.current); startTimerRef.current = null; }
+      clearAfk(); // player engaged (tapped / scored / finished) → cancel AFK forfeit
     }
+
+    // Engagement-only signal (tap to start) — nothing to relay to the server.
+    if (msg.type === 'ARCADE_STARTED') return;
 
     if (msg.type === 'ARCADE_SCORE') {
       const s = Math.max(0, Math.floor(Number(msg.score) || 0));
@@ -276,7 +306,7 @@ export default function ArcadeMatchScreen() {
         sockRef.current?.send({ type: 'PLAYER_OUT', matchId: matchIdRef.current, score: s });
       }
     }
-  }, [maybeStartGame]);
+  }, [maybeStartGame, clearAfk]);
 
   const onNativeMessage = useCallback((e: { nativeEvent: { data: string } }) => {
     onGameMessage(e.nativeEvent.data);
@@ -320,6 +350,7 @@ export default function ArcadeMatchScreen() {
             if (modeRef.current !== 'matchfound') return;
             setMode('playing');
             maybeStartGame();
+            armAfk(); // begin the 30s TAP-TO-START AFK countdown for this fresh match
           }, 2100);
         }
         break;
@@ -329,8 +360,10 @@ export default function ArcadeMatchScreen() {
         setOppScore(Math.max(0, Math.floor(msg.score))); setOppOut(true); break;
       case 'FREEZE_INPUT':
         // Opponent won early → freeze our run immediately (result follows).
+        clearAfk();
         sendToGame({ type: 'ARCADE_FREEZE' }); break;
       case 'MATCH_RESULT':
+        clearAfk();
         sendToGame({ type: 'ARCADE_END' });
         setResult({
           outcome: msg.outcome, reason: msg.reason,
@@ -343,11 +376,13 @@ export default function ArcadeMatchScreen() {
       case 'OPPONENT_LEFT': setOppLeft(true); break;
       case 'OPPONENT_BACK': setOppLeft(false); break;
       case 'REFUND':
+        clearAfk();
         setErrorMsg(`Match refunded (${msg.reason}). ${msg.amountPT} PT returned.`);
         setMode('error');
         refetch().catch(() => {});
         break;
       case 'ERROR':
+        clearAfk();
         if (modeRef.current === 'connecting' || modeRef.current === 'queued') {
           setErrorMsg(msg.message || 'Could not join a match'); setMode('error');
         } else {
@@ -356,7 +391,7 @@ export default function ArcadeMatchScreen() {
         break;
       default: break;
     }
-  }, [maybeStartGame, sendToGame, refetch]);
+  }, [maybeStartGame, sendToGame, refetch, armAfk, clearAfk]);
 
   /* ── connect on mount (online only) ───────────────────────────────────── */
   useEffect(() => {
@@ -389,6 +424,7 @@ export default function ArcadeMatchScreen() {
       sock.close();
       if (startTimerRef.current) clearTimeout(startTimerRef.current);
       if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+      if (afkTimerRef.current) clearTimeout(afkTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -119,6 +119,12 @@
       if (!inMatch) return;                 // offline / practice → no DB writes
       postRN({ type: 'ARCADE_OUT', score: Number(score) || 0 });
     },
+    // Fired once when the player taps to start a live match — lets the RN host
+    // cancel its AFK/forfeit countdown (engagement signal, not a score).
+    onStart: function () {
+      if (!inMatch) return;
+      postRN({ type: 'ARCADE_STARTED' });
+    },
     onFreeze: function (cb) { freezeCb = cb; },
     isMatch: function () { return inMatch; },
     // Effective max lives: PvP uses the server value (sudden-death 1); offline

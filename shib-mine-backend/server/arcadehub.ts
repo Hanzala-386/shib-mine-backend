@@ -189,6 +189,7 @@ interface ArcadeMatch {
   escrowId?: string;      // PB arcade_escrow record id (crash/redeploy refund safety net)
   startedAt: number;
   graceTimer: Partial<Record<Seat, ReturnType<typeof setTimeout>>>;
+  afkTimer: Partial<Record<Seat, ReturnType<typeof setTimeout>>>;   // TAP-TO-START AFK forfeit (per seat)
   lifetimeTimer: ReturnType<typeof setTimeout> | null;
 }
 interface QueueEntry { ws: WebSocket; pbId: string; name: string; gameId: string; tier: number }
@@ -253,9 +254,33 @@ function acceptScore(m: ArcadeMatch, p: ArcadePlayer, raw: number): number {
   return accepted;
 }
 
+/* ── AFK auto-forfeit (TAP-TO-START ready screen) ─────────────────────────── */
+// Idle on the ready screen past this window → the seat is locked at its current
+// score (0 if never tapped). Backstop only: the RN host runs a faster 30s timer
+// and normally sends PLAYER_OUT(0) first; this covers a client that never reports.
+const ARCADE_READY_AFK_MS = 45000;
+
+function forfeitSeat(m: ArcadeMatch, seat: Seat): void {
+  if (m.settled) return;
+  const p = m.players[seat];
+  if (p.locked) return;
+  const t = m.afkTimer[seat];
+  if (t) { clearTimeout(t); delete m.afkTimer[seat]; }
+  // Lock the idle seat at its current score — NOT a pool forfeit: an opponent who
+  // also never engaged still draws (both locked at 0 → refund), an engaged one wins.
+  p.alive = false;
+  p.locked = true;
+  const opp = m.players[other(seat)];
+  if (!opp.locked) send(opp.ws, { type: 'OPPONENT_OUT', matchId: m.id, score: p.score });
+  checkSettlement(m);
+}
+
 /* ── Settlement (latch `settled` BEFORE the first await — money invariant) ── */
 function clearMatchTimers(m: ArcadeMatch): void {
-  for (const s of ['A', 'B'] as Seat[]) { const t = m.graceTimer[s]; if (t) { clearTimeout(t); delete m.graceTimer[s]; } }
+  for (const s of ['A', 'B'] as Seat[]) {
+    const t = m.graceTimer[s]; if (t) { clearTimeout(t); delete m.graceTimer[s]; }
+    const a = m.afkTimer[s]; if (a) { clearTimeout(a); delete m.afkTimer[s]; }
+  }
   if (m.lifetimeTimer) { clearTimeout(m.lifetimeTimer); m.lifetimeTimer = null; }
 }
 
@@ -446,6 +471,7 @@ async function createMatch(
     settled: false,
     startedAt: Date.now(),
     graceTimer: {},
+    afkTimer: {},
     lifetimeTimer: null,
   };
   matches.set(id, m);
@@ -458,6 +484,11 @@ async function createMatch(
   send(b.ws, { type: 'MATCH_START', matchId: id, gameId: spec.gameId, tier, youAre: 'B', opponent: { name: a.name }, lives: spec.lives, startAt });
 
   m.lifetimeTimer = setTimeout(() => onLifetimeCap(m), ARCADE_MAX_MATCH_MS);
+
+  // AFK backstop: auto-forfeit any seat that never engages within the ready window.
+  (['A', 'B'] as Seat[]).forEach((s) => {
+    m.afkTimer[s] = setTimeout(() => forfeitSeat(m, s), ARCADE_READY_AFK_MS);
+  });
 }
 
 /* ── In-match events ──────────────────────────────────────────────────────── */
@@ -475,6 +506,9 @@ function handleScore(ws: WebSocket, msg: Extract<ArcadeClientMsg, { type: 'SCORE
   const p = m.players[seat];
   if (!p.alive || p.locked) return;
 
+  const at = m.afkTimer[seat];
+  if (at) { clearTimeout(at); delete m.afkTimer[seat]; } // engaged → cancel AFK forfeit
+
   const accepted = acceptScore(m, p, msg.score);
   send(m.players[other(seat)].ws, { type: 'OPPONENT_SCORE', matchId: m.id, score: accepted });
   checkSettlement(m);
@@ -487,6 +521,9 @@ function handlePlayerOut(ws: WebSocket, msg: Extract<ArcadeClientMsg, { type: 'P
   if (!seat) return;
   const p = m.players[seat];
   if (p.locked) return;
+
+  const at = m.afkTimer[seat];
+  if (at) { clearTimeout(at); delete m.afkTimer[seat]; } // finished / forfeited → cancel AFK timer
 
   // The locked score is the SERVER-tracked score (validated increments), never the
   // client's out-message number — that message is only a signal that the run ended.

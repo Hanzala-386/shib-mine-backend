@@ -59,6 +59,8 @@ interface TournamentContextValue {
   leaderboard: TournamentEntry[];
   leaderboardLoading: boolean;
   loadingConfig: boolean;
+  tournamentTabActive: boolean;               // Tournament tab focused → hide floating widgets
+  setTournamentTabActive: (active: boolean) => void;
   joinTournament: () => Promise<void>;
   rejectTournament: () => Promise<void>;
   refreshLeaderboard: () => Promise<void>;
@@ -77,6 +79,8 @@ const TournamentContext = createContext<TournamentContextValue>({
   leaderboard: [],
   leaderboardLoading: false,
   loadingConfig: true,
+  tournamentTabActive: false,
+  setTournamentTabActive: () => {},
   joinTournament: async () => {},
   rejectTournament: async () => {},
   refreshLeaderboard: async () => {},
@@ -110,6 +114,9 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   const [leaderboardLoading, setLbLoading]      = useState(false);
   const [loadingConfig, setLoadingConfig]       = useState(true);
   const [serverOffset, setServerOffset]         = useState(0);
+  // True while the leaderboard's Tournament tab is the focused view. Consumed by the
+  // floating Support + Daily Claim widgets so they hide during tournament focus mode.
+  const [tournamentTabActive, setTournamentTabActive] = useState(false);
   // Mirror of the committed serverOffset (kept for any time-corrected math).
   const serverOffsetRef   = useRef(0);
 
@@ -432,6 +439,8 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       leaderboard,
       leaderboardLoading,
       loadingConfig,
+      tournamentTabActive,
+      setTournamentTabActive,
       joinTournament,
       rejectTournament,
       refreshLeaderboard,

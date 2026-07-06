@@ -32,6 +32,8 @@ import { useAdmin } from '@/context/AdminContext';
 import { pb } from '@/lib/pocketbase';
 import { api, type DailyStatus, type DailyRewards, type DailyClaimResult, type DailyClaimSettings } from '@/lib/api';
 import Colors from '@/constants/colors';
+import { usePathname } from 'expo-router';
+import { useTournament } from '@/context/TournamentContext';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const { width: SW, height: SH } = Dimensions.get('window');
@@ -528,6 +530,8 @@ function DailyRewardWidgetInner() {
   const { user }     = useAuth();
   const { settings } = useAdmin();
   const insets       = useSafeAreaInsets();
+  const pathname     = usePathname();
+  const { tournamentTabActive } = useTournament();
 
   const fallbackRewards: DailyRewards = {
     day1Shib: settings?.dailyRewardDay1Shib ?? 1000,
@@ -839,8 +843,9 @@ function DailyRewardWidgetInner() {
     return 'locked';
   }
 
-  // Don't render until user is authenticated
-  if (!user?.pbId || mode === 'hidden') return null;
+  // Don't render until authenticated; also hide during tournament / live-match focus mode.
+  const hideForFocusMode = tournamentTabActive || pathname.startsWith('/hub/arcade-match');
+  if (!user?.pbId || mode === 'hidden' || hideForFocusMode) return null;
 
   return (
     <>

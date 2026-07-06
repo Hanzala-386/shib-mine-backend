@@ -18,6 +18,8 @@ import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { usePathname } from 'expo-router';
+import { useTournament } from '@/context/TournamentContext';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 export interface SupportTicket {
@@ -217,7 +219,12 @@ function SupportWidgetInner() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   }, [ticket]);
 
-  if (!user?.pbId) return null;
+  const pathname = usePathname();
+  const { tournamentTabActive } = useTournament();
+  // Focus mode: hide the floating widget on the Tournament tab and inside a live match.
+  const hideForFocusMode = tournamentTabActive || pathname.startsWith('/hub/arcade-match');
+
+  if (!user?.pbId || hideForFocusMode) return null;
 
   return (
     <>

@@ -10,12 +10,12 @@
     // ─── Constants ───
     const W = 400;
     const H = 640;
-    const GRAVITY = 0.42;
-    const JUMP_FORCE = -7.0;
+    const GRAVITY = 0.44;
+    const JUMP_FORCE = -7.2;
     const BIRD_RADIUS = 14;
     const PIPE_WIDTH = 52;
     const PIPE_GAP = 165;
-    const PIPE_SPEED = 2.8;
+    const PIPE_SPEED = 3.4;
     const GROUND_HEIGHT = 48;
     const GROUND_Y = H - GROUND_HEIGHT;
     // Extra headroom above the raw hitbox radius: the drawn bird's
@@ -399,7 +399,20 @@
     // ════════════════════════════════════════════
     //  PARTICLES / EFFECTS
     // ════════════════════════════════════════════
+    // ─── Perf: during a live PvP match, throttle non-essential eye-candy so the
+    // frame budget goes to the sim (smoother on low-end WebViews). Practice mode
+    // (isMatch()===false) keeps the full effect set. ───
+    function inMatchNow() {
+        return !!(window.Arcade && window.Arcade.isMatch && window.Arcade.isMatch());
+    }
+
+    // ─── PvP: 30s AFK auto-forfeit on the TAP-TO-START ready screen ───
+    const MATCH_READY_AFK_MS = 30000;
+    let matchReadyDeadline = null;
+    let matchAfkForfeited = false;
+
     function spawnParticles(x, y, count, color, spread) {
+        if (inMatchNow()) count = Math.ceil(count * 0.4); // perf: fewer particles in a live match
         for (let i = 0; i < count; i++) {
             const angle = rand(0, Math.PI * 2);
             const speed = rand(0.5, 3);
@@ -454,6 +467,7 @@
     }
 
     function updateTrail() {
+        if (inMatchNow()) return; // perf: skip the motion trail in a live match
         trail.push({ x: bird.x, y: bird.y, alpha: 0.5 });
         if (trail.length > 12) trail.shift();
         for (const t of trail) t.alpha *= 0.85;
@@ -634,6 +648,8 @@
         jumpQueued = false;
         shakeAmount = 0;
         flashAlpha = 0;
+        matchReadyDeadline = null;
+        matchAfkForfeited = false;
         // Arcade PvP = server-defined lives (sudden-death 1); practice keeps MAX_LIVES.
         lives = (window.Arcade && window.Arcade.isMatch && window.Arcade.isMatch())
             ? window.Arcade.maxLives(MAX_LIVES)
@@ -714,6 +730,19 @@
 
         if (gameState === 'intro' || gameState === 'ready' || gameState === 'birdselect') {
             idleBirdMotion();
+            // PvP: 30s AFK auto-forfeit while sitting on the TAP-TO-START ready screen.
+            if (gameState === 'ready' && inMatchNow()) {
+                if (matchReadyDeadline === null) {
+                    matchReadyDeadline = performance.now() + MATCH_READY_AFK_MS;
+                } else if (!matchAfkForfeited && performance.now() >= matchReadyDeadline) {
+                    matchAfkForfeited = true;
+                    if (window.Arcade && window.Arcade.onPlayerOut) window.Arcade.onPlayerOut(0);
+                    gameState = 'over';
+                    showWaitingOverlay(0);
+                }
+            } else {
+                matchReadyDeadline = null;
+            }
             return;
         }
 
@@ -888,6 +917,19 @@
         ctx.fillText('TAP TO START', W / 2, H / 2 + 86);
         ctx.font = '30px sans-serif';
         ctx.fillText('👆', W / 2, H / 2 + 128 + Math.sin(frameCount * 0.1) * 6);
+        ctx.restore();
+    }
+
+    // PvP AFK countdown shown above the TAP-TO-START hint while in a live match.
+    function drawAfkCountdown() {
+        const secs = Math.max(0, Math.ceil((matchReadyDeadline - performance.now()) / 1000));
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.font = "700 15px 'Poppins', sans-serif";
+        ctx.fillStyle = secs <= 5 ? '#FF6B6B' : 'rgba(255,255,255,0.85)';
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 8;
+        ctx.fillText('Auto-forfeit in ' + secs + 's', W / 2, H / 2 + 56);
         ctx.restore();
     }
 
@@ -1268,10 +1310,11 @@
         if (gameState === 'playing') drawTrail();
 
         // ─── Particles ───
+        const _pBlur = inMatchNow() ? 0 : 10; // perf: drop per-particle glow in a live match
         for (const p of particles) {
             ctx.globalAlpha = p.life;
             ctx.fillStyle = p.color;
-            ctx.shadowBlur = 10;
+            ctx.shadowBlur = _pBlur;
             ctx.shadowColor = p.color;
             ctx.beginPath();
             ctx.arc(p.x, p.y, p.size * p.life * 0.8, 0, Math.PI * 2);
@@ -1297,6 +1340,7 @@
 
         // ─── Ready hint ───
         if (gameState === 'ready') drawReadyHint();
+        if (gameState === 'ready' && inMatchNow() && matchReadyDeadline !== null) drawAfkCountdown();
 
         ctx.fillStyle = 'rgba(0,0,0,0.05)';
         ctx.fillRect(0, GROUND_Y + 4, W, 6);
@@ -1325,6 +1369,8 @@
         getAudioCtx();
         if (gameState === 'ready') {
             gameState = 'playing';
+            matchReadyDeadline = null;
+            if (window.Arcade && window.Arcade.onStart) window.Arcade.onStart(); // PvP: cancel AFK forfeit
         }
         jumpQueued = true;
         bird.vy = JUMP_FORCE * 0.6;

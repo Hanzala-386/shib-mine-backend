@@ -643,9 +643,18 @@ export default function LeaderboardScreen() {
 
   const {
     config, isRegistered, userPoints, leaderboard, leaderboardLoading,
-    serverOffset,
+    serverOffset, setTournamentTabActive,
     joinTournament, refreshLeaderboard, refreshUserStats, refreshConfig,
   } = useTournament();
+
+  // Hide the floating Support + Daily Claim widgets while the Tournament tab is the
+  // focused view; restore on tab switch (alltime) or when leaving the screen.
+  useFocusEffect(
+    useCallback(() => {
+      setTournamentTabActive(activeTab === 'tournament');
+      return () => setTournamentTabActive(false);
+    }, [activeTab, setTournamentTabActive]),
+  );
 
   // Phase from the server-corrected clock; schedule a single re-render at the
   // prestart→live boundary so the countdown flips from "STARTS IN" to "ENDS IN".

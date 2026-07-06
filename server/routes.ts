@@ -424,6 +424,38 @@ async function backfillWithdrawalMaskedNames() {
   }
 }
 
+// ─── Ensure the withdrawals.method select accepts the Hit-Ticket redeem value ──
+// The redeem flow (WalletContext) creates a withdrawals row with
+// method:'Hit Ticket Redeem'. The select was limited to ['BEP-20','Binance Email'],
+// so PocketBase rejected the create and redeem returned "failed". Appending the
+// value (idempotent) fixes it for the SHARED PB — dev, prod, and the published APK
+// all read the same instance, so a single backend boot repairs redeem everywhere.
+async function ensureWithdrawalRedeemMethod() {
+  try {
+    const col = await pbGet("/api/collections/withdrawals");
+    if (col.code) return; // collection missing → nothing to patch
+    // Older PB exposes the field list under `schema`; newer PB under `fields`. This
+    // instance uses `schema`, so reading `col.fields` returned [] and the patch never
+    // applied. Read whichever the instance uses and PATCH back under the same key.
+    const usesSchemaKey = Array.isArray(col.schema);
+    const schema: any[] = col.schema || col.fields || [];
+    const methodField = schema.find((f: any) => f.name === "method");
+    if (!methodField) return;
+    // PB exposes select values either flattened (field.values) or nested (field.options.values).
+    const holder = Array.isArray(methodField.values)
+      ? methodField
+      : (methodField.options && Array.isArray(methodField.options.values) ? methodField.options : null);
+    if (!holder) return;
+    if (holder.values.includes("Hit Ticket Redeem")) return; // already present
+    holder.values = [...holder.values, "Hit Ticket Redeem"];
+    const token = await getAdminToken();
+    await pbHttp("PATCH", `/api/collections/${col.id}`, usesSchemaKey ? { schema } : { fields: schema }, token);
+    console.log('[withdrawals] method select → added "Hit Ticket Redeem" ✓');
+  } catch (e: any) {
+    console.warn("[withdrawals] ensureWithdrawalRedeemMethod failed:", e?.message);
+  }
+}
+
 // ─── Ensure daily_usage collection exists in PocketBase ───────────────────
 async function ensureDailyUsageCollection() {
   try {
@@ -1472,6 +1504,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureReferralEarningsLogCollection())
     .then(() => ensureBrevoKeyInSettings())
     .then(() => backfillWithdrawalMaskedNames())
+    .then(() => ensureWithdrawalRedeemMethod())
     .then(() => ensureNotificationsCollection())
     .then(() => ensureSessionLogsCollection())
     .then(() => ensureGameLogsCollection())
