@@ -89,6 +89,17 @@
         setGameOver(); // stop the local sim cleanly on a server FREEZE_INPUT
     });
 
+    // When a live PvP match actually starts, re-sync the VISIBLE lives to the
+    // server value (sudden-death = 1). resetGame() ran once at page load before
+    // the match was known, so without this the HUD would keep showing 3 hearts
+    // even though handleHit() already enforces sudden death functionally.
+    window.addEventListener('arcade:matchstart', function () {
+        lives = (window.Arcade && window.Arcade.isMatch && window.Arcade.isMatch())
+            ? window.Arcade.maxLives(MAX_LIVES)
+            : MAX_LIVES;
+        updateLivesDisplay();
+    });
+
     // ─── Bird ───
     const bird = {
         x: 70,
@@ -585,6 +596,12 @@
         spawnParticles(bird.x, bird.y, 20, '#FFD700', 0.8);
         playHit();
         setTimeout(playGameOver, 180);
+
+        // ─── Arcade PvP: freeze silently — NEVER show the local Game Over /
+        // "Play Again" UI in a live match. The server is authoritative and the
+        // RN host renders the real match result; local replay must be impossible.
+        // gameState is already 'over' above, so the sim + input are frozen. ───
+        if (window.Arcade && window.Arcade.isMatch && window.Arcade.isMatch()) return;
 
         const isNewBest = score > bestScore;
         if (isNewBest) {
@@ -1258,6 +1275,9 @@
 
     // ─── Restart ───
     function doRestart() {
+        // No local replay while a live PvP match is in progress — the match is
+        // one-shot (sudden death) and only the server can end/rematch it.
+        if (window.Arcade && window.Arcade.isMatch && window.Arcade.isMatch()) return;
         getAudioCtx();
         playClick();
         resetGame('ready');
