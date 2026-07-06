@@ -100,6 +100,70 @@
         updateLivesDisplay();
     });
 
+    // ─── Arcade PvP "Waiting for opponent…" overlay ───
+    // Self-contained (no CSS/HTML dependencies): on death in a live match we NEVER
+    // show the local Game Over / "Play Again" box — the run is locked and the RN
+    // host renders the authoritative winner. Instead we freeze the canvas and show
+    // this clean waiting state until the server result arrives (which the RN host
+    // then covers with its own result screen).
+    let waitingOverlayEl = null;
+    function ensureWaitingOverlay() {
+        if (waitingOverlayEl) return waitingOverlayEl;
+        const st = document.createElement('style');
+        st.textContent =
+            '@keyframes arcadeSpin{to{transform:rotate(360deg)}}' +
+            '@keyframes arcadeFade{from{opacity:0}to{opacity:1}}';
+        document.head.appendChild(st);
+
+        const ov = document.createElement('div');
+        ov.id = 'arcadeWaitingOverlay';
+        ov.style.cssText = [
+            'position:absolute', 'top:0', 'left:0', 'right:0', 'bottom:0', 'z-index:60', 'display:none',
+            'flex-direction:column', 'align-items:center', 'justify-content:center',
+            'gap:16px', 'text-align:center', 'padding:24px',
+            'background:rgba(8,12,24,0.86)',
+            'backdrop-filter:blur(6px)', '-webkit-backdrop-filter:blur(6px)',
+            "font-family:'Poppins',sans-serif", 'color:#fff',
+            'animation:arcadeFade .25s ease',
+        ].join(';');
+
+        const spinner = document.createElement('div');
+        spinner.style.cssText = [
+            'width:52px', 'height:52px', 'border-radius:50%',
+            'border:4px solid rgba(255,255,255,0.15)', 'border-top-color:#FFC93C',
+            'animation:arcadeSpin .8s linear infinite',
+        ].join(';');
+
+        const title = document.createElement('div');
+        title.textContent = 'Waiting for opponent…';
+        title.style.cssText = 'font-size:20px;font-weight:700;letter-spacing:.3px';
+
+        const scoreLine = document.createElement('div');
+        scoreLine.id = 'arcadeWaitingScore';
+        scoreLine.style.cssText = 'font-size:15px;font-weight:600;color:#FFC93C';
+
+        const sub = document.createElement('div');
+        sub.textContent = 'Your run is locked in — the winner is decided by the server.';
+        sub.style.cssText = 'font-size:13px;opacity:.7;max-width:260px;line-height:1.5';
+
+        ov.appendChild(spinner);
+        ov.appendChild(title);
+        ov.appendChild(scoreLine);
+        ov.appendChild(sub);
+        container.appendChild(ov);
+        waitingOverlayEl = ov;
+        return ov;
+    }
+    function showWaitingOverlay(finalScore) {
+        const ov = ensureWaitingOverlay();
+        const sl = document.getElementById('arcadeWaitingScore');
+        if (sl) sl.textContent = 'Your score: ' + (Number(finalScore) || 0);
+        ov.style.display = 'flex';
+    }
+    function hideWaitingOverlay() {
+        if (waitingOverlayEl) waitingOverlayEl.style.display = 'none';
+    }
+
     // ─── Bird ───
     const bird = {
         x: 70,
@@ -578,6 +642,7 @@
         updateLivesDisplay();
         gameOverOverlay.classList.remove('active');
         newBestBadge.classList.remove('active');
+        hideWaitingOverlay();
         scoreDisplay.textContent = '0';
         gameState = toState || 'ready';
     }
@@ -597,11 +662,15 @@
         playHit();
         setTimeout(playGameOver, 180);
 
-        // ─── Arcade PvP: freeze silently — NEVER show the local Game Over /
-        // "Play Again" UI in a live match. The server is authoritative and the
-        // RN host renders the real match result; local replay must be impossible.
-        // gameState is already 'over' above, so the sim + input are frozen. ───
-        if (window.Arcade && window.Arcade.isMatch && window.Arcade.isMatch()) return;
+        // ─── Arcade PvP: NEVER show the local Game Over / "Play Again" UI in a
+        // live match — the run is locked, the server is authoritative, and the RN
+        // host renders the real match result. gameState is already 'over' above,
+        // so the sim + input are frozen; we show a clean "Waiting for opponent…"
+        // state instead of the local replay box. ───
+        if (window.Arcade && window.Arcade.isMatch && window.Arcade.isMatch()) {
+            showWaitingOverlay(score);
+            return;
+        }
 
         const isNewBest = score > bestScore;
         if (isNewBest) {

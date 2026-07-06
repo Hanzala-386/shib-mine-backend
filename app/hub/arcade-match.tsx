@@ -115,6 +115,17 @@ export default function ArcadeMatchScreen() {
   const [myAvatarUri, setMyAvatarUri] = useState<string | undefined>(undefined);
 
   const [mode, setMode] = useState<Mode>(isPracticeParam ? 'practice' : 'connecting');
+
+  // Online matches load the game with ?arcade=1 so the embedded game detects the
+  // live match at PAGE LOAD — the 1-life HUD, no-local-replay guard, and live
+  // score posting no longer depend on the ARCADE_MATCH_START postMessage landing
+  // through the cross-origin iframe. Practice (including switching to practice
+  // mid-flow via goPractice, which bumps wvKey to remount) drops the flag so the
+  // game reloads with 3 lives + local replay. `?v=` busts shared-hosting caches of
+  // index.html (its <script src> tags are versioned to bust the JS too).
+  const practiceActive = isPracticeParam || mode === 'practice';
+  const gameSrc = `${GAME_URL}?v=6${practiceActive ? '' : '&arcade=1'}`;
+
   const [statusMsg, setStatusMsg] = useState('Connecting to the arena…');
   const [errorMsg, setErrorMsg] = useState('');
   const [opponentName, setOpponentName] = useState('Opponent');
@@ -398,8 +409,12 @@ export default function ArcadeMatchScreen() {
     injectedStartRef.current = false;
     matchAckedRef.current = false;
     startAttemptsRef.current = 0;
+    gameReadyRef.current = false;
     if (startTimerRef.current) { clearTimeout(startTimerRef.current); startTimerRef.current = null; }
     if (revealTimerRef.current) { clearTimeout(revealTimerRef.current); revealTimerRef.current = null; }
+    // Remount the game so it reloads WITHOUT ?arcade=1 → 3-life offline practice
+    // (gameSrc is derived from mode='practice' below), never a stranded 1-life run.
+    setWvKey((k) => k + 1);
     setMode('practice');
   }, []);
 
@@ -433,7 +448,8 @@ export default function ArcadeMatchScreen() {
     if (Platform.OS === 'web') {
       return (
         <iframe
-          src={GAME_URL}
+          key={wvKey}
+          src={gameSrc}
           title="FlappyBounce"
           style={{ border: 'none', width: '100%', height: '100%' } as any}
           allow="autoplay"
@@ -444,7 +460,7 @@ export default function ArcadeMatchScreen() {
       <WebView
         key={wvKey}
         ref={wvRef}
-        source={{ uri: GAME_URL }}
+        source={{ uri: gameSrc }}
         style={{ flex: 1, backgroundColor: Colors.darkBg }}
         onMessage={onNativeMessage}
         onLoadEnd={() => { gameReadyRef.current = true; maybeStartGame(); }}

@@ -33,6 +33,18 @@
   var lastScore = -1;
   var matchLives = 1;    // server-defined lives for the live PvP match (sudden death = 1)
 
+  // Instant, handshake-independent match detection. The RN host loads the game
+  // with "?arcade=1" for a live PvP match (practice / plain browser omit it), so
+  // the game KNOWS it is a match at page load. This makes the 1-life HUD, the
+  // no-local-replay guard, and score posting NO LONGER depend on the
+  // ARCADE_MATCH_START postMessage — which a cross-origin iframe or a stale/cached
+  // build can silently drop (the exact failure that left the header stuck at 0,
+  // showed 3 hearts, and popped the local "Play Again" on death).
+  try {
+    var _p = new URLSearchParams((typeof location !== 'undefined' && location.search) || '');
+    if (_p.get('arcade') === '1') { inMatch = true; }
+  } catch (e) { /* noop — falls back to the postMessage handshake */ }
+
   // Resolve the transport at CALL TIME (not load time) so a late-injected
   // ReactNativeWebView is always picked up, and so the same build works whether
   // it runs inside a native WebView or a web iframe.
