@@ -16,6 +16,7 @@ import {
   lockedBalanceForVipLevel,
   MAX_VIP_LEVEL,
 } from "../shared/vip";
+import { ticketsToShib, validateRedeem } from "../shared/gamehub";
 
 // ─── Multer — memory storage for proof screenshot uploads ─────────────────
 const upload = multer({
@@ -3977,6 +3978,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error("[/api/admin/users/search]", e.message);
       res.status(500).json({ error: "Failed to search users" });
+    }
+  });
+
+  // ─── Redeem Hit Tickets → credit the user's WALLET BALANCE (shib_balance) ───
+  // Redemption tops up the active balance; it NEVER creates a withdrawal. The user
+  // requests a withdrawal from their balance separately via the normal flow.
+  app.post('/api/app/hub/redeem', async (req: Request, res: Response) => {
+    const { pbId, tickets, token } = req.body ?? {};
+    const n = Math.floor(Number(tickets));
+    if (!pbId || !Number.isFinite(n)) {
+      return res.status(400).json({ error: 'pbId and tickets are required' });
+    }
+    // Auth — this endpoint runs under the PB admin token, so it MUST verify the caller
+    // itself: the supplied PB token has to belong to pbId or a user could redeem
+    // another account's tickets. Mirrors the WS hub's verifyToken check.
+    try {
+      const authUser = await pbHttp('GET', `/api/collections/users/records/${pbId}`, null, token || '');
+      if (!authUser?.id || authUser.id !== pbId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+    } catch {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    try {
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,hit_tickets`);
+      if (!user?.id) return res.status(404).json({ error: 'User not found' });
+      const currentTickets = Number(user.hit_tickets) || 0;
+      const check = validateRedeem(n, currentTickets);
+      if (!check.ok) return res.status(400).json({ error: check.error });
+      const shib = ticketsToShib(n);
+      // Single atomic PB write: debit Hit Tickets + credit the SHIB wallet balance together.
+      const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
+        'hit_tickets-': n,
+        'shib_balance+': shib,
+      });
+      if (!updated?.id) return res.status(502).json({ error: 'Redemption failed' });
+      // TOCTOU guard: if a concurrent redeem over-drew tickets below zero, reverse this
+      // write so a stale-read double-redeem can never inflate shib_balance.
+      if (Number(updated.hit_tickets) < 0) {
+        await pbPatch(`/api/collections/users/records/${pbId}`, {
+          'hit_tickets+': n,
+          'shib_balance-': shib,
+        }).catch(() => {});
+        return res.status(409).json({ error: 'Redemption conflict, please retry' });
+      }
+      return res.json({ success: true, shib });
+    } catch (e: any) {
+      console.error('[/api/app/hub/redeem]', e?.message);
+      return res.status(500).json({ error: 'Redemption failed' });
     }
   });
 

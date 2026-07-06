@@ -314,13 +314,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     const refId = `redeem_${pbId}_${Date.now()}`;
     try {
       // Express-first — apiRequest attaches the PB session cookie (credentials:'include').
-      const res = await apiRequest('POST', '/api/app/hub/redeem', { pbId, tickets, refId });
+      const res = await apiRequest('POST', '/api/app/hub/redeem', { pbId, tickets, refId, token: pb.authStore.token });
       const data: any = await res.json().catch(() => ({}));
       await refreshBalance();
       await fetchWalletData();
       return { success: true, shib: typeof data?.shib === 'number' ? data.shib : ticketsToShib(tickets) };
     } catch {
-      // PB SDK fallback — debit hit_tickets + create a pending SHIB withdrawal directly.
+      // PB SDK fallback — credit the redeemed SHIB straight to the WALLET BALANCE.
+      // Redemption tops up the active balance (shib_balance); it does NOT create a
+      // withdrawal. The user requests a withdrawal from their balance separately.
       try {
         const userRec = await pb.collection('users').getOne(pbId, { fields: 'id,hit_tickets' });
         const currentTickets = Number(userRec.hit_tickets) || 0;
@@ -331,24 +333,20 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
         const shib = ticketsToShib(tickets);
 
-        // Debit Hit Tickets first.
-        await pb.collection('users').update(pbId, {
-          hit_tickets: currentTickets - tickets,
+        // Single atomic PB write: debit Hit Tickets + credit the SHIB wallet balance
+        // together, so a concurrent mining claim can't clobber the balance.
+        const updated = await pb.collection('users').update(pbId, {
+          'hit_tickets-': tickets,
+          'shib_balance+': shib,
         });
-
-        // Create a pending withdrawal for the SHIB payout.
-        try {
-          await pb.collection('withdrawals').create({
-            user: pbId,
-            method: 'Hit Ticket Redeem',
-            address_or_email: pbUser?.email ?? '',
-            amount: shib,
-            status: 'pending',
-          });
-        } catch (createErr) {
-          // Rollback the ticket debit on failure.
-          await pb.collection('users').update(pbId, { hit_tickets: currentTickets }).catch(() => {});
-          throw createErr;
+        // TOCTOU guard: if a concurrent redeem drove tickets below zero, reverse this
+        // write so a stale-read double-redeem can never inflate the SHIB balance.
+        if (Number(updated.hit_tickets) < 0) {
+          await pb.collection('users').update(pbId, {
+            'hit_tickets+': tickets,
+            'shib_balance-': shib,
+          }).catch(() => {});
+          return { success: false, error: 'Redemption conflict, please retry' };
         }
 
         await refreshBalance();

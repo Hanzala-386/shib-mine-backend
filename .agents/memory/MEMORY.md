@@ -8,6 +8,7 @@
 - [AGP gradle config-plugin pitfalls](agp-gradle-config-plugin.md) — enableDexingArtifactTransform removed in AGP 8.3 hard-fails; an upsert-only gradle.properties plugin must also FILTER deprecated keys from cached modResults.
 - [Yodo1 MAS migration](yodo1-migration.md) — Android ad stack moving AdMob→Yodo1 via a phased DORMANT foundation; build-env changes (repos, jetifier/dexing props) are NOT dormant — gate them behind one phase toggle.
 - [AdMob mediation config plugin](admob-mediation-plugin.md) — SUPERSEDED by Yodo1 migration (mediation injection removed); still useful for Expo-54 gradle ground-truth + verify-without-CLI technique.
+- [PB admin-token route auth](pb-admin-token-routes.md) — admin-token /api/app/* routes bypass PB rules; money routes MUST verify caller token==pbId + TOCTOU-guard atomic debits; redeem tops up shib_balance, no withdrawal row.
 - [PB schema-vs-fields key](pb-schema-key-gotcha.md) — shared PB exposes collection fields under `col.schema` not `col.fields`; helpers reading only `fields` silently no-op (select values nested in `options.values`).
 - [Pool/Game-Hub money invariants](pool-hub-money-invariants.md) — atomic PB modifiers; checked pbHttp wrapper; settle-latch before first await; RESUME MATCH_FOUND must carry ballInHand.
 - [Replit firewall URLs break Railway npm ci](replit-firewall-lockfile-deploy.md) — package-lock resolved URLs can be package-firewall.replit.local so external hosts get ENOTFOUND; host-rewrite to registry.npmjs.org (integrity stays valid); Railway installs from the ROOT lockfile.
