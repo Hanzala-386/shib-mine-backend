@@ -18,8 +18,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, {
-  useSharedValue, useAnimatedStyle, withRepeat, withTiming,
-  withSequence, Easing, FadeInDown, withSpring, interpolate,
+  useSharedValue, useAnimatedStyle, FadeInDown, withSpring,
 } from 'react-native-reanimated';
 import { useAuth } from '@/context/AuthContext';
 import { useWallet } from '@/context/WalletContext';
@@ -92,7 +91,7 @@ function WithdrawalTicker({ items }: { items: TickerItem[] }) {
   return (
     <View style={tkStyles.wrapper}>
       <View style={tkStyles.labelWrap}>
-        <MaterialCommunityIcons name="bank-transfer" size={13} color={Colors.gold} />
+        <MaterialCommunityIcons name="bank-transfer" size={13} color={Colors.energyCyan} />
         <Text style={tkStyles.label}>LIVE WITHDRAWALS</Text>
       </View>
       <View style={tkStyles.track}>
@@ -117,13 +116,13 @@ function WithdrawalTicker({ items }: { items: TickerItem[] }) {
         </RNAnimated.View>
         {/* Edge fade masks */}
         <LinearGradient
-          colors={['rgba(10,10,15,1)', 'rgba(10,10,15,0)']}
+          colors={['rgba(21,12,44,1)', 'rgba(21,12,44,0)']}
           start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }}
           style={tkStyles.fadeLeft}
           pointerEvents="none"
         />
         <LinearGradient
-          colors={['rgba(10,10,15,0)', 'rgba(10,10,15,1)']}
+          colors={['rgba(21,12,44,0)', 'rgba(21,12,44,1)']}
           start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }}
           style={tkStyles.fadeRight}
           pointerEvents="none"
@@ -134,9 +133,9 @@ function WithdrawalTicker({ items }: { items: TickerItem[] }) {
 }
 
 const tkStyles = StyleSheet.create({
-  wrapper:   { borderTopWidth: 1, borderTopColor: 'rgba(244,196,48,0.15)', backgroundColor: 'rgba(244,196,48,0.04)', paddingVertical: 4 },
+  wrapper:   { borderTopWidth: 1, borderTopColor: 'rgba(37,213,255,0.18)', backgroundColor: 'rgba(37,213,255,0.05)', paddingVertical: 4 },
   labelWrap: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 16, paddingBottom: 4 },
-  label:     { fontFamily: 'Inter_700Bold', fontSize: 9, color: Colors.gold, letterSpacing: 1.5, textTransform: 'uppercase' },
+  label:     { fontFamily: 'Inter_700Bold', fontSize: 9, color: Colors.energyCyan, letterSpacing: 1.5, textTransform: 'uppercase' },
   track:     { height: TICKER_H, overflow: 'hidden' },
   row:       { flexDirection: 'row', alignItems: 'center', height: TICKER_H },
   chip:      { width: TICKER_ITEM_W, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, height: TICKER_H },
@@ -412,9 +411,9 @@ const BoosterCard3D = memo(function BoosterCard3D({
           {
             opacity: isMiningLocked ? 0.42 : 1,
             borderColor: isMiningLocked
-              ? Colors.darkBorder
-              : isActive ? b.color : anyActive ? Colors.darkBorder : b.color + '35',
-            backgroundColor: isMiningLocked ? Colors.darkCard : isActive ? b.color + '18' : Colors.darkCard,
+              ? Colors.coreBorder
+              : isActive ? b.color : anyActive ? Colors.coreBorder : b.color + '35',
+            backgroundColor: isMiningLocked ? Colors.corePanel : isActive ? b.color + '18' : Colors.corePanel,
           },
         ]}
         onPressIn={() => {
@@ -523,13 +522,6 @@ export default function HomeScreen() {
   // Bottom stat card: static wallet balance from DB — only updates after a successful Claim
   const displayedStatShib  = useRollingNumber(safeShib, 800);
 
-  // Animations
-  const rotation    = useSharedValue(0);
-  const rotation2   = useSharedValue(0);   // counter-rotating inner ring
-  const glowScale   = useSharedValue(1);   // breathing ambient glow
-  const pulse       = useSharedValue(1);
-  const glowOpacity = useSharedValue(0.4);
-
   // 3D press hooks — each button gets its own spring instance
   const claim3D       = usePress3D();
 
@@ -540,41 +532,6 @@ export default function HomeScreen() {
     { label: '6x',  multiplier: 6,  cost: boostCosts['6x'],  color: BOOSTER_COLORS['6x'] },
     { label: '10x', multiplier: 10, cost: boostCosts['10x'], color: BOOSTER_COLORS['10x'] },
   ];
-
-  useEffect(() => {
-    rotation.value  = withRepeat(withTiming(360,  { duration: 8000, easing: Easing.linear }), -1, false);
-    rotation2.value = withRepeat(withTiming(-360, { duration: 5500, easing: Easing.linear }), -1, false);
-    glowScale.value = withRepeat(
-      withSequence(
-        withTiming(1.18, { duration: 2400, easing: Easing.inOut(Easing.sin) }),
-        withTiming(0.85, { duration: 2400, easing: Easing.inOut(Easing.sin) }),
-      ),
-      -1, true,
-    );
-  }, []);
-
-  useEffect(() => {
-    if (status === 'mining') {
-      pulse.value = withRepeat(
-        withSequence(withTiming(1.05, { duration: 1000 }), withTiming(1, { duration: 1000 })),
-        -1, true,
-      );
-      glowOpacity.value = withRepeat(
-        withSequence(withTiming(0.8, { duration: 1500 }), withTiming(0.3, { duration: 1500 })),
-        -1, true,
-      );
-    } else if (status === 'ready_to_claim') {
-      pulse.value = withRepeat(
-        withSequence(withTiming(1.1, { duration: 500 }), withTiming(1, { duration: 500 })),
-        -1, true,
-      );
-      glowOpacity.value = withTiming(1, { duration: 300 });
-    } else {
-      pulse.value = withTiming(1, { duration: 300 });
-      glowOpacity.value = withTiming(0.4, { duration: 300 });
-    }
-  }, [status]);
-
 
   // ── Toast helper ─────────────────────────────────────────────────────────
 
@@ -748,14 +705,14 @@ export default function HomeScreen() {
             </View>
             <View style={styles.headerRight}>
               <View style={styles.balanceBadge}>
-                <MaterialCommunityIcons name="lightning-bolt" size={14} color={Colors.gold} />
+                <MaterialCommunityIcons name="lightning-bolt" size={14} color={Colors.energyCyan} />
                 <Text style={styles.balanceText}>{Math.floor(displayedPT)} PT</Text>
               </View>
               <Pressable
                 style={styles.bellBtn}
                 onPress={() => router.push('/notifications' as any)}
               >
-                <Ionicons name="notifications-outline" size={22} color={Colors.gold} />
+                <Ionicons name="notifications-outline" size={22} color={Colors.energyCyan} />
                 {unreadCount > 0 && (
                   <View style={styles.bellBadge}>
                     <Text style={styles.bellBadgeText}>
@@ -1102,16 +1059,16 @@ const styles = StyleSheet.create({
   scroll: { paddingHorizontal: 20, paddingBottom: 120 },
   tickerFixed: {
     position: 'absolute', left: 0, right: 0,
-    backgroundColor: Colors.darkBg,
+    backgroundColor: Colors.coreBg,
     zIndex: 25, elevation: 25,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   bellBtn: {
     width: 40, height: 40, borderRadius: 12,
-    backgroundColor: 'rgba(244,196,48,0.1)',
+    backgroundColor: 'rgba(37,213,255,0.1)',
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)',
+    borderWidth: 1, borderColor: 'rgba(37,213,255,0.22)',
     position: 'relative',
   },
   bellBadge: {
@@ -1120,66 +1077,67 @@ const styles = StyleSheet.create({
     backgroundColor: '#FF3B30',
     alignItems: 'center', justifyContent: 'center',
     paddingHorizontal: 3,
-    borderWidth: 1.5, borderColor: Colors.darkBg,
+    borderWidth: 1.5, borderColor: Colors.coreBg,
   },
   bellBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#fff' },
   greeting: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary },
   userName: { fontFamily: 'Inter_700Bold', fontSize: 21, color: Colors.textPrimary, marginTop: 2 },
   balanceBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: 'rgba(244,196,48,0.14)', borderRadius: 20,
+    backgroundColor: 'rgba(37,213,255,0.14)', borderRadius: 20,
     paddingHorizontal: 14, paddingVertical: 7,
-    borderWidth: 1, borderColor: 'rgba(244,196,48,0.32)',
-    shadowColor: Colors.gold,
+    borderWidth: 1, borderColor: 'rgba(37,213,255,0.34)',
+    shadowColor: Colors.energyCyan,
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.32,
+    shadowOpacity: 0.35,
     shadowRadius: 12,
     elevation: 6,
   },
-  balanceText: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.gold },
+  balanceText: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.energyCyan },
   liveBalanceCard: { marginBottom: 12, borderRadius: 14, overflow: 'hidden' },
   liveBalanceInner: {
     padding: 14, alignItems: 'center',
-    borderWidth: 1, borderColor: 'rgba(244,196,48,0.2)', borderRadius: 14,
+    borderWidth: 1, borderColor: 'rgba(37,213,255,0.24)', borderRadius: 14,
   },
-  liveLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, marginBottom: 4 },
-  liveValue: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.gold },
+  liveLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.steel, marginBottom: 4 },
+  liveValue: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.energyCyan },
   liveBoostLabel: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.neonOrange, marginTop: 4 },
   vipBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     alignSelf: 'center',
     paddingVertical: 8, paddingHorizontal: 16,
     borderRadius: 22,
-    borderWidth: 1, borderColor: 'rgba(244,196,48,0.35)',
+    borderWidth: 1, borderColor: 'rgba(120,78,0,0.45)',
     marginBottom: 10,
-  },
-  vipBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: Colors.gold, letterSpacing: 0.5 },
-  vipBadgeDivider: { width: 1, height: 14, backgroundColor: 'rgba(244,196,48,0.3)' },
-  vipBadgeBonus: { fontFamily: 'Inter_500Medium', fontSize: 12, color: Colors.textSecondary },
-  miningCore: { alignItems: 'center', justifyContent: 'center', height: 295, marginBottom: 16 },
-  ambientGlow: {
-    position: 'absolute', width: 268, height: 268, borderRadius: 134,
-    backgroundColor: Colors.gold,
-  },
-  rotatingRing:  { position: 'absolute', width: 222, height: 222, alignItems: 'center', justifyContent: 'center' },
-  rotatingRing2: { position: 'absolute', width: 158, height: 158, alignItems: 'center', justifyContent: 'center' },
-  ringNode: { position: 'absolute' },
-  coreContainer: {
-    width: 158, height: 158, borderRadius: 79, overflow: 'hidden',
-    borderWidth: 2.5, borderColor: 'rgba(244,196,48,0.42)',
+    overflow: 'hidden',
     shadowColor: Colors.gold,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.45,
-    shadowRadius: 22,
-    elevation: 16,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 7,
   },
-  core: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6 },
-  timerText: { fontFamily: 'Inter_700Bold', fontSize: 17, color: Colors.gold },
-  coreLabel: { fontFamily: 'Inter_700Bold', fontSize: 15 },
-  coreLabelMuted: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textMuted },
+  vipGloss: {
+    position: 'absolute', top: 0, left: 0, right: 0, height: '50%',
+    backgroundColor: 'rgba(255,255,255,0.28)',
+  },
+  vipBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#3A2600', letterSpacing: 0.5 },
+  vipBadgeDivider: { width: 1, height: 14, backgroundColor: 'rgba(58,38,0,0.35)' },
+  vipBadgeBonus: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#5A3D00' },
+  miningCore: { alignItems: 'center', justifyContent: 'center', height: 256, marginBottom: 8 },
+  coreCaption: { alignItems: 'center', justifyContent: 'center', gap: 6, marginBottom: 16, minHeight: 46 },
+  coreCaptionTitle: { fontFamily: 'Inter_700Bold', fontSize: 15, color: Colors.energyCyanLight, letterSpacing: 2, textTransform: 'uppercase' },
+  coreCaptionSub: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.steel },
+  coreTimer: { fontFamily: 'Inter_700Bold', fontSize: 30, color: Colors.textPrimary, letterSpacing: 1 },
+  reqPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: 'rgba(37,213,255,0.1)', borderRadius: 14,
+    paddingHorizontal: 12, paddingVertical: 5,
+    borderWidth: 1, borderColor: 'rgba(37,213,255,0.28)',
+  },
+  reqPillText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.energyCyanLight },
   progressSection: { marginBottom: 16 },
   progressBar: { height: 6, backgroundColor: Colors.darkSurface, borderRadius: 3, overflow: 'hidden', marginBottom: 7 },
-  progressFill: { height: '100%', borderRadius: 3, backgroundColor: Colors.gold },
+  progressFill: { height: '100%', borderRadius: 3, backgroundColor: Colors.energyCyan },
   progressLabel: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, textAlign: 'center' },
   actionsArea: { alignItems: 'center', marginBottom: 22 },
   actionBtn: { width: '100%' },
@@ -1193,8 +1151,6 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
   actionText: { fontFamily: 'Inter_700Bold', fontSize: 17, color: '#000' },
-  feeTag: { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3, flexDirection: 'row', alignItems: 'center', gap: 2 },
-  feeText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#000' },
   warningCard: {
     backgroundColor: 'rgba(255,107,0,0.1)', borderRadius: 16, padding: 16, width: '100%',
     marginBottom: 16, borderWidth: 1, borderColor: 'rgba(255,107,0,0.3)', alignItems: 'center',
@@ -1209,11 +1165,11 @@ const styles = StyleSheet.create({
   sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 1 },
   boostersGrid: { flexDirection: 'row', gap: 10 },
   boosterCard: {
-    flex: 1, backgroundColor: Colors.darkCard, borderRadius: 14, padding: 12,
+    flex: 1, backgroundColor: Colors.corePanel, borderRadius: 14, padding: 12,
     alignItems: 'center', gap: 4, borderWidth: 1,
-    shadowColor: Colors.gold,
+    shadowColor: Colors.energyCyan,
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.14,
+    shadowOpacity: 0.16,
     shadowRadius: 10,
     elevation: 5,
   },
@@ -1252,11 +1208,11 @@ const styles = StyleSheet.create({
   toastText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textPrimary, flexShrink: 1 },
   statsRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
   statCard: {
-    flex: 1, backgroundColor: Colors.darkCard, borderRadius: 16, padding: 16,
-    alignItems: 'center', gap: 6, borderWidth: 1, borderColor: Colors.darkBorder,
-    shadowColor: Colors.gold,
+    flex: 1, backgroundColor: Colors.corePanel, borderRadius: 16, padding: 16,
+    alignItems: 'center', gap: 6, borderWidth: 1, borderColor: Colors.coreBorder,
+    shadowColor: Colors.energyCyan,
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.12,
     shadowRadius: 8,
     elevation: 4,
   },
