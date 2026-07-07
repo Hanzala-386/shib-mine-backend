@@ -7,6 +7,8 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { pb } from '@/lib/pocketbase';
 import SpinningCoin from '@/components/SpinningCoin';
+import MiningCoreOrb from '@/components/MiningCoreOrb';
+import EngageLever from '@/components/EngageLever';
 import { BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
@@ -529,7 +531,6 @@ export default function HomeScreen() {
   const glowOpacity = useSharedValue(0.4);
 
   // 3D press hooks — each button gets its own spring instance
-  const startMining3D = usePress3D();
   const claim3D       = usePress3D();
 
   const boostCosts = settings?.boostCosts ?? { '2x': 200, '4x': 400, '6x': 600, '10x': 800 };
@@ -574,13 +575,6 @@ export default function HomeScreen() {
     }
   }, [status]);
 
-  const ringStyle  = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
-  const ring2Style = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation2.value}deg` }] }));
-  const coreStyle  = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
-  const ambientGlowStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: glowScale.value }],
-    opacity: glowOpacity.value * 0.22,
-  }));
 
   // ── Toast helper ─────────────────────────────────────────────────────────
 
@@ -696,12 +690,12 @@ export default function HomeScreen() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <View style={[styles.container, { backgroundColor: Colors.darkBg }]}>
+    <View style={[styles.container, { backgroundColor: Colors.coreBg }]}>
       <LinearGradient
-        colors={['rgba(244,196,48,0.15)', 'rgba(255,107,0,0.1)', 'transparent']}
+        colors={['rgba(37,213,255,0.14)', 'rgba(46,26,90,0.35)', 'transparent']}
         style={StyleSheet.absoluteFill}
         start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 0.5 }}
+        end={{ x: 0.5, y: 0.55 }}
       />
 
       {/* Toast notification — floats above everything, auto-dismisses */}
@@ -778,7 +772,7 @@ export default function HomeScreen() {
         {status === 'mining' && (
           <Animated.View entering={FadeInDown.delay(50).springify()} style={styles.liveBalanceCard}>
             <LinearGradient
-              colors={['rgba(244,196,48,0.1)', 'rgba(255,107,0,0.05)']}
+              colors={['rgba(37,213,255,0.12)', 'rgba(37,213,255,0.03)']}
               style={styles.liveBalanceInner}
             >
               <Text style={styles.liveLabel}>Mined This Session (starts from 0.000)</Text>
@@ -799,11 +793,12 @@ export default function HomeScreen() {
             style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
           >
             <LinearGradient
-              colors={['rgba(244,196,48,0.18)', 'rgba(255,107,0,0.10)']}
-              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+              colors={[Colors.bronzeLight, Colors.gold, Colors.bronze]}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
               style={styles.vipBadge}
             >
-              <MaterialCommunityIcons name="crown" size={16} color={Colors.gold} />
+              <View style={styles.vipGloss} pointerEvents="none" />
+              <MaterialCommunityIcons name="crown" size={16} color="#3A2600" />
               <Text style={styles.vipBadgeText}>VIP {user?.vipLevel ?? 0}</Text>
               <View style={styles.vipBadgeDivider} />
               <Text style={styles.vipBadgeBonus}>
@@ -811,92 +806,36 @@ export default function HomeScreen() {
                   ? `+${vipIncrementPerHr(user?.vipLevel ?? 0)} SHIB/hr`
                   : 'Tap to upgrade'}
               </Text>
-              <Ionicons name="chevron-forward" size={14} color={Colors.gold} />
+              <Ionicons name="chevron-forward" size={14} color="#3A2600" />
             </LinearGradient>
           </Pressable>
         </Animated.View>
 
-        {/* Mining Core — multi-ring orbital */}
+        {/* Mining Core — animated energy orb */}
         <Animated.View entering={FadeInDown.delay(200).springify()} style={styles.miningCore}>
+          <MiningCoreOrb status={status} size={248} />
+        </Animated.View>
 
-          {/* Ambient breathing glow behind everything */}
-          <Animated.View style={[styles.ambientGlow, ambientGlowStyle]} />
-
-          {/* Outer rotating ring — 12 nodes at r=108, CW */}
-          <Animated.View style={[styles.rotatingRing, ringStyle]}>
-            {[...Array(12)].map((_, i) => (
-              <View
-                key={i}
-                style={[
-                  styles.ringNode,
-                  {
-                    transform: [{ rotate: `${i * 30}deg` }, { translateX: 108 }],
-                    backgroundColor:
-                      i % 4 === 0 ? Colors.gold
-                      : i % 4 === 1 ? Colors.neonOrange
-                      : i % 4 === 2 ? 'rgba(244,196,48,0.55)'
-                      : 'rgba(255,107,0,0.3)',
-                    opacity: status === 'idle' ? (i % 4 === 0 ? 0.45 : 0.2) : 1,
-                    width:  i % 4 === 0 ? 11 : i % 4 === 2 ? 8 : 5,
-                    height: i % 4 === 0 ? 11 : i % 4 === 2 ? 8 : 5,
-                    borderRadius: 6,
-                    shadowColor: i % 4 === 0 ? Colors.gold : Colors.neonOrange,
-                    shadowRadius: status === 'mining' ? 8 : 3,
-                    shadowOpacity: status === 'mining' ? 0.85 : 0.25,
-                  },
-                ]}
-              />
-            ))}
-          </Animated.View>
-
-          {/* Inner counter-rotating ring — 8 dash nodes at r=76, CCW */}
-          <Animated.View style={[styles.rotatingRing2, ring2Style]}>
-            {[...Array(8)].map((_, i) => (
-              <View
-                key={i}
-                style={[
-                  styles.ringNode,
-                  {
-                    transform: [{ rotate: `${i * 45}deg` }, { translateX: 76 }],
-                    backgroundColor: i % 2 === 0 ? Colors.neonOrange : Colors.gold,
-                    opacity: status === 'idle' ? 0.14 : status === 'ready_to_claim' ? 1 : 0.6,
-                    width:  i % 2 === 0 ? 14 : 7,
-                    height: i % 2 === 0 ? 4  : 7,
-                    borderRadius: 2,
-                  },
-                ]}
-              />
-            ))}
-          </Animated.View>
-
-          {/* Core */}
-          <Animated.View style={[styles.coreContainer, coreStyle]}>
-            <LinearGradient
-              colors={
-                status === 'ready_to_claim'
-                  ? [Colors.gold, Colors.neonOrange]
-                  : status === 'mining'
-                  ? ['rgba(244,196,48,0.28)', 'rgba(255,107,0,0.16)', 'rgba(10,10,22,0.92)']
-                  : ['rgba(22,22,38,0.98)', 'rgba(12,12,22,0.98)']
-              }
-              style={styles.core}
-            >
-              <SpinningCoin
-                size={52}
-                spinning
-                speed={status === 'ready_to_claim' ? 'fast' : 'normal'}
-              />
-              {status === 'mining' && (
-                <Text style={styles.timerText}>{formatTime(safeTimeRemaining)}</Text>
-              )}
-              {status === 'idle' && (
-                <Text style={styles.coreLabelMuted}>IDLE</Text>
-              )}
-              {status === 'ready_to_claim' && (
-                <Text style={[styles.coreLabel, { color: '#000' }]}>CLAIM!</Text>
-              )}
-            </LinearGradient>
-          </Animated.View>
+        {/* Core caption — dynamic per state */}
+        <Animated.View entering={FadeInDown.delay(240).springify()} style={styles.coreCaption}>
+          {status === 'idle' && (
+            <>
+              <Text style={styles.coreCaptionTitle}>MINING CORE</Text>
+              <View style={styles.reqPill}>
+                <MaterialCommunityIcons name="lightning-bolt" size={13} color={Colors.energyCyan} />
+                <Text style={styles.reqPillText}>{miningEntryCost} PT Req.</Text>
+              </View>
+            </>
+          )}
+          {status === 'mining' && (
+            <>
+              <Text style={styles.coreTimer}>{formatTime(safeTimeRemaining)}</Text>
+              <Text style={styles.coreCaptionSub}>{safeMultiplier}x speed active</Text>
+            </>
+          )}
+          {status === 'ready_to_claim' && (
+            <Text style={[styles.coreCaptionTitle, { color: Colors.gold }]}>MINING COMPLETE</Text>
+          )}
         </Animated.View>
 
         {/* Progress bar — only while mining */}
@@ -935,27 +874,12 @@ export default function HomeScreen() {
                 </Pressable>
               </Animated.View>
             )}
-            <Animated.View style={[styles.actionBtn, startMining3D.animStyle]}>
-              <Pressable
-                onPressIn={startMining3D.onPressIn}
-                onPressOut={startMining3D.onPressOut}
-                onPress={handleStartMining}
-                disabled={showAdLoader}
-              >
-                <LinearGradient
-                  colors={[Colors.gold, Colors.neonOrange]}
-                  style={styles.actionGradient}
-                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                >
-                  <SpinningCoin size={20} spinning speed="normal" />
-                  <Text style={styles.actionText}>{showAdLoader ? 'Loading…' : 'Start Mining'}</Text>
-                  <View style={styles.feeTag}>
-                    <MaterialCommunityIcons name="lightning-bolt" size={12} color="#000" />
-                    <Text style={styles.feeText}>{miningEntryCost} PT</Text>
-                  </View>
-                </LinearGradient>
-              </Pressable>
-            </Animated.View>
+            <EngageLever
+              label="Engage Mining Core"
+              loading={showAdLoader}
+              disabled={showAdLoader}
+              onEngage={handleStartMining}
+            />
             <Text style={styles.rewardPreview}>
               Earns ~{formatShib(safeShibReward)} SHIB in {settings?.miningDurationMinutes ?? 60} min
             </Text>
