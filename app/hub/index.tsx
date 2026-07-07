@@ -11,6 +11,9 @@ import Colors from '@/constants/colors';
 const FLAPPY_ICON = require('@/assets/images/flappy_icon.png');
 const FRUITCUT_ICON = require('@/assets/images/fruitcut_icon.jpg');
 const STACK_ICON = require('@/assets/images/stack_icon.png');
+const G2048_ICON = require('@/assets/images/2048_icon.png');
+const ICEBLOCK_ICON = require('@/assets/images/iceblock_icon.png');
+const COLOR_ICON = require('@/assets/images/color_icon.png');
 
 type HubGame = {
   id: string;
@@ -24,6 +27,9 @@ const GAMES: HubGame[] = [
   { id: 'flappy', name: 'Flappy Bounce', icon: 'airplane', image: FLAPPY_ICON, active: true },
   { id: 'fruitcut', name: 'Fruit Cut', icon: 'nutrition', image: FRUITCUT_ICON, active: true },
   { id: 'stack', name: 'Tower Stack', icon: 'business', image: STACK_ICON, active: true },
+  { id: '2048', name: '2048', icon: 'grid', image: G2048_ICON, active: true },
+  { id: 'iceblock', name: 'Ice Block', icon: 'snow', image: ICEBLOCK_ICON, active: true },
+  { id: 'color', name: 'Color Rush', icon: 'color-palette', image: COLOR_ICON, active: true },
 ];
 
 export default function HubScreen() {

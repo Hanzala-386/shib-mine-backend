@@ -1,5 +1,22 @@
 uploads = []
-generated = []
+
+[[generated]]
+id = "gBxh515p7jffD9updzt6V"
+uri = "file://assets/images/2048_icon.png"
+type = "image"
+title = "2048 tile icon"
+
+[[generated]]
+id = "akSkit9jbe_rfTezrtH6N"
+uri = "file://assets/images/iceblock_icon.png"
+type = "image"
+title = "ice block icon"
+
+[[generated]]
+id = "cF0D9h5uFKag_nYjKhwRJ"
+uri = "file://assets/images/color_icon.png"
+type = "image"
+title = "color rush icon"
 
 [[outputs]]
 id = "stg5f5dwQykswOQ_uXUMe"

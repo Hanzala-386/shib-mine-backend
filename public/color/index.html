@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="theme-color" content="#000000" />
+        <title>Color Rush</title>
+
+        <!-- SEO Meta -->
+        <meta name="description" content="Color Rush is a HTML5 game where you have roll the ball along the track and collect the same color balls, avoid the balls which has different color to stay alive and keep high score." />
+        <meta name="keywords" content="rush game, endless ball roller, color-matching challenge, 3D slope adventure, fast-paced ball collector, obstacle avoidance game, mobile-friendly color game, high-score rush mode, addictive color sorter, family-friendly roller, precision rolling game, dynamic track changer, relaxing color chase, skill-based ball rush, visual reflex trainer" />
+        <meta name="author" content="demonisblack" />
+
+        <!-- Open Graph / Facebook -->
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content="https://demonisblack.com/code/2025/colorrush/game/" />
+        <meta property="og:title" content="Color Rush" />
+        <meta property="og:description" content="Color Rush is a HTML5 game where you have roll the ball along the track and collect the same color balls, avoid the balls which has different color to stay alive and keep high score." />
+        <meta property="og:image" content="https://demonisblack.com/code/2025/colorrush/game/share.jpg" />
+
+        <!-- Twitter Card -->
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:url" content="https://demonisblack.com/code/2025/colorrush/game/" />
+        <meta name="twitter:title" content="Color Rush" />
+        <meta name="twitter:description" content="Color Rush is a HTML5 game where you have roll the ball along the track and collect the same color balls, avoid the balls which has different color to stay alive and keep high score." />
+        <meta name="twitter:image" content="https://demonisblack.com/code/2025/colorrush/game/share.jpg" />
+
+        <meta name="application-name" content="Color Rush" />
+        <meta name="author" content="demonisblack" />
+
+        <!-- Favicons -->
+        <link rel="icon" type="image/png" href="icons/favicon-96x96.png" sizes="96x96" />
+        <link rel="icon" type="image/svg+xml" href="icons/favicon.svg" />
+        <link rel="shortcut icon" href="icons/favicon.ico" />
+        <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
+        <link rel="manifest" href="icons/site.webmanifest" />
+
+        <link rel="stylesheet" href="css/normalize.css">
+        <link rel="stylesheet" href="css/main.css">
+
+        <!-- Arcade PvP bridge: MUST load first (reads ?arcade=1 at page load). -->
+        <script src="arcade-sdk.js?v=1"></script>
+    </head>
+    <body>
+        <!-- PERCENT LOADER START-->
+        <div id="mainLoader"><img src="assets/loader.png" /><br/><span>0</span></div>
+        <!-- PERCENT LOADER END-->
+        
+        <!-- CONTENT START-->
+        <div id="mainHolder">
+        
+            <!-- BROWSER NOT SUPPORT START-->
+            <div id="notSupportHolder">
+                <div class="notSupport">Your browser isn't supported.<br/>Please update your browser in order to run the game.</div>
+            </div>
+            <!-- BROWSER NOT SUPPORT END-->
+            
+            <!-- CANVAS START-->
+            <div id="canvasHolder">
+                <canvas id="gameCanvas" width="1280" height="720"></canvas>
+            </div>
+            <!-- CANVAS END-->
+            
+        </div>
+        <!-- CONTENT END-->
+        
+        <script src="//ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+        <script>window.jQuery || document.write('<script src="js/vendor/jquery.min.js"><\/script>')</script>
+        
+        <script src="js/vendor/mobile-detect.js"></script>
+        <script src="js/vendor/createjs.min.js"></script>
+        <script src="js/vendor/TweenMax.min.js"></script>
+        
+        <script src="js/plugins.js"></script>
+        <script src="js/sound.js"></script>
+        <script src="js/canvas.js"></script>
+        <script src="js/game.js"></script>
+        <!-- Arcade adapter: after game.js so its window.__arcadeColor* hooks exist. -->
+        <script src="color-arcade.js?v=1"></script>
+        <script src="js/mobile.js"></script>
+        <script src="js/main.js"></script>
+        <script src="js/loader.js"></script>
+        <script src="js/init.js"></script>
+    </body>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-4MNPH8X058"></script>
+    <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'G-4MNPH8X058');
+    </script>
+
+</html>

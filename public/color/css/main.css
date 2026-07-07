@@ -1,0 +1,34 @@
+/* Base style
+   ========================================================================== */
+   
+/* Fonts */
+@font-face {
+    font-family: 'russo_oneregular';
+    src: url('fonts/russo_one-webfont.woff2') format('woff2'),
+        url('fonts/russo_one-webfont.woff') format('woff');
+    font-weight: normal;
+    font-style: normal;
+}
+
+html{ -webkit-user-select: none; -ms-user-select: none; user-select: none; background:#fff; }
+
+/*-- Percent Loader -- */
+#mainLoader{ position:absolute; z-index:5; display:none; font-size:25px; line-height:25px; color:#000; text-align:center; width:100%; font-family:'russo_oneregular'; }
+
+/*-- Content Wrapper -- */
+#mainHolder{ position:absolute; width:100%;height:100%;}
+
+/*-- Browser Not Support -- */
+#notSupportHolder{ position:relative; width:90%; margin:2% auto; color:#000; text-align:center; font-size:25px; font-family:'russo_oneregular'; display:none; }
+
+/*-- Rotate Animation -- */
+@-moz-keyframes spin { 50% { -moz-transform: rotate(0deg); } 100% { -moz-transform: rotate(0deg); } }
+@-webkit-keyframes spin { 50% { -webkit-transform: rotate(90deg); } 100% { -webkit-transform: rotate(0deg); } }
+@keyframes spin { 50% { -webkit-transform: rotate(90deg); transform:rotate(90deg); } 100% { -webkit-transform: rotate(90deg); transform:rotate(90deg); } }
+
+/*-- Canvas Wrapper -- */
+#canvasHolder{ position:relative; width:100%; max-width:1280px; height:100%; margin:auto; display:none; }
+canvas{ position:fixed; }
+
+/*-- Form Wrapper -- */
+.clearfix:after { content: "."; visibility: hidden; display: block; clear: both;}

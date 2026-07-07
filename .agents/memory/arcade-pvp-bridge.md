@@ -1,6 +1,6 @@
 ---
-name: Arcade PvP game ↔ React Native bridge (Flappy Bounce, Fruit Cut, Tower Stack)
-description: How HTML5 arcade games talk to the RN WebView host for real-money PvP, and the non-obvious gotchas (external hosting, lives-HUD re-sync, no local replay in-match, AFK margin rule, Construct 3 wrapper recipe).
+name: Arcade PvP game ↔ React Native bridge (6 games: Flappy, Fruit Cut, Stack, 2048, Ice Block, Color Rush)
+description: How HTML5 arcade games talk to the RN WebView host for real-money PvP, and the non-obvious gotchas (external hosting, lives-HUD re-sync, no local replay in-match, AFK margin rule, Construct 3 wrapper recipe, CreateJS const-global score read).
 ---
 
 # Arcade PvP game ↔ RN bridge
@@ -120,6 +120,19 @@ game's start/score/death/exit hooks.
 - CTL/createjs games: game code reads the GLOBAL `s_iTimeElaps` (real elapsed per tick)
   inside `update()`. When stepping N times per tick, PIN `s_iTimeElaps = FPS_TIME` for
   each step and restore after the loop, or time-based accumulators double-count.
+
+## Reading a game's score from a separate adapter script: check `const`/`let` vs `var`
+- In a CLASSIC (non-module) `<script>`, a top-level `const`/`let` is a global LEXICAL
+  binding — it is NOT a property on `window`/globalThis. A `var` (or bare assignment) IS.
+  So if the game does `const playerData = {...}` (e.g. CreateJS "Color Rush" js/game.js),
+  `window.playerData` is `undefined` and reading it pins the reported score to 0 forever.
+- Fix: the adapter (also a classic script, loaded AFTER the game) reads the BARE identifier
+  `playerData.score` — all classic scripts on a page share ONE global lexical environment,
+  so the bare name resolves up the scope chain even from inside the adapter's IIFE.
+- **Why:** the failure is silent (score always 0 → both players tie/forfeit), and it looks
+  like a bridge bug, not a scoping bug. Before wiring a score read, grep the game source for
+  how its score object is DECLARED (`const`/`let` → bare read; `var`/window.x → either works).
+  Construct 3 games sidestep this entirely — score lives in `rt.globalVars`, not page globals.
 
 ## Two-stage match timer + pause kill (adapter pattern)
 - A pre-game AFK countdown must be armed on the SDK's `arcade:matchstart` event, NEVER at

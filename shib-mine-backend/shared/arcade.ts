@@ -112,6 +112,73 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     // plus first-score latency (server clears AFK only on the first SCORE).
     readyAfkSeconds: 60,
   },
+  '2048': {
+    gameId: '2048',
+    name: '2048',
+    path: '2048',
+    // One board, no lives — the 5:00 match timer (client-enforced) ends the run.
+    lives: 1,
+    // Honest 5-minute 2048 runs top out around ~5–7k; 20000 is a generous
+    // ceiling. Do NOT raise it: acceptScore never flags a drip at exactly the
+    // allowed rate, so maxScore is the only real cheat bound for a scripted
+    // client. A 99999 ceiling would let 1024/500ms bank 99999 in ~24s unflagged.
+    maxScore: 20000,
+    // Merges can jump a lot in a single swipe (1024+1024 = +2048). The adapter
+    // reports the CUMULATIVE score throttled to one message per ~600ms; the
+    // clamp banks quiet windows (merges always follow non-scoring setup swipes)
+    // so 1024/window covers the biggest common merge in one window and a rare
+    // +2048 catches up within ~2 windows of continued reporting.
+    scoreDelta: { maxIncrement: 1024, minIntervalMs: 500 },
+    // Single-stage: the board is immediately playable, so the 5:00 match timer
+    // arms on match start (not on a Play tap). At 0:00 the adapter freezes the
+    // board and locks the final score; the normal both-out settle picks higher.
+    timerSeconds: 300,
+    // No adapter pre-game AFK (no menu). The RN client (50s) and this backstop
+    // cover a seat that never moves; both clear on the first SCORE, which the
+    // adapter emits (onScore(0)) on the first genuine gameplay tap.
+    readyAfkSeconds: 60,
+  },
+  iceblock: {
+    gameId: 'iceblock',
+    name: 'Ice Block Puzzle',
+    path: 'iceblock',
+    // One board, no lives — the 5:00 match timer (client-enforced) ends the run.
+    lives: 1,
+    // Line-clear puzzle; honest 5-minute runs stay well under 9999.
+    maxScore: 9999,
+    // Score jumps per line-clear / combo. Adapter reports CUMULATIVE score
+    // throttled to ~600ms; 150/window with quiet-window banking covers a big
+    // multi-line combo. (De-risk 150 with a practice run logging Score deltas.)
+    scoreDelta: { maxIncrement: 150, minIntervalMs: 500 },
+    // Two-stage client-enforced timing (identical to Tower Stack): Stage 1 = 45s
+    // pre-game AFK armed on match start (menu + Play screen); Stage 2 = 5:00
+    // active match armed on the first gameplay tap. Server has no gameplay timer.
+    timerSeconds: 300,
+    // Stage 1 backstop: adapter forfeits at 45s pre-game, RN at 50s — this MUST
+    // sit above both plus first-score latency (server clears AFK on first SCORE,
+    // which the adapter emits onScore(0) on the first gameplay tap).
+    readyAfkSeconds: 60,
+  },
+  color: {
+    gameId: 'color',
+    name: 'Color Rush',
+    path: 'color',
+    // Sudden death — one wrong-colour collision ends the endless run.
+    lives: 1,
+    // Endless +1-per-ball game; honest runs stay well under 5000 in a session.
+    maxScore: 5000,
+    // Scores +1 per same-colour ball collected, but balls arrive in clusters,
+    // so 5/window (~10 pts/s budget vs ~2–3 honest) never clamps honest play
+    // while still catching a scripted drip. Cumulative report throttled ~600ms.
+    scoreDelta: { maxIncrement: 5, minIntervalMs: 500 },
+    // ENDLESS: no gameplay match timer (like Flappy/Fruit Cut). The run ends on
+    // the first wrong-colour hit → PLAYER_OUT; the higher locked score wins.
+    timerSeconds: null,
+    // Stage 1 pre-game AFK: adapter forfeits at 45s on the start screen, RN at
+    // 50s — this backstop MUST sit above both (ordering invariant), cleared by
+    // the first SCORE (adapter emits onScore(0) on the Play tap).
+    readyAfkSeconds: 60,
+  },
 };
 export function getGameSpec(gameId: string): GameSpec | null {
   return ARCADE_GAMES[gameId] ?? null;

@@ -17,6 +17,9 @@ import { TIER_CONFIGS } from '@shared/arcade';
 const FLAPPY_ICON = require('@/assets/images/flappy_icon.png');
 const FRUITCUT_ICON = require('@/assets/images/fruitcut_icon.jpg');
 const STACK_ICON = require('@/assets/images/stack_icon.png');
+const G2048_ICON = require('@/assets/images/2048_icon.png');
+const ICEBLOCK_ICON = require('@/assets/images/iceblock_icon.png');
+const COLOR_ICON = require('@/assets/images/color_icon.png');
 
 type GameMeta = { name: string; icon: any; heroTitle: string; heroSub: string; practiceNote: string };
 const GAME_META: Record<string, GameMeta> = {
@@ -40,6 +43,27 @@ const GAME_META: Record<string, GameMeta> = {
     heroTitle: 'Tower Stack 1v1',
     heroSub: '45 seconds on the clock. Stack blocks, nail perfect drops — highest tower wins the pot.',
     practiceNote: 'Free · 45s runs · no PT staked, no tickets',
+  },
+  '2048': {
+    name: '2048',
+    icon: G2048_ICON,
+    heroTitle: '2048 Blitz 1v1',
+    heroSub: '5 minutes on the clock. Merge tiles, build the biggest board — highest score wins the pot.',
+    practiceNote: 'Free · untimed · no PT staked, no tickets',
+  },
+  iceblock: {
+    name: 'Ice Block',
+    icon: ICEBLOCK_ICON,
+    heroTitle: 'Ice Breaker 1v1',
+    heroSub: '5 minutes on the clock. Smash through the ice — highest score wins the pot.',
+    practiceNote: 'Free · untimed · no PT staked, no tickets',
+  },
+  color: {
+    name: 'Color Rush',
+    icon: COLOR_ICON,
+    heroTitle: 'Color Rush 1v1',
+    heroSub: 'Endless run. Match the colours, dodge the wrong ones — highest score before you slip wins the pot.',
+    practiceNote: 'Free · endless · no PT staked, no tickets',
   },
 };
 

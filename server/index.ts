@@ -228,6 +228,9 @@ function configureExpoAndLanding(app: express.Application) {
   app.use("/flappy", express.static(path.resolve(process.cwd(), "public/flappy")));
   app.use("/fruitcut", express.static(path.resolve(process.cwd(), "public/fruitcut")));
   app.use("/stack", express.static(path.resolve(process.cwd(), "public/stack")));
+  app.use("/2048", express.static(path.resolve(process.cwd(), "public/2048")));
+  app.use("/iceblock", express.static(path.resolve(process.cwd(), "public/iceblock")));
+  app.use("/color", express.static(path.resolve(process.cwd(), "public/color")));
   app.use(express.static(path.resolve(process.cwd(), "static-build")));
 
   log("Expo routing: Checking expo-platform header on / and /manifest");
@@ -262,6 +265,9 @@ function setupErrorHandler(app: express.Application) {
   app.use("/flappy", express.static(path.resolve(process.cwd(), "public/flappy")));
   app.use("/fruitcut", express.static(path.resolve(process.cwd(), "public/fruitcut")));
   app.use("/stack",  express.static(path.resolve(process.cwd(), "public/stack")));
+  app.use("/2048",   express.static(path.resolve(process.cwd(), "public/2048")));
+  app.use("/iceblock", express.static(path.resolve(process.cwd(), "public/iceblock")));
+  app.use("/color",  express.static(path.resolve(process.cwd(), "public/color")));
 
   // ── DEV-ONLY: Metro proxy — registered FIRST so it wins before anything else ──
   // Non-API requests are forwarded directly to Metro on :8081.
@@ -278,7 +284,10 @@ function setupErrorHandler(app: express.Application) {
         !pathname.startsWith("/arcade") &&
         !pathname.startsWith("/flappy") &&
         !pathname.startsWith("/fruitcut") &&
-        !pathname.startsWith("/stack"),
+        !pathname.startsWith("/stack") &&
+        !pathname.startsWith("/2048") &&
+        !pathname.startsWith("/iceblock") &&
+        !pathname.startsWith("/color"),
       on: {
         error: (_err, _req, res) => {
           if (res && "status" in res) {
@@ -290,7 +299,7 @@ function setupErrorHandler(app: express.Application) {
       },
     });
     app.use(metroProxy);
-    log("Dev proxy: Metro on :8081 registered (excludes /api, /game, /arcade, /flappy, /fruitcut, /stack)");
+    log("Dev proxy: Metro on :8081 registered (excludes /api, /game, /arcade, /flappy, /fruitcut, /stack, /2048, /iceblock, /color)");
   }
 
   setupCors(app);

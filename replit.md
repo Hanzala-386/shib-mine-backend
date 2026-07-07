@@ -204,6 +204,15 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 - **RN**: GAME_HOSTS — flappy v7, fruitcut v2, stack v3 + afkMs 50000. Script tags bumped: flappy ?v=8, fruitcut ?v=2, stack stack-arcade.js?v=3.
 - **Deploy**: `dist/{flappy,fruitcut,stack}-arcade.zip` → manual upload to webcod.in (all three changed); Railway backend redeploy for the new stack spec.
 
+## Session 9 — Three New Arcade Games (2048, Ice Block, Color Rush) → 6 total
+- Added ALONGSIDE the existing 3 (Flappy, Fruit Cut, Stack); hub now shows 6 tiles. App-handled ad architecture preserved (RN renders all ads; games render none; game UI never blocks the webview overlay).
+- **Specs** (both `shared/arcade.ts` copies, byte-identical): `2048`{lives:1, maxScore:20000, scoreDelta:{1024,500}, timerSeconds:300, readyAfkSeconds:60}, `iceblock`{1, 9999, {150,500}, 300, 60}, `color`{1, 5000, {5,500}, timerSeconds:null (ENDLESS), 60}. Ordering invariant (all clocks ~match start): adapter stage-1 45s < RN afkMs 50s < server readyAfkSeconds 60s.
+- **2048** (`public/2048/`, Construct 3): single 5-min timer FROM MATCH START (armed on `arcade:matchstart`), freeze at 0:00, `BtnReset` destroyed every tick in match. No adapter stage-1 AFK (RN 50s + server 60s cover the seat). Worker patched `useWorker=false`; `2048-arcade.js` loaded `type="module"` via `self.runOnStartup`; register-sw.js removed. Reads `runtime.globalVars.Score/GameOver`.
+- **Ice Block** (`public/iceblock/`, Construct 3): two-stage (45s pre-game AFK + 5-min match), Stack pattern; `BtnReset`+`BtnHome` destroyed in match. Same C3 wrapper recipe. **maxIncrement 150 is a GUESS — validate honest clear-combo peak in a practice run before real stakes.**
+- **Color Rush** (`public/color/`, CreateJS): 45s AFK + ENDLESS (no gameplay timer); only 'Exit' removed from Settings (Music/Sound/Display kept). Match-guarded button hiding in `js/game.js`+`js/canvas.js`. **CRITICAL: `playerData`/`gameData` are top-level `const` in game.js (global LEXICAL bindings, NOT on window) → `color-arcade.js` reads score via BARE `playerData.score`; `window.playerData` is undefined.**
+- **Registration**: `arcade-match.tsx` GAME_HOSTS (v:1, afkMs:50000, `https://webcod.in/<id>/index.html`); `arcade-lobby.tsx` GAME_META + hero copy; `hub/index.tsx` tiles. Icons `assets/images/{2048,iceblock,color}_icon.png` (AI-generated, gold/neon theme). `server/index.ts` both static blocks + Metro pathFilter + log string updated. All 6 `arcade-sdk.js` byte-identical.
+- **Deploy**: `dist/{2048,iceblock,color}-arcade.zip` → manual upload to webcod.in (`/2048/`, `/iceblock/`, `/color/`); Railway backend redeploy needed for the 3 new specs (until then JOIN_QUEUE for the new gameIds has no prod spec). All timers/button-removal are MATCH-ONLY (practice = free play). APK/real-match smoke test still pending (sandbox can only verify static serving + JS bundle).
+
 ## Ports
 - Frontend (Expo): 8081
 - Backend (Express): 5000
