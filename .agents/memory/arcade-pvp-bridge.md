@@ -106,3 +106,34 @@ game's start/score/death/exit hooks.
   PLAYER_OUT at 0:00 and the normal both-out settle picks the higher locked score.
 - Headless screenshot browsers lack WebGL, so a C3 game shows its "software update needed"
   support-check page in sandbox screenshots — that is NOT a bug; verify on a real device.
+
+## Frame-rate independence: fixed-timestep accumulator, NOT dt-multiplied physics
+- Per-frame game loops (RAF or createjs Ticker) run slow-motion on lagging phones and up
+  to 2× fast on 120Hz displays — a fairness bug in PvP. Fix with a fixed-step accumulator:
+  accumulate real elapsed ms, run `update()` in fixed steps at the original tuning rate
+  (Flappy 60Hz, CTL games `FPS_TIME`), cap catch-up steps (~4-5) and clamp huge stalls
+  (tab-hidden). **Why:** every tuned constant (gravity, speeds, spawn intervals) stays
+  per-step and untouched — dt-multiplying hundreds of constants changes integration
+  behavior and risks subtle retuning bugs.
+- RAF loops: kick off with `requestAnimationFrame(gameLoop)`, never `gameLoop()` — the
+  first call must receive a real timestamp or the accumulator seeds NaN.
+- CTL/createjs games: game code reads the GLOBAL `s_iTimeElaps` (real elapsed per tick)
+  inside `update()`. When stepping N times per tick, PIN `s_iTimeElaps = FPS_TIME` for
+  each step and restore after the loop, or time-based accumulators double-count.
+
+## Two-stage match timer + pause kill (adapter pattern)
+- A pre-game AFK countdown must be armed on the SDK's `arcade:matchstart` event, NEVER at
+  page/runtime boot: the RN host mounts the game WebView warm (`?arcade=1`) while the
+  player is still in the UNBOUNDED matchmaking queue — a boot-armed timer forfeits the
+  seat (real money) before the match even starts. If the event never lands (fragile
+  cross-origin path), do NOT forfeit from the adapter — the RN afkMs and server
+  readyAfkSeconds backstops cover the seat.
+- Ordering invariant only holds when all three clocks start ~at match start: adapter
+  pre-game forfeit < RN afkMs < server readyAfkSeconds (server clears AFK only on first
+  relayed SCORE, so leave first-score latency headroom).
+- The active-run countdown arms on the FIRST gameplay pointerdown while
+  `layout==='Game' && !gameover` — that tap is also where `Arcade.onStart()` fires (NOT
+  layout entry). At 0:00 → `callFunction('gameover')` → lock score via onPlayerOut.
+- In-match pause/restart/home must be DESTROYED, not hidden: C3 touch events still hit
+  invisible sprites. Destroy all `rt.objects.btn_pause` instances every tick while
+  `isMatch()` (idempotent, try/catch).

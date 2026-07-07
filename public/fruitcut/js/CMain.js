@@ -1,5 +1,6 @@
 function CMain(oData){
     var _bUpdate;
+    var _iStepAccum = 0;   // fixed-timestep accumulator (frame-rate independence)
     var _iCurResource = 0;
     var RESOURCE_TO_LOAD = 0;
     var _iState = STATE_LOADING;
@@ -230,7 +231,26 @@ function CMain(oData){
         }
         
         if(_iState === STATE_GAME){
-            _oGame.update();
+            // Fixed-timestep accumulator: on a lagging device the ticker fires
+            // late (fewer ticks/sec), which used to slow the whole game down.
+            // Run the game logic in fixed FPS_TIME steps of REAL elapsed time
+            // (capped catch-up) so game speed is wall-clock identical on every
+            // phone. s_iTimeElaps is pinned to one step inside the loop so the
+            // game's internal time accumulators advance exactly one step per
+            // update() call, then restored for anything outside it.
+            var iRealElaps = s_iTimeElaps;
+            if (iRealElaps < 0) { iRealElaps = 0; }
+            var iMaxCatchUp = FPS_TIME * 4;
+            if (iRealElaps > iMaxCatchUp) { iRealElaps = iMaxCatchUp; }
+            _iStepAccum += iRealElaps;
+            var iSteps = 0;
+            while (_iStepAccum >= FPS_TIME && iSteps < 4){
+                s_iTimeElaps = FPS_TIME;
+                _oGame.update();
+                _iStepAccum -= FPS_TIME;
+                iSteps++;
+            }
+            s_iTimeElaps = iRealElaps;
         }
         
         s_oStage.update(event);

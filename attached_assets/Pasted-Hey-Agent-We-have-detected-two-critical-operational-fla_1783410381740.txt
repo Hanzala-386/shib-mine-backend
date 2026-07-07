@@ -1,0 +1,18 @@
+Hey Agent,
+
+We have detected two critical operational flaws and a performance bottleneck that must be fixed across our multiplayer game suite (Flappy, Fruit Cut, and the new Stack game). Please review the user video carefully.
+
+### 1. 🚀 Critical Performance Fix: Frame-Rate Independence (Delta Time)
+- Inside the game loops (especially `script.js` updates), the physics and movement are currently frame-rate dependent. This is causing terrible lag on low-end phones where it takes 30 seconds to pass 3 pipes, while high-end device opponents clear 2 pipes in 2 seconds because their engine runs faster!
+- Fix: Rewrite the game update loop to use Delta Time (`dt = currentTimestamp - lastTimestamp`). Gravity, `PIPE_SPEED`, and animations must multiply by this delta factor so that the game speed is identical across ALL mobile devices regardless of hardware specs or lag.
+
+### 2. ⏱️ Two-Stage Timer System for Stack & Future Games
+- The current 45-second timer is hard-stopping the entire match, which is incorrect. We need a dual-timer architecture:
+  - **Stage 1 (Pre-game AFK):** Once the user lands on the initial screen ("Stage 1" / Play Button / "TAP TO START"), run a 45-second countdown. If they don't tap to start within 45s, they forfeit (Lose).
+  - **Stage 2 (Active Match):** The millisecond they start playing, switch to a 5-minute (300 seconds) countdown. They can play and score as much as they want within this 5-minute window. Once 5 minutes hit, the game auto-settles, and the highest score wins.
+
+### 3. 🚫 Pause Button / Reset Protection
+- In the Stack game source layout, there is a prominent 'Pause' button. Clicking this allows users to reset, freeze, or return home, which breaks the multiplayer sync loop.
+- Action: Completely remove or inject a CSS style (`display: none !important`) over the Pause button container inside the game files. Once a tournament match starts, it cannot be stopped, paused, or reset.
+
+Please update the base configurations, apply delta time physics optimization to eliminate the phone lag variance, and output the direct production-ready ZIP file for the Stack game now!

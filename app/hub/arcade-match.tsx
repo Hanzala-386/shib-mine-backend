@@ -48,12 +48,12 @@ import {
 // their first score (fruit spawn + slice + report throttle). 40s < 47s keeps
 // the same safety ratio Flappy uses (30s < 45s).
 const GAME_HOSTS: Record<string, { url: string; v: number; afkMs: number }> = {
-  flappy:   { url: 'https://webcod.in/flappy/index.html',   v: 6, afkMs: 30000 },
-  fruitcut: { url: 'https://webcod.in/fruitcut/index.html', v: 1, afkMs: 40000 },
-  // Stack: TAP-TO-START = tapping Play on the game's menu (adapter signals on
-  // entering the Game layout); the first score lands within ~2s of the first
-  // block drop, so 35s < the 45s server backstop keeps the safety margin.
-  stack:    { url: 'https://webcod.in/stack/index.html',    v: 1, afkMs: 35000 },
+  flappy:   { url: 'https://webcod.in/flappy/index.html',   v: 7, afkMs: 30000 },
+  fruitcut: { url: 'https://webcod.in/fruitcut/index.html', v: 2, afkMs: 40000 },
+  // Stack: TAP-TO-START = the first gameplay tap on the Game layout (adapter
+  // signals ARCADE_STARTED there). Ordering invariant: adapter stage-1 forfeit
+  // 45s < this 50s < the 60s server backstop (readyAfkSeconds).
+  stack:    { url: 'https://webcod.in/stack/index.html',    v: 3, afkMs: 50000 },
 };
 
 // One shared iframe title for the web host's postMessage channel (per-game lookup

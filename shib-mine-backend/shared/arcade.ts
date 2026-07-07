@@ -91,21 +91,26 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     gameId: 'stack',
     name: 'Tower Stack',
     path: 'stack',
-    // No lives concept — one collapse (or the 45s timer) ends the run.
+    // No lives concept — one collapse (or the 5:00 timer) ends the run.
     lives: 1,
     // A block lands every ~1–2s scoring +1 (occasional perfect-drop bonus), so
-    // a 45s run tops out around ~60 honest points; 999 is a generous ceiling.
+    // a 5:00 run tops out around ~300–400 honest points; 999 is the ceiling.
     maxScore: 999,
     // Adapter reports the CUMULATIVE score throttled to one message per ~600ms
     // (same recipe as Fruit Cut). Honest gain is ~1 pt per report (one block per
     // ~1–2s, occasional perfect-drop bonus), so 5/window keeps generous headroom
     // while ensuring a silent cheat drip toward the cap still gets clamped+flagged.
     scoreDelta: { maxIncrement: 5, minIntervalMs: 500 },
-    // Client-enforced 45s countdown (adapter overlay). The server still has no
-    // gameplay timer — each client reports PLAYER_OUT at 0:00 and the normal
-    // both-out settle picks the higher locked score.
-    timerSeconds: 45,
-    readyAfkSeconds: 45,
+    // Two-stage client-enforced timing (adapter overlay). Stage 2: a 5-minute
+    // active-match countdown armed on the FIRST gameplay tap; at 0:00 the
+    // adapter triggers the native game-over and reports PLAYER_OUT — the normal
+    // both-out settle picks the higher locked score. The server still has no
+    // gameplay timer.
+    timerSeconds: 300,
+    // Stage 1 backstop: the adapter forfeits at 45s pre-game (menu + TAP-TO-
+    // START), the RN client at 50s — this server backstop MUST sit above both
+    // plus first-score latency (server clears AFK only on the first SCORE).
+    readyAfkSeconds: 60,
   },
 };
 export function getGameSpec(gameId: string): GameSpec | null {

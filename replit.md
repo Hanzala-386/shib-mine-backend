@@ -196,6 +196,14 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 - **Deploy**: `dist/stack-arcade.zip` → manual upload to webcod.in `/stack/`; Railway backend redeploy needed for the new spec.
 - Text fixes: hub subtitle → "Power Match 1v1 Challenges"; redeem success → "Success! … SHIB … has been added to your wallet." (redeem credits instantly — old "pending review" copy was wrong).
 
+## Session 8 — Frame-Rate Independence + Stack Two-Stage Timer + Pause Kill
+- **Fixed-timestep accumulators** (game speed = wall-clock on every device; constants untouched): Flappy `gameLoop` steps `update()` at 1000/60ms (cap 5 steps, kick off via `requestAnimationFrame(gameLoop)` for a real ts); Fruit Cut `CMain._update` steps `_oGame.update()` at `FPS_TIME` (cap 4), pinning global `s_iTimeElaps = FPS_TIME` per step (CGame time accumulators would double-count otherwise) and restoring after. Stack is C3 = already dt-based, no physics change.
+- **Stack two-stage timer** (`stack-arcade.js` full rewrite): Stage 1 = 45s pre-game AFK, armed on the SDK's `arcade:matchstart` event (NEVER at boot — the WebView mounts warm during the unbounded matchmaking queue; if the event never lands, adapter never forfeits and RN/server backstops cover the seat). Covers menu + TAP-TO-START; 0:00 → forfeit `onPlayerOut(0)`, "START IN m:ss" overlay. Stage 2 = 300s armed on first pointerdown while `layout==='Game' && !gameover` — `Arcade.onStart()` now fires THERE (not on layout entry); 0:00 → `callFunction('gameover')` → lock score; both-out settle picks higher score. Practice: no stage 1; stage 2 re-arms per run.
+- **Stack pause kill**: all `rt.objects.btn_pause` instances DESTROYED every tick in match (destroy, not hide — invisible C3 sprites still take touches). Practice keeps pause.
+- **Spec** (both `shared/arcade.ts` copies, byte-identical): stack `timerSeconds` 45→300, `readyAfkSeconds` 45→60. **Ordering invariant (all clocks ~match start): adapter 45s < RN afkMs 50s < server 60s.**
+- **RN**: GAME_HOSTS — flappy v7, fruitcut v2, stack v3 + afkMs 50000. Script tags bumped: flappy ?v=8, fruitcut ?v=2, stack stack-arcade.js?v=3.
+- **Deploy**: `dist/{flappy,fruitcut,stack}-arcade.zip` → manual upload to webcod.in (all three changed); Railway backend redeploy for the new stack spec.
+
 ## Ports
 - Frontend (Expo): 8081
 - Backend (Express): 5000

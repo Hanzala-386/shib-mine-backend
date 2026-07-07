@@ -1356,8 +1356,31 @@
     }
 
     // ─── Game loop ───
-    function gameLoop() {
-        update();
+    // Fixed-timestep accumulator: update() always simulates 1/60s per call, so
+    // game speed is wall-clock identical on every device (60Hz, 120Hz, or a
+    // lagging low-end phone that only renders 20fps — it just runs several
+    // catch-up steps per frame). All physics constants stay per-step, untouched.
+    const STEP_MS = 1000 / 60;      // simulation step (the original tuning rate)
+    const MAX_STEPS = 5;            // catch-up cap per frame (~12fps floor)
+    let lastFrameTs = 0;
+    let stepAccum = 0;
+
+    function gameLoop(ts) {
+        if (!lastFrameTs) lastFrameTs = ts;
+        let elapsed = ts - lastFrameTs;
+        lastFrameTs = ts;
+        // Tab-hidden / long-stall guard: never fast-forward a huge burst.
+        if (elapsed < 0) elapsed = 0;
+        if (elapsed > STEP_MS * MAX_STEPS) elapsed = STEP_MS * MAX_STEPS;
+        stepAccum += elapsed;
+
+        let steps = 0;
+        while (stepAccum >= STEP_MS && steps < MAX_STEPS) {
+            update();
+            stepAccum -= STEP_MS;
+            steps++;
+        }
+
         draw();
         requestAnimationFrame(gameLoop);
     }
@@ -1562,6 +1585,6 @@
     // ─── Start ───
     resetGame('preload');
     runPreloader();
-    gameLoop();
+    requestAnimationFrame(gameLoop); // kick off with a real RAF timestamp
 
 })();
