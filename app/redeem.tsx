@@ -60,7 +60,7 @@ export default function RedeemScreen() {
       const res = await redeem(selected);
       if (res.success) {
         const shib = res.shib ?? ticketsToShib(selected);
-        setSuccessMsg(`Redeemed ${fmt(selected)} tickets for ${fmt(shib)} SHIB. Your payout is pending review.`);
+        setSuccessMsg(`Success! ${fmt(shib)} SHIB from ${fmt(selected)} tickets has been added to your wallet.`);
         setSelected(null);
       } else {
         setError(res.error ?? 'Redemption failed. Please try again.');

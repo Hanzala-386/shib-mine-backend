@@ -87,6 +87,26 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     timerSeconds: null,
     readyAfkSeconds: 47,
   },
+  stack: {
+    gameId: 'stack',
+    name: 'Tower Stack',
+    path: 'stack',
+    // No lives concept — one collapse (or the 45s timer) ends the run.
+    lives: 1,
+    // A block lands every ~1–2s scoring +1 (occasional perfect-drop bonus), so
+    // a 45s run tops out around ~60 honest points; 999 is a generous ceiling.
+    maxScore: 999,
+    // Adapter reports the CUMULATIVE score throttled to one message per ~600ms
+    // (same recipe as Fruit Cut). Honest gain is ~1 pt per report (one block per
+    // ~1–2s, occasional perfect-drop bonus), so 5/window keeps generous headroom
+    // while ensuring a silent cheat drip toward the cap still gets clamped+flagged.
+    scoreDelta: { maxIncrement: 5, minIntervalMs: 500 },
+    // Client-enforced 45s countdown (adapter overlay). The server still has no
+    // gameplay timer — each client reports PLAYER_OUT at 0:00 and the normal
+    // both-out settle picks the higher locked score.
+    timerSeconds: 45,
+    readyAfkSeconds: 45,
+  },
 };
 export function getGameSpec(gameId: string): GameSpec | null {
   return ARCADE_GAMES[gameId] ?? null;

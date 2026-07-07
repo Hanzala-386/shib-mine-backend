@@ -16,6 +16,7 @@ import { TIER_CONFIGS } from '@shared/arcade';
 
 const FLAPPY_ICON = require('@/assets/images/flappy_icon.png');
 const FRUITCUT_ICON = require('@/assets/images/fruitcut_icon.jpg');
+const STACK_ICON = require('@/assets/images/stack_icon.png');
 
 type GameMeta = { name: string; icon: any; heroTitle: string; heroSub: string; practiceNote: string };
 const GAME_META: Record<string, GameMeta> = {
@@ -32,6 +33,13 @@ const GAME_META: Record<string, GameMeta> = {
     heroTitle: 'Slice-Off 1v1',
     heroSub: '3 lives. Slice fruit, dodge the bombs — highest score wins the pot.',
     practiceNote: 'Free · 3 lives · no PT staked, no tickets',
+  },
+  stack: {
+    name: 'Tower Stack',
+    icon: STACK_ICON,
+    heroTitle: 'Tower Stack 1v1',
+    heroSub: '45 seconds on the clock. Stack blocks, nail perfect drops — highest tower wins the pot.',
+    practiceNote: 'Free · 45s runs · no PT staked, no tickets',
   },
 };
 

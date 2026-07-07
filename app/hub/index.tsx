@@ -10,6 +10,7 @@ import Colors from '@/constants/colors';
 
 const FLAPPY_ICON = require('@/assets/images/flappy_icon.png');
 const FRUITCUT_ICON = require('@/assets/images/fruitcut_icon.jpg');
+const STACK_ICON = require('@/assets/images/stack_icon.png');
 
 type HubGame = {
   id: string;
@@ -22,6 +23,7 @@ type HubGame = {
 const GAMES: HubGame[] = [
   { id: 'flappy', name: 'Flappy Bounce', icon: 'airplane', image: FLAPPY_ICON, active: true },
   { id: 'fruitcut', name: 'Fruit Cut', icon: 'nutrition', image: FRUITCUT_ICON, active: true },
+  { id: 'stack', name: 'Tower Stack', icon: 'business', image: STACK_ICON, active: true },
 ];
 
 export default function HubScreen() {
@@ -43,7 +45,7 @@ export default function HubScreen() {
         </Pressable>
         <View style={styles.headTitle}>
           <Text style={styles.title}>Multiplayer Hub</Text>
-          <Text style={styles.sub}>Real-money 1v1 tournaments</Text>
+          <Text style={styles.sub}>Power Match 1v1 Challenges</Text>
         </View>
         <View style={styles.back} />
       </View>

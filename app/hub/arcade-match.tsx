@@ -50,6 +50,10 @@ import {
 const GAME_HOSTS: Record<string, { url: string; v: number; afkMs: number }> = {
   flappy:   { url: 'https://webcod.in/flappy/index.html',   v: 6, afkMs: 30000 },
   fruitcut: { url: 'https://webcod.in/fruitcut/index.html', v: 1, afkMs: 40000 },
+  // Stack: TAP-TO-START = tapping Play on the game's menu (adapter signals on
+  // entering the Game layout); the first score lands within ~2s of the first
+  // block drop, so 35s < the 45s server backstop keeps the safety margin.
+  stack:    { url: 'https://webcod.in/stack/index.html',    v: 1, afkMs: 35000 },
 };
 
 // One shared iframe title for the web host's postMessage channel (per-game lookup

@@ -42,3 +42,9 @@ id = "ZxaZp96DYG3wv4AgeJocK"
 uri = "file://dist/fruitcut-arcade.zip"
 type = "unspecified"
 title = "Fruit Cut arcade game (upload to webcod.in)"
+
+[[outputs]]
+id = "1OFy91d1UMdDKTt1QX8fQ"
+uri = "file://dist/stack-arcade.zip"
+type = "unspecified"
+title = "Tower Stack game files — upload to webcod.in/stack/"

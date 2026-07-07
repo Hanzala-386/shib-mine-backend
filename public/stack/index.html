@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Stack Builder Skyscraper</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
+
+<meta name="generator" content="Construct 3">
+
+        <link rel="manifest" href="appmanifest.json">
+        <link rel="apple-touch-icon" sizes="128x128" href="icons/icon-128.png">
+        <link rel="apple-touch-icon" sizes="256x256" href="icons/icon-256.png">
+        <link rel="apple-touch-icon" sizes="512x512" href="icons/icon-512.png">
+        <link rel="icon" type="image/png" href="icons/icon-512.png">
+
+<link rel="stylesheet" href="style.css">
+
+<!-- Arcade PvP bridge: MUST load first (reads ?arcade=1 at page load). -->
+<script src="arcade-sdk.js?v=1"></script>
+</head>
+<body>
+<div id="fb-root"></div>
+
+        <noscript>
+                <div id="notSupportedWrap">
+                        <h2 id="notSupportedTitle">This content requires JavaScript</h2>
+                        <p class="notSupportedMessage">JavaScript appears to be disabled. Please enable it to view this content.</p>
+                </div>
+        </noscript>
+        <script src="scripts/supportcheck.js"></script>
+        <script src="scripts/offlineclient.js" type="module"></script>
+        <script src="scripts/main.js" type="module"></script>
+        <!-- Arcade adapter: a module AFTER main.js so self.runOnStartup already
+             exists at evaluation time. register-sw.js is intentionally REMOVED:
+             its offline cache serves stale game builds after re-uploads to the
+             shared hosting, defeating the ?v=N cache busting the host relies on. -->
+        <script src="stack-arcade.js?v=1" type="module"></script>
+</body>
+</html>

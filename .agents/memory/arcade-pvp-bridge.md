@@ -1,6 +1,6 @@
 ---
-name: Arcade PvP game ↔ React Native bridge (Flappy Bounce, Fruit Cut)
-description: How HTML5 arcade games talk to the RN WebView host for real-money PvP, and the non-obvious gotchas (external hosting, lives-HUD re-sync, no local replay in-match, AFK margin rule).
+name: Arcade PvP game ↔ React Native bridge (Flappy Bounce, Fruit Cut, Tower Stack)
+description: How HTML5 arcade games talk to the RN WebView host for real-money PvP, and the non-obvious gotchas (external hosting, lives-HUD re-sync, no local replay in-match, AFK margin rule, Construct 3 wrapper recipe).
 ---
 
 # Arcade PvP game ↔ RN bridge
@@ -86,3 +86,23 @@ game's start/score/death/exit hooks.
 - Score reporting for burst-scoring games: throttle cumulative-score reports to >
   the server's `scoreDelta.minIntervalMs` (e.g. 600ms vs 500ms) so every report lands in a
   fresh server window; size `maxIncrement` off honest peak rate per report, not per event.
+
+## Construct 3 exports: wrap, don't edit (Tower Stack recipe)
+- C3 exports have NO editable game code (minified c3runtime.js + data.json event sheets).
+  Integrate as a WRAPPER via the official scripting API instead of patching internals:
+  1. `scripts/main.js`: `useWorker:!0` → `!1` (forces the runtime onto the main thread —
+     in worker mode the page can't reach the runtime at all).
+  2. Adapter script as `type="module"` placed AFTER `scripts/main.js` (modules evaluate in
+     order): `self.runOnStartup(rt => …)` (defined by main.js on the page) hands you the
+     IRuntime before the game boots; keep a short poll fallback in case order changes.
+  3. On `rt.addEventListener('tick')`: read `rt.globalVars.<name>` (score/gameover flags —
+     find names + layout names in data.json), `rt.layout.name` for run state, and
+     `rt.callFunction('<fn>')` to trigger native sequences (e.g. game over). Wrap all in
+     try/catch — names come from data.json inspection, not typed APIs.
+- Remove the `register-sw.js` script tag from a C3 export before hosting on webcod.in:
+  its service-worker offline cache serves stale builds and defeats `?v=N` cache busting.
+- Timed matches: server has no gameplay-timer enforcement (`timerSeconds` in the spec is
+  informational); a countdown is client-enforced by the adapter — each client reports
+  PLAYER_OUT at 0:00 and the normal both-out settle picks the higher locked score.
+- Headless screenshot browsers lack WebGL, so a C3 game shows its "software update needed"
+  support-check page in sandbox screenshots — that is NOT a bug; verify on a real device.
