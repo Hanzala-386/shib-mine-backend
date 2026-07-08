@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, ScrollView, Platform,
+  View, Text, StyleSheet, Pressable, ScrollView, Platform, useWindowDimensions,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -9,7 +10,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useWallet } from '@/context/WalletContext';
 import Colors from '@/constants/colors';
-import TicketIcon from '@/components/TicketIcon';
+import ShimmerCoin from '@/components/ShimmerCoin';
 import {
   REDEEM_BOXES,
   ticketsToShib,
@@ -21,6 +22,18 @@ import {
 const GOLD = '#F4C430';
 const NEON = '#FF6B00';
 
+const SPACE_BG = require('@/assets/images/redeem_space_bg.png');
+const HEADER_IMG = require('@/assets/images/redeem_header.png');
+const BALANCE_FRAME = require('@/assets/images/redeem_balance_frame.png');
+const CELL_FRAME = require('@/assets/images/redeem_cell_frame.png');
+const COIN = require('@/assets/images/shiba_coin_square.png');
+const DIAMOND = require('@/assets/images/shiba_ticket_diamond.png');
+
+const BALANCE_AR = 1480 / 704;   // 2.1023
+const CELL_AR = 1071 / 1008;     // 1.0625
+const HEADER_AR = 1721 / 608;    // 2.8306
+const DIAMOND_AR = 1035 / 732;   // 1.4139
+
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n % 1_000 === 0 ? 0 : 1)}K`;
@@ -29,12 +42,18 @@ function fmt(n: number): string {
 
 export default function RedeemScreen() {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const { hitTickets, redeem } = useWallet();
 
   const [selected, setSelected] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const contentW = width - 32;
+  const balanceH = contentW / BALANCE_AR;
+  const coinSize = Math.round(Math.min(contentW * 0.24, balanceH * 0.66));
+  const numFont = Math.round(Math.min(54, Math.max(28, balanceH * 0.22)));
 
   const validation = selected != null ? validateRedeem(selected, hitTickets) : { ok: false as const };
   const canConfirm = selected != null && validation.ok && !submitting;
@@ -73,12 +92,14 @@ export default function RedeemScreen() {
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: Colors.darkBg }]}>
+    <View style={styles.container}>
+      {/* ── Fixed space background ── */}
+      <Image source={SPACE_BG} style={StyleSheet.absoluteFill} contentFit="cover" />
       <LinearGradient
-        colors={['rgba(244,196,48,0.14)', 'rgba(255,107,0,0.08)', 'transparent']}
+        colors={['rgba(2,5,14,0.35)', 'rgba(2,5,14,0.15)', 'rgba(2,5,14,0.6)']}
+        locations={[0, 0.45, 1]}
         style={StyleSheet.absoluteFill}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 0.5 }}
+        pointerEvents="none"
       />
 
       {/* ── Header ── */}
@@ -89,12 +110,14 @@ export default function RedeemScreen() {
           accessibilityLabel="Go back"
           onPress={() => router.back()}
           style={styles.backBtn}
-          hitSlop={10}
+          hitSlop={12}
         >
-          <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
+          <Ionicons name="chevron-back" size={26} color={Colors.textPrimary} />
         </Pressable>
-        <Text style={styles.headerTitle}>Redemption Center</Text>
-        <View style={{ width: 40 }} />
+        <View style={styles.headerImgWrap}>
+          <Image source={HEADER_IMG} style={styles.headerImg} contentFit="contain" />
+        </View>
+        <View style={styles.backBtn} />
       </View>
 
       <ScrollView
@@ -104,75 +127,78 @@ export default function RedeemScreen() {
           paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 24) + 24,
         }}
       >
-        {/* ── Balance hero ── */}
-        <Animated.View entering={FadeInDown.delay(80).springify()} style={styles.heroCard}>
-          <LinearGradient
-            colors={['rgba(244,196,48,0.2)', 'rgba(255,107,0,0.1)']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.heroInner}
-          >
-            <View style={styles.heroIconWrap}>
-              <TicketIcon size={34} color={GOLD} />
-            </View>
-            <Text style={styles.heroBalance} testID="redeem-balance">{fmt(hitTickets)}</Text>
-            <Text style={styles.heroLabel}>Hit Tickets available</Text>
-            <Text style={styles.heroRate}>1 ticket = {ticketsToShib(1)} SHIB</Text>
-          </LinearGradient>
+        {/* ── Balance container ── */}
+        <Animated.View
+          entering={FadeInDown.delay(80).springify()}
+          style={[styles.balanceWrap, { height: balanceH }]}
+        >
+          <Image source={BALANCE_FRAME} style={StyleSheet.absoluteFill} contentFit="contain" />
+
+          <View style={styles.balanceCoinWrap} pointerEvents="none">
+            <ShimmerCoin source={COIN} size={coinSize} />
+          </View>
+
+          {/* Only the count is dynamic — the frame's baked "Hit Tickets available"
+              and "1 ticket = 10 SHIB" labels are preserved; we mask just the number. */}
+          <View style={styles.balanceNumberChip} pointerEvents="none">
+            <Text style={[styles.balanceNumber, { fontSize: numFont }]} testID="redeem-balance">
+              {fmt(hitTickets)}
+            </Text>
+          </View>
         </Animated.View>
 
         <Text style={styles.sectionTitle}>Choose an amount</Text>
 
-        {/* ── Redeem boxes ── */}
+        {/* ── Redemption grid ── */}
         <View style={styles.grid}>
           {REDEEM_BOXES.map((tickets, idx) => {
+            const shib = ticketsToShib(tickets);
             const affordable = validateRedeem(tickets, hitTickets).ok;
             const isSelected = selected === tickets;
             return (
               <Animated.View
                 key={tickets}
-                entering={FadeInDown.delay(120 + idx * 50).springify()}
-                style={styles.gridItem}
+                entering={FadeInDown.delay(120 + idx * 45).springify()}
+                style={styles.cell}
               >
                 <Pressable
                   testID={`redeem-box-${tickets}`}
                   accessibilityRole="button"
-                  accessibilityLabel={`Redeem ${tickets} tickets for ${ticketsToShib(tickets)} SHIB`}
+                  accessibilityLabel={`Redeem ${tickets} tickets for ${shib} SHIB`}
                   disabled={!affordable || submitting}
                   onPress={() => handleSelect(tickets)}
                   style={({ pressed }) => [
-                    styles.box,
-                    isSelected && styles.boxSelected,
-                    !affordable && styles.boxDisabled,
-                    { opacity: pressed && affordable ? 0.9 : 1 },
+                    styles.cellPressable,
+                    !affordable && styles.cellDim,
+                    { transform: [{ scale: pressed && affordable ? 0.97 : 1 }] },
                   ]}
                 >
-                  <View style={styles.boxTopRow}>
-                    <TicketIcon size={18} color={affordable ? GOLD : Colors.textMuted} />
-                    <Text style={[styles.boxTickets, !affordable && styles.boxTextMuted]}>
-                      {fmt(tickets)}
-                    </Text>
+                  <Image source={CELL_FRAME} style={StyleSheet.absoluteFill} contentFit="contain" />
+
+                  {isSelected && <View style={styles.cellSelTint} pointerEvents="none" />}
+
+                  <View style={styles.cellTicketWrap} pointerEvents="none">
+                    <Image source={DIAMOND} style={styles.cellDiamond} contentFit="contain" />
                   </View>
-                  <Text style={[styles.boxTicketsLabel, !affordable && styles.boxTextMuted]}>tickets</Text>
-                  <View style={styles.boxArrowRow}>
-                    <Ionicons
-                      name="arrow-forward"
-                      size={12}
-                      color={affordable ? NEON : Colors.textMuted}
-                    />
-                    <Text style={[styles.boxShib, !affordable && styles.boxTextMuted]}>
-                      {fmt(ticketsToShib(tickets))} SHIB
-                    </Text>
+
+                  <View style={styles.cellCostWrap} pointerEvents="none">
+                    <Text style={styles.cellCost}>{fmt(tickets)} tickets</Text>
                   </View>
-                  {!affordable && (
-                    <View style={styles.boxLockRow}>
-                      <Ionicons name="lock-closed" size={10} color={Colors.textMuted} />
-                      <Text style={styles.boxLockText}>Need more</Text>
+
+                  <View style={styles.cellPriceWrap} pointerEvents="none">
+                    <Text style={styles.cellPrice} numberOfLines={1}>{fmt(shib)} SHIB</Text>
+                  </View>
+
+                  {isSelected && (
+                    <View style={styles.cellCheck} pointerEvents="none">
+                      <Ionicons name="checkmark-circle" size={22} color={GOLD} />
                     </View>
                   )}
-                  {isSelected && (
-                    <View style={styles.boxCheck}>
-                      <Ionicons name="checkmark-circle" size={20} color={GOLD} />
+
+                  {!affordable && (
+                    <View style={styles.cellLock} pointerEvents="none">
+                      <Ionicons name="lock-closed" size={11} color={Colors.textMuted} />
+                      <Text style={styles.cellLockText}>Need more</Text>
                     </View>
                   )}
                 </Pressable>
@@ -188,7 +214,6 @@ export default function RedeemScreen() {
           </Text>
         </View>
 
-        {/* ── Inline success ── */}
         {successMsg && (
           <View style={styles.successBanner} testID="redeem-success">
             <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
@@ -196,7 +221,6 @@ export default function RedeemScreen() {
           </View>
         )}
 
-        {/* ── Inline error ── */}
         {error && (
           <View style={styles.errorBanner} testID="redeem-error">
             <Ionicons name="alert-circle" size={18} color={Colors.error} />
@@ -204,7 +228,6 @@ export default function RedeemScreen() {
           </View>
         )}
 
-        {/* ── Confirm ── */}
         <Pressable
           testID="redeem-confirm-button"
           accessibilityRole="button"
@@ -239,72 +262,120 @@ export default function RedeemScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: { flex: 1, backgroundColor: '#02050E' },
 
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
-    paddingBottom: 8,
+    paddingBottom: 10,
   },
   backBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontFamily: 'Inter_700Bold', fontSize: 18, color: Colors.textPrimary },
+  headerImgWrap: { flex: 1, alignItems: 'center' },
+  headerImg: { width: '90%', aspectRatio: HEADER_AR },
 
-  heroCard: {
-    borderRadius: 22,
-    overflow: 'hidden',
-    marginTop: 8,
+  balanceWrap: {
+    width: '100%',
+    marginTop: 6,
     marginBottom: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(244,196,48,0.3)',
+    position: 'relative',
   },
-  heroInner: { padding: 24, alignItems: 'center', gap: 4 },
-  heroIconWrap: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'rgba(244,196,48,0.15)',
+  balanceCoinWrap: {
+    position: 'absolute',
+    left: '3%',
+    top: 0,
+    bottom: 0,
+    width: '42%',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 6,
   },
-  heroBalance: { fontFamily: 'Inter_700Bold', fontSize: 42, color: GOLD },
-  heroLabel: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textSecondary },
-  heroRate: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: NEON, marginTop: 6 },
+  balanceNumberChip: {
+    position: 'absolute',
+    top: '30%',
+    bottom: '34%',
+    left: '48%',
+    right: '10%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: '#0A1222',
+    borderWidth: 1,
+    borderColor: 'rgba(120,170,255,0.20)',
+    overflow: 'hidden',
+  },
+  balanceNumber: {
+    fontFamily: 'Inter_700Bold',
+    color: GOLD,
+    letterSpacing: 0.5,
+    textShadowColor: 'rgba(244,196,48,0.4)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
+  },
 
   sectionTitle: {
     fontFamily: 'Inter_600SemiBold',
     fontSize: 13,
-    color: Colors.textSecondary,
+    color: '#CBD5E6',
     textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 12,
+    letterSpacing: 1.4,
+    marginBottom: 14,
   },
 
   grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  gridItem: { width: '48%', marginBottom: 12 },
-  box: {
-    backgroundColor: Colors.darkCard,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1.5,
-    borderColor: Colors.darkBorder,
-    minHeight: 104,
-    justifyContent: 'center',
-    gap: 4,
+  cell: { width: '48%', aspectRatio: CELL_AR, marginBottom: 14 },
+  cellPressable: { flex: 1, position: 'relative' },
+  cellDim: { opacity: 0.45 },
+  cellSelTint: {
+    position: 'absolute',
+    top: '7%',
+    left: '7%',
+    right: '7%',
+    bottom: '7%',
+    borderRadius: 18,
+    backgroundColor: 'rgba(244,196,48,0.14)',
   },
-  boxSelected: { borderColor: GOLD, backgroundColor: 'rgba(244,196,48,0.08)' },
-  boxDisabled: { opacity: 0.5 },
-  boxTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  boxTickets: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.textPrimary },
-  boxTicketsLabel: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted },
-  boxArrowRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
-  boxShib: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: GOLD },
-  boxTextMuted: { color: Colors.textMuted },
-  boxLockRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
-  boxLockText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: Colors.textMuted },
-  boxCheck: { position: 'absolute', top: 8, right: 8 },
+  cellTicketWrap: {
+    position: 'absolute',
+    top: '11%',
+    left: 0,
+    right: 0,
+    height: '46%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cellDiamond: { height: '92%', aspectRatio: DIAMOND_AR },
+  cellCostWrap: { position: 'absolute', top: '59%', left: 0, right: 0, alignItems: 'center' },
+  cellCost: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#8FD3FF' },
+  cellPriceWrap: {
+    position: 'absolute',
+    bottom: '8%',
+    left: '19%',
+    right: '19%',
+    height: '13%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cellPrice: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 14,
+    color: '#FFF6E0',
+    textShadowColor: 'rgba(0,0,0,0.55)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
+  cellCheck: { position: 'absolute', top: '6%', right: '9%' },
+  cellLock: {
+    position: 'absolute',
+    top: '5%',
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+  },
+  cellLockText: { fontFamily: 'Inter_500Medium', fontSize: 10, color: Colors.textMuted },
 
   limitsRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, marginBottom: 16 },
   limitsText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textMuted },
@@ -313,7 +384,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
-    backgroundColor: 'rgba(0,230,118,0.1)',
+    backgroundColor: 'rgba(0,230,118,0.12)',
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 14,
@@ -327,7 +398,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
-    backgroundColor: 'rgba(255,61,87,0.1)',
+    backgroundColor: 'rgba(255,61,87,0.12)',
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 14,
