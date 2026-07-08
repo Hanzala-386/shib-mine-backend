@@ -1,11 +1,10 @@
 /* Game Arena tab — cyberpunk entry hub: Solo Play (Knife Hit) vs Multiplayer Hub. */
 
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, Platform, ScrollView,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -14,6 +13,7 @@ import { useWallet } from '@/context/WalletContext';
 import TicketIcon from '@/components/TicketIcon';
 import LightningBorder from '@/components/LightningBorder';
 import FloatingImage from '@/components/FloatingImage';
+import NebulaBg from '@/components/NebulaBg';
 
 const KNIFE = require('@/assets/images/knife_cyber.png');
 const TROPHY = require('@/assets/images/trophy_gold.png');
@@ -25,33 +25,6 @@ const REDEEM_BG = require('@/assets/images/redeem_bg.png');
 const SOLO_AR = 611 / 419;
 const MP_AR = 648 / 385;
 const REDEEM_AR = 654 / 162;
-
-// ── Faint binary rain backdrop ───────────────────────────────────────────────
-function binaryStr(n: number) {
-  let s = '';
-  for (let i = 0; i < n; i++) s += (Math.random() < 0.5 ? '0' : '1') + '\n';
-  return s;
-}
-
-function NebulaBg() {
-  const cols = useMemo(() => [binaryStr(46), binaryStr(46), binaryStr(46)], []);
-  return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      <LinearGradient
-        colors={['#0B1026', '#0A0A14', '#070510']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <View style={[styles.blob, { backgroundColor: 'rgba(37,213,255,0.10)', top: -50, left: -60, width: 260, height: 260 }]} />
-      <View style={[styles.blob, { backgroundColor: 'rgba(160,90,255,0.13)', top: 150, right: -80, width: 300, height: 300 }]} />
-      <View style={[styles.blob, { backgroundColor: 'rgba(255,107,0,0.07)', bottom: 20, left: -50, width: 240, height: 240 }]} />
-      <Text style={[styles.binary, { left: 8, top: 90 }]}>{cols[0]}</Text>
-      <Text style={[styles.binary, { right: 10, top: 40 }]}>{cols[1]}</Text>
-      <Text style={[styles.binary, { right: 26, bottom: 10 }]}>{cols[2]}</Text>
-    </View>
-  );
-}
 
 export default function GamesScreen() {
   const insets = useSafeAreaInsets();
@@ -96,14 +69,14 @@ export default function GamesScreen() {
               <LightningBorder
                 width={soloW}
                 height={soloH}
-                radius={26}
+                radius={34}
                 pad={16}
                 color={Colors.neonOrange}
                 glowColor="#FF3D00"
                 core="#FFE7C2"
               />
             )}
-            <FloatingImage source={KNIFE} width={200} height={150} amplitude={9} rotate={4} duration={2300} style={styles.knife} />
+            <FloatingImage source={KNIFE} width={264} height={198} amplitude={11} rotate={4} duration={2300} style={styles.knife} />
           </View>
         </Pressable>
 
@@ -115,7 +88,7 @@ export default function GamesScreen() {
               style={{ width: '100%', aspectRatio: MP_AR }}
               contentFit="contain"
             />
-            <FloatingImage source={TROPHY} width={148} height={140} amplitude={7} rotate={3} duration={2600} style={styles.trophy} />
+            <FloatingImage source={TROPHY} width={202} height={192} amplitude={9} rotate={3} duration={2600} style={styles.trophy} />
           </View>
         </Pressable>
 
@@ -134,14 +107,6 @@ export default function GamesScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.darkBg },
-  blob: { position: 'absolute', borderRadius: 999 },
-  binary: {
-    position: 'absolute',
-    color: 'rgba(120,200,255,0.06)',
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-  },
 
   title: {
     color: Colors.textPrimary,
@@ -172,13 +137,13 @@ const styles = StyleSheet.create({
   },
   balanceTxt: { color: Colors.textPrimary, fontSize: 14, fontWeight: '800' },
 
-  // Solo card
-  soloWrap: { marginTop: 40, marginBottom: 26 },
-  knife: { position: 'absolute', top: -18, right: -4, zIndex: 6 },
+  // Solo card — extra top room so the enlarged knife + lightning can overflow.
+  soloWrap: { marginTop: 48, marginBottom: 30 },
+  knife: { position: 'absolute', top: -22, right: -12, zIndex: 6 },
 
   // Multiplayer card
-  mpWrap: { marginTop: 26, marginBottom: 22 },
-  trophy: { position: 'absolute', top: -28, right: 12, zIndex: 6 },
+  mpWrap: { marginTop: 34, marginBottom: 22 },
+  trophy: { position: 'absolute', top: -40, right: 0, zIndex: 6 },
 
   // Redemption
   redeemWrap: { marginTop: 2 },

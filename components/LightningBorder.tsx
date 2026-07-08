@@ -6,35 +6,63 @@ import Animated, {
 } from 'react-native-reanimated';
 
 /**
- * Continuously crackling electrical border that traces the perimeter of a
- * rounded rectangle. Pure react-native-svg + reanimated (no native modules) so
+ * Continuously crackling electrical border that hugs the perimeter of a
+ * ROUNDED rectangle. Pure react-native-svg + reanimated (no native modules) so
  * it renders identically on iOS, Android, web and Expo Go.
  *
- * Technique mirrors MiningCoreOrb: jagged polylines are regenerated on a short
- * interval (the "crackle") while a reanimated opacity flicker + a pulsing glow
- * ring sell the constant electrical aura. Only this component re-renders on the
- * interval, never the parent screen.
+ * The perimeter walker follows the four straight edges AND the four corner arcs
+ * (radius `radius`), so the bolts curve tightly around rounded card artwork
+ * instead of tracing a detached square box. The pulsing aura rings share the
+ * same corner radius, keeping glow + bolts visually aligned.
  */
+
+type PN = { x: number; y: number; nx: number; ny: number };
 
 function rand(min: number, max: number) {
   return Math.random() * (max - min) + min;
 }
 
-// Map a perimeter parameter t∈[0,1) on a rect (0,0)-(w,h) to a point + outward normal.
-function perim(t: number, w: number, h: number) {
-  const L = 2 * (w + h);
-  let d = (((t % 1) + 1) % 1) * L;
-  if (d < w) return { x: d, y: 0, nx: 0, ny: -1 };
-  d -= w;
-  if (d < h) return { x: w, y: d, nx: 1, ny: 0 };
-  d -= h;
-  if (d < w) return { x: w - d, y: h, nx: 0, ny: 1 };
-  d -= w;
-  return { x: 0, y: h - d, nx: -1, ny: 0 };
+// Build a rounded-rect perimeter sampler: t∈[0,1) → point + outward unit normal.
+function buildPerim(w: number, h: number, r: number) {
+  const rr = Math.max(0.001, Math.min(r, Math.min(w, h) / 2));
+  const sw = Math.max(0, w - 2 * rr); // straight run along top/bottom
+  const sh = Math.max(0, h - 2 * rr); // straight run along left/right
+  const arc = (Math.PI / 2) * rr;     // quarter-circle length
+
+  const segs: { len: number; at: (f: number) => PN }[] = [
+    // top edge, L→R
+    { len: sw, at: (f) => ({ x: rr + sw * f, y: 0, nx: 0, ny: -1 }) },
+    // top-right arc (-90°→0°)
+    { len: arc, at: (f) => { const a = -Math.PI / 2 + (Math.PI / 2) * f; return { x: (w - rr) + rr * Math.cos(a), y: rr + rr * Math.sin(a), nx: Math.cos(a), ny: Math.sin(a) }; } },
+    // right edge, T→B
+    { len: sh, at: (f) => ({ x: w, y: rr + sh * f, nx: 1, ny: 0 }) },
+    // bottom-right arc (0°→90°)
+    { len: arc, at: (f) => { const a = (Math.PI / 2) * f; return { x: (w - rr) + rr * Math.cos(a), y: (h - rr) + rr * Math.sin(a), nx: Math.cos(a), ny: Math.sin(a) }; } },
+    // bottom edge, R→L
+    { len: sw, at: (f) => ({ x: (w - rr) - sw * f, y: h, nx: 0, ny: 1 }) },
+    // bottom-left arc (90°→180°)
+    { len: arc, at: (f) => { const a = Math.PI / 2 + (Math.PI / 2) * f; return { x: rr + rr * Math.cos(a), y: (h - rr) + rr * Math.sin(a), nx: Math.cos(a), ny: Math.sin(a) }; } },
+    // left edge, B→T
+    { len: sh, at: (f) => ({ x: 0, y: (h - rr) - sh * f, nx: -1, ny: 0 }) },
+    // top-left arc (180°→270°)
+    { len: arc, at: (f) => { const a = Math.PI + (Math.PI / 2) * f; return { x: rr + rr * Math.cos(a), y: rr + rr * Math.sin(a), nx: Math.cos(a), ny: Math.sin(a) }; } },
+  ];
+  const L = segs.reduce((s, seg) => s + seg.len, 0);
+
+  const at = (t: number): PN => {
+    let d = (((t % 1) + 1) % 1) * L;
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      if (d <= seg.len || i === segs.length - 1) return seg.at(seg.len > 0 ? d / seg.len : 0);
+      d -= seg.len;
+    }
+    return segs[0].at(0);
+  };
+  return at;
 }
 
 // One jagged bolt hugging a contiguous span of the perimeter, jittered along the normal.
-function genBolt(w: number, h: number, pad: number) {
+function genBolt(at: (t: number) => PN, pad: number) {
   const t0 = Math.random();
   const span = rand(0.05, 0.15);
   const steps = 7;
@@ -42,7 +70,7 @@ function genBolt(w: number, h: number, pad: number) {
   for (let i = 0; i <= steps; i++) {
     const edge = i === 0 || i === steps;
     const t = t0 + span * (i / steps) + (edge ? 0 : rand(-0.008, 0.008));
-    const { x, y, nx, ny } = perim(t, w, h);
+    const { x, y, nx, ny } = at(t);
     const j = edge ? 0 : rand(-9, 9);
     pts.push(`${(pad + x + nx * j).toFixed(1)},${(pad + y + ny * j).toFixed(1)}`);
   }
@@ -86,14 +114,19 @@ export default function LightningBorder({
     return () => clearInterval(id);
   }, [interval]);
 
+  const perimAt = useMemo(
+    () => buildPerim(width, height, radius),
+    [width, height, radius],
+  );
+
   const paths = useMemo(() => {
     if (width <= 0 || height <= 0) return [];
     const n = bolts + (Math.random() < 0.5 ? 1 : 0);
     const arr: string[] = [];
-    for (let i = 0; i < n; i++) arr.push(genBolt(width, height, pad));
+    for (let i = 0; i < n; i++) arr.push(genBolt(perimAt, pad));
     return arr;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tick, width, height, pad, bolts]);
+  }, [tick, width, height, pad, bolts, perimAt]);
 
   const flickStyle = useAnimatedStyle(() => ({ opacity: flick.value }));
   const glowStyle = useAnimatedStyle(() => ({ opacity: 0.45 + 0.55 * glow.value }));
