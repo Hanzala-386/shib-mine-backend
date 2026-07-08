@@ -32,3 +32,13 @@ description: Why the Start Frontend workflow gets stuck and how to actually reco
   Android APK, where these animations render normally.
 - The auth screen was deliberately switched to RN's built-in `Animated` (not
   reanimated `entering`) precisely so it stays visible on web.
+
+## `app_preview` screenshots hit Express :5000, not Metro :8081
+- A `screenshot` app_preview at a deep route like `/games` returns a plain
+  `Cannot GET /games` (Express 404) — the preview tool resolves to the backend
+  on :5000, not the Expo web bundle on :8081, so client-side Expo Router paths
+  don't exist there. It is a tooling/port artifact, NOT an app crash.
+- Cheap alternative verification when you can't screenshot: after touching a
+  screen, a matching deprecation warning in the browser console (e.g.
+  `"textShadow*" style props are deprecated`) proves that screen's styles
+  actually mounted/rendered on web without crashing.

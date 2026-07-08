@@ -95,13 +95,13 @@ export default function LightningBorder({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick, width, height, pad, bolts]);
 
+  const flickStyle = useAnimatedStyle(() => ({ opacity: flick.value }));
+  const glowStyle = useAnimatedStyle(() => ({ opacity: 0.45 + 0.55 * glow.value }));
+
   if (width <= 0 || height <= 0) return null;
 
   const svgW = width + pad * 2;
   const svgH = height + pad * 2;
-
-  const flickStyle = useAnimatedStyle(() => ({ opacity: flick.value }));
-  const glowStyle = useAnimatedStyle(() => ({ opacity: 0.45 + 0.55 * glow.value }));
 
   const ringBase = {
     position: 'absolute' as const,
