@@ -9,7 +9,7 @@ import React, {
 import {
   View, Text, Modal, Pressable, TextInput, StyleSheet,
   PanResponder, Animated, Dimensions, KeyboardAvoidingView,
-  Platform, ActivityIndicator, ScrollView, DeviceEventEmitter,
+  Platform, ActivityIndicator, ScrollView,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -188,12 +188,6 @@ function SupportWidgetInner() {
     setHasUnread(!!(t && t.status === 'Replied' && !t.is_read_by_user));
     setLoading(false);
   }, [user?.pbId]);
-
-  // Allow other screens (e.g. the Game Arena support icon) to open the widget.
-  useEffect(() => {
-    const sub = DeviceEventEmitter.addListener('shiba:open-support', () => { openModal(); });
-    return () => sub.remove();
-  }, [openModal]);
 
   // ── Submit ticket ──
   const handleSubmit = useCallback(async () => {
