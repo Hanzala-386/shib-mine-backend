@@ -20,19 +20,29 @@ import {
 } from '@shared/gamehub';
 
 const GOLD = '#F4C430';
-const NEON = '#FF6B00';
 
 const SPACE_BG = require('@/assets/images/redeem_space_bg.png');
 const HEADER_IMG = require('@/assets/images/redeem_header.png');
 const BALANCE_FRAME = require('@/assets/images/redeem_balance_frame.png');
 const CELL_FRAME = require('@/assets/images/redeem_cell_frame.png');
 const COIN = require('@/assets/images/shiba_coin_square.png');
-const DIAMOND = require('@/assets/images/shiba_ticket_diamond.png');
+const REDEEM_BUTTON = require('@/assets/images/redeem_button.png');
+
+// Per-tier ticket artwork, keyed by ticket cost (matches REDEEM_BOXES).
+const TICKET_IMAGES: Record<number, number> = {
+  50: require('@/assets/images/ticket_50.png'),
+  100: require('@/assets/images/ticket_100.png'),
+  250: require('@/assets/images/ticket_250.png'),
+  500: require('@/assets/images/ticket_500.png'),
+  1000: require('@/assets/images/ticket_1000.png'),
+  2500: require('@/assets/images/ticket_2500.png'),
+  5000: require('@/assets/images/ticket_5000.png'),
+};
 
 const BALANCE_AR = 1480 / 704;   // 2.1023
 const CELL_AR = 1071 / 1008;     // 1.0625
 const HEADER_AR = 1721 / 608;    // 2.8306
-const DIAMOND_AR = 1035 / 732;   // 1.4139
+const BUTTON_AR = 1805 / 592;    // 3.0490
 
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
@@ -178,7 +188,7 @@ export default function RedeemScreen() {
                   {isSelected && <View style={styles.cellSelTint} pointerEvents="none" />}
 
                   <View style={styles.cellTicketWrap} pointerEvents="none">
-                    <Image source={DIAMOND} style={styles.cellDiamond} contentFit="contain" />
+                    <Image source={TICKET_IMAGES[tickets]} style={styles.cellDiamond} contentFit="contain" />
                   </View>
 
                   <View style={styles.cellCostWrap} pointerEvents="none">
@@ -234,27 +244,22 @@ export default function RedeemScreen() {
           accessibilityLabel="Confirm redemption"
           disabled={!canConfirm}
           onPress={handleConfirm}
-          style={({ pressed }) => [styles.confirmBtn, { opacity: pressed && canConfirm ? 0.9 : 1 }]}
+          style={({ pressed }) => [
+            styles.confirmBtn,
+            { opacity: !canConfirm ? 0.5 : pressed ? 0.9 : 1 },
+          ]}
         >
-          <LinearGradient
-            colors={canConfirm ? [GOLD, NEON] : ['#2a2a2a', '#1a1a1a']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.confirmGradient}
-          >
-            <MaterialCommunityIcons
-              name="gift-outline"
-              size={18}
-              color={canConfirm ? '#000' : Colors.textMuted}
-            />
-            <Text style={[styles.confirmText, !canConfirm && styles.confirmTextDim]}>
+          <Image source={REDEEM_BUTTON} style={styles.confirmBtnImg} contentFit="contain" />
+          <View style={styles.confirmLabelWrap} pointerEvents="none">
+            <MaterialCommunityIcons name="gift-outline" size={18} color="#FFF6E0" />
+            <Text style={styles.confirmText} numberOfLines={1}>
               {submitting
                 ? 'Redeeming…'
                 : selected != null
                   ? `Redeem for ${fmt(ticketsToShib(selected))} SHIB`
                   : 'Select an amount'}
             </Text>
-          </LinearGradient>
+          </View>
         </Pressable>
       </ScrollView>
     </View>
@@ -344,7 +349,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cellDiamond: { height: '92%', aspectRatio: DIAMOND_AR },
+  cellDiamond: { width: '92%', height: '100%' },
   cellCostWrap: { position: 'absolute', top: '59%', left: 0, right: 0, alignItems: 'center' },
   cellCost: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#8FD3FF' },
   cellPriceWrap: {
@@ -408,15 +413,21 @@ const styles = StyleSheet.create({
   },
   errorText: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.error, lineHeight: 18 },
 
-  confirmBtn: { marginTop: 4 },
-  confirmGradient: {
-    height: 54,
-    borderRadius: 16,
+  confirmBtn: { marginTop: 4, alignItems: 'center', justifyContent: 'center' },
+  confirmBtnImg: { width: '100%', aspectRatio: BUTTON_AR },
+  confirmLabelWrap: {
+    ...StyleSheet.absoluteFillObject,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
   },
-  confirmText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000' },
-  confirmTextDim: { color: Colors.textMuted },
+  confirmText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 16,
+    color: '#FFF6E0',
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
 });

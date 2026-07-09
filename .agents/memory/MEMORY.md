@@ -13,4 +13,4 @@
 - [Pool/Game-Hub money invariants](pool-hub-money-invariants.md) — atomic PB modifiers; checked pbHttp wrapper; settle-latch before first await; RESUME MATCH_FOUND must carry ballInHand.
 - [Replit firewall URLs break Railway npm ci](replit-firewall-lockfile-deploy.md) — package-lock resolved URLs can be package-firewall.replit.local so external hosts get ENOTFOUND; host-rewrite to registry.npmjs.org (integrity stays valid); Railway installs from the ROOT lockfile.
 - [Arcade PvP game bridge](arcade-pvp-bridge.md) — games (Flappy, Fruit Cut) hosted on webcod.in; repo public/* edits need manual re-upload; bridge protocol, in-match gotchas, client-AFK-must-undercut-server rule inside.
-- [Baked-art overlay coupling](redeem-baked-art-overlays.md) — dynamic values overlaid on frame PNGs with baked-in text; keep wrapper AR==asset AR + contentFit contain so %-overlays hold; regenerating art forces re-tuning; opaque mask or number ghosts through.
+- [Baked-art overlay coupling](redeem-baked-art-overlays.md) — overlays on baked-text frame PNGs: wrapper AR must match asset AR (+contentFit contain) or they drift; opaque center or art ghosts through.
