@@ -216,3 +216,7 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 ## Ports
 - Frontend (Expo): 8081
 - Backend (Express): 5000
+
+## Session 10 — Lobby room-card art swap
+- `arcade-lobby.tsx` "SELECT A ROOM": the 5 tier boxes are now full-card baked-text images `assets/images/room_{1000,5000,10000,50000,100000}.png` (677x369) via `ROOM_IMAGES` keyed by entryPT; Pressable afford/disabled/testID/needMore logic untouched. Baked ticket/SHIB numbers match the economy (winnerTickets = entryPT×0.018) — regenerate all 5 PNGs if PT_PER_TICKET, COMMISSION_RATE, or the tier list changes. `pool-lobby.tsx` (8-Ball) intentionally keeps the old text boxes.
+- RN-web quirk: static-asset `Image` needs `height:'auto'` in style or the asset's intrinsic height (inline) beats CSS aspect-ratio; harmless on native (auto = yoga default).

@@ -35,3 +35,7 @@ re-tune the percentage overlays for the new asset.
   through; and it must be tall/wide enough — the baked number can be larger than a
   first estimate suggests (measure by bracketing: shrink from top and bottom until
   neither edge of the baked glyphs pokes out).
+
+## Full-width card swaps (RN Image)
+- RN-web renders static-asset `Image` with its intrinsic width/height as inline styles; a style `aspectRatio` (CSS aspect-ratio) loses to that inline height, so `width:'100%' + aspectRatio` silently letterboxes at intrinsic height. Fix: add `height:'auto'` (overrides the inline default; on native it's yoga's default so it is a no-op).
+- **How to apply:** any full-bleed baked-art card (`width:'100%' + aspectRatio`) needs `height:'auto'` too, or web previews mislead you into thinking the layout is broken.

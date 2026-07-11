@@ -10,9 +10,18 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useWallet } from '@/context/WalletContext';
-import TicketIcon from '@/components/TicketIcon';
 import { InlineBannerAd, BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import { TIER_CONFIGS } from '@shared/arcade';
+
+// Room entry card artwork, keyed by PT entry (matches POOL_TIERS). All 677x369.
+const ROOM_IMAGES: Record<number, number> = {
+  1000: require('@/assets/images/room_1000.png'),
+  5000: require('@/assets/images/room_5000.png'),
+  10000: require('@/assets/images/room_10000.png'),
+  50000: require('@/assets/images/room_50000.png'),
+  100000: require('@/assets/images/room_100000.png'),
+};
+const ROOM_AR = 677 / 369;
 
 const FLAPPY_ICON = require('@/assets/images/flappy_icon.png');
 const FRUITCUT_ICON = require('@/assets/images/fruitcut_icon.jpg');
@@ -121,24 +130,7 @@ export default function ArcadeLobbyScreen() {
                 testID={`arcade-tier-${t.entryPT}`}
                 style={({ pressed }) => [{ opacity: !afford ? 0.5 : pressed ? 0.9 : 1 }]}
               >
-                <LinearGradient colors={['#1A1A28', '#12121A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.card}>
-                  <View style={styles.tierLeft}>
-                    <View style={styles.tierBadge}>
-                      <Text style={styles.tierBadgeTxt}>{t.label}</Text>
-                    </View>
-                    <View>
-                      <Text style={styles.tierEntry}>{t.entryPT.toLocaleString()} PT entry</Text>
-                      <Text style={styles.tierNote}>1v1 · winner takes the pot</Text>
-                    </View>
-                  </View>
-                  <View style={styles.tierRight}>
-                    <View style={styles.rewardRow}>
-                      <TicketIcon size={16} color={Colors.gold} />
-                      <Text style={styles.rewardTxt}>{t.winnerTickets}</Text>
-                    </View>
-                    <Text style={styles.rewardShib}>≈ {t.winnerShib.toLocaleString()} SHIB</Text>
-                  </View>
-                </LinearGradient>
+                <Image source={ROOM_IMAGES[t.entryPT]} style={styles.roomCard} resizeMode="contain" />
               </Pressable>
               {!afford && <Text style={styles.needMore}>Need {(t.entryPT - powerTokens).toLocaleString()} more PT</Text>}
             </View>
@@ -187,16 +179,7 @@ const styles = StyleSheet.create({
   heroTitle: { color: Colors.gold, fontSize: 16, fontWeight: '800' },
   heroSub: { color: Colors.textSecondary, fontSize: 12, marginTop: 3, lineHeight: 17 },
   section: { color: Colors.textMuted, fontSize: 12, fontWeight: '700', letterSpacing: 1, marginBottom: 2, marginTop: 4 },
-  card: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, borderRadius: 16, borderWidth: 1, borderColor: Colors.darkBorder },
-  tierLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  tierBadge: { width: 52, height: 52, borderRadius: 14, backgroundColor: 'rgba(244,196,48,0.12)', borderWidth: 1, borderColor: 'rgba(244,196,48,0.4)', alignItems: 'center', justifyContent: 'center' },
-  tierBadgeTxt: { color: Colors.gold, fontSize: 18, fontWeight: '800' },
-  tierEntry: { color: Colors.textPrimary, fontSize: 15, fontWeight: '700' },
-  tierNote: { color: Colors.textMuted, fontSize: 12, marginTop: 2 },
-  tierRight: { alignItems: 'flex-end' },
-  rewardRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  rewardTxt: { color: Colors.gold, fontSize: 18, fontWeight: '800' },
-  rewardShib: { color: Colors.textSecondary, fontSize: 11, marginTop: 2 },
+  roomCard: { width: '100%', height: 'auto', aspectRatio: ROOM_AR },
   needMore: { color: Colors.error, fontSize: 11, marginTop: 4, marginLeft: 4 },
   practiceCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: Colors.darkCard, borderColor: Colors.darkBorder, borderWidth: 1, borderRadius: 14, padding: 14, marginTop: 2 },
   practiceTitle: { color: Colors.textPrimary, fontSize: 14, fontWeight: '700' },
