@@ -17,6 +17,11 @@ import {
   MAX_VIP_LEVEL,
 } from "../shared/vip";
 import { ticketsToShib, validateRedeem } from "../shared/gamehub";
+import {
+  checkNetworkAccess,
+  isNetworkGuardEnabled,
+  setNetworkGuardSettingsProvider,
+} from "./networkGuard";
 
 // ─── Multer — memory storage for proof screenshot uploads ─────────────────
 const upload = multer({
@@ -1323,6 +1328,13 @@ async function fetchSettings() {
   return settingsCache;
 }
 
+// Network guard kill-switch reads the PB settings toggle. (Guard caches the
+// result 60 s; admin settings updates bust settingsCache immediately.)
+setNetworkGuardSettingsProvider(async () => {
+  const s = await fetchSettings();
+  return !!s?.network_guard_enabled;
+});
+
 function generateReferralCode() {
   return Math.random().toString(36).substr(2, 6).toUpperCase();
 }
@@ -1413,6 +1425,13 @@ async function ensureBrevoKeyInSettings(): Promise<void> {
       console.log(`[${settingsCol.name}] force_unity_only field added (default false) ✓`);
     } else {
       console.log(`[${settingsCol.name}] force_unity_only field already present ✓`);
+    }
+    if (!schema.find((f: any) => f.name === "network_guard_enabled")) {
+      schema.push({ name: "network_guard_enabled", type: "bool", required: false });
+      changed = true;
+      console.log(`[${settingsCol.name}] network_guard_enabled field added (default false) ✓`);
+    } else {
+      console.log(`[${settingsCol.name}] network_guard_enabled field already present ✓`);
     }
     if (changed) {
       await pbHttp("PATCH", `/api/collections/${settingsCol.id}`, { schema }, token);
@@ -1519,6 +1538,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => migrateProofScreenshotToFile())
     .then(() => patchTasksCollectionRules())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
+
+  // ── Security: Network check (VPN / proxy / geo guard verdict) ────────────
+  // Whitelisted inside the guard middleware — always returns 200 with the
+  // verdict so the client can poll it (boot + every 60 s + app-foreground).
+  app.get("/api/app/security/network-check", async (req: Request, res: Response) => {
+    try {
+      if (!(await isNetworkGuardEnabled())) {
+        return res.json({ blocked: false, reason: null });
+      }
+      const verdict = await checkNetworkAccess(req.ip || "");
+      return res.json({ blocked: verdict.blocked, reason: verdict.reason });
+    } catch {
+      return res.json({ blocked: false, reason: null }); // fail-open
+    }
+  });
 
   // ── Security: Flag a device / user as cheating on PocketBase ─────────────
   // Called by SecurityContext when root / emulator / autoclicker is detected.
@@ -1767,6 +1801,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         admobBannerUnitId: s.admob_banner_unit_id,
         admobRewardedId: s.admob_rewarded_id,
         forceUnityOnly: s.force_unity_only ?? false,
+        networkGuardEnabled: s.network_guard_enabled ?? false,
         applovinSdkKey: s.applovin_sdk_key,
         applovinRewardedId: s.applovin_rewarded_id,
         unityGameId: s.unity_game_id,
@@ -3357,6 +3392,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (body.showAds !== undefined) pbUpdate.show_ads = body.showAds;
         if (body.forceUnityOnly !== undefined)
           pbUpdate.force_unity_only = !!body.forceUnityOnly;
+        if (body.networkGuardEnabled !== undefined)
+          pbUpdate.network_guard_enabled = !!body.networkGuardEnabled;
         if (body.activeAdNetwork !== undefined)
           pbUpdate.active_ad_network = body.activeAdNetwork;
         if (body.admobUnitId !== undefined)

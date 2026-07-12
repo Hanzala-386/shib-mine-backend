@@ -221,5 +221,15 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 - `arcade-lobby.tsx` "SELECT A ROOM": the 5 tier boxes are now full-card baked-text images `assets/images/room_{1000,5000,10000,50000,100000}.png` (677x369) via `ROOM_IMAGES` keyed by entryPT; Pressable afford/disabled/testID/needMore logic untouched. Baked ticket/SHIB numbers match the economy (winnerTickets = entryPT×0.018) — regenerate all 5 PNGs if PT_PER_TICKET, COMMISSION_RATE, or the tier list changes. `pool-lobby.tsx` (8-Ball) intentionally keeps the old text boxes.
 - RN-web quirk: static-asset `Image` needs `height:'auto'` in style or the asset's intrinsic height (inline) beats CSS aspect-ratio; harmless on native (auto = yoga default).
 
+## Session 11 — Zero-Tolerance Network Guard (geo + VPN/proxy/datacenter blocking)
+- **`server/networkGuard.ts`** (BOTH backend copies, MUST stay byte-identical): two-layer IP guard on every `/api/app/*` request + `/api/ws/*` WebSocket upgrades.
+  - **Layer 1 — X4BNet CIDR lists** (vpn + hosting, ~30k merged ranges, 24h refresh): sorted+MERGED intervals, binary-search lookup. Merging is mandatory — raw lists have ~10% nested overlaps.
+  - **Layer 2 — proxycheck.io** (`vpn=3&asn=1&risk=1`): blocks geo (IR,KP,SY,CU,AF,VE,YE,SO,SD,ZW + Crimea/Donetsk/Luhansk/Sevastopol region keywords), proxy/VPN, hosting. Keyless = 100 queries/day; set `PROXYCHECK_API_KEY` (Replit secret + Railway env) for production volume.
+  - **Fail-open everywhere**: provider error → clean verdict cached 5 min; clean verdicts fetched before CIDR lists load also get the 5-min TTL (full 6h only once lists are ready or verdict is blocked). Private/localhost IPs always allowed. Verdict cache 6h / 20k cap, in-flight dedupe.
+  - **Kill-switch**: PB `settings.network_guard_enabled` (bool, DEFAULT OFF) — admin panel "Network Guard" toggle; cached 60s. Env overrides: `NETWORK_GUARD_FORCE=1` / `NETWORK_GUARD_DISABLED=1`.
+  - Blocked response: 403 `{blocked:true, code:'NETWORK_BLOCKED', reason, error:"Access Restricted: …disable any VPN or proxy services to continue."}`. `GET /api/app/security/network-check` is whitelisted (returns verdict with 200).
+- **Client**: `lib/api.ts` intercepts 403 NETWORK_BLOCKED in `request()`/`robustPost()` → `SecurityContext` `'network'` block type (poll at boot+10s, every 60s, and on app-foreground; auto-clears when verdict clears; never clobbers root/emulator/integrity/accessibility blocks; `__DEV__` skips all). `SecurityModal` full-screen "Access Restricted" overlay with Retry. ToS sections 4+8 updated.
+- **Known limits**: direct PocketBase SDK fallback paths bypass the guard (PB lives on api.webcod.in, separate host); Railway redeploy required to activate in prod.
+
 ## User Preferences
 - **NO design/UI work by the agent** (declared July 11, 2026): The user has permanently denied all design and UI overhaul tasks. Do NOT touch design or UI files (styles, themes, layouts, visual components, assets) unless the user explicitly reverses this. Agent scope is strictly logic and backend tasks.

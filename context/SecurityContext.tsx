@@ -2,8 +2,9 @@ import React, {
   createContext, useContext, useCallback,
   useEffect, useRef, useState,
 } from 'react';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { getApiUrl } from '@/lib/query-client';
+import { api, setNetworkBlockHandler } from '@/lib/api';
 import { requestIntegrityToken } from '@/lib/playIntegrity';
 import {
   getEnabledAccessibilityServices,
@@ -18,6 +19,8 @@ import {
 // 'accessibility' — an auto-clicker / macro app is ENABLED as an accessibility service
 // 'integrity'     — Google Play Integrity API verdict: device does not meet integrity
 // 'adblock'       — DNS-level ad-blocker / filter detected
+// 'network'       — server network guard verdict: VPN / proxy / datacenter IP
+//                   or restricted region (zero-tolerance network policy)
 export type SecurityBlockType =
   | 'root'
   | 'emulator'
@@ -25,6 +28,7 @@ export type SecurityBlockType =
   | 'accessibility'
   | 'integrity'
   | 'adblock'
+  | 'network'
   | null;
 
 interface SecurityContextValue {
@@ -216,6 +220,20 @@ async function checkAdBlocker(): Promise<boolean> {
   return fastFailCount >= 2;
 }
 
+// ── LAYER 6: Server-side network guard (VPN / proxy / datacenter / geo) ───────
+// The verdict is computed SERVER-side from the request IP (proxycheck.io +
+// local CIDR lists) — the client only asks "am I blocked?". Fail-OPEN on any
+// network/server error so an outage never bricks the app; enforcement still
+// happens server-side on every /api/app/* request regardless of this poll.
+async function checkNetworkBlocked(): Promise<boolean> {
+  try {
+    const res = await api.networkCheck();
+    return !!res?.blocked;
+  } catch {
+    return false; // unreachable / error — fail open (server still enforces)
+  }
+}
+
 // ── LAYER 5: Accessibility-service auto-clicker scan (Android) ─────────────────
 // Auto-clicker / macro apps must register an Android AccessibilityService to
 // synthesize taps. We enumerate the user-ENABLED accessibility services (no
@@ -285,6 +303,7 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
     if (await checkEmulator())                     return 'emulator';
     if (await checkPlayIntegrity(pbIdRef.current)) return 'integrity';
     if (await checkAdBlocker())                    return 'adblock';
+    if (await checkNetworkBlocked())               return 'network';
     return null;
   }, []);
 
@@ -326,21 +345,51 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      if (await checkAdBlocker()) setBlockType('adblock');
+      if (await checkAdBlocker()) {
+        setBlockType('adblock');
+        return;
+      }
+
+      if (await checkNetworkBlocked()) setBlockType(prev => prev ?? 'network');
     }, 10_000);
 
-    // Re-check ad-blocker every 60 s (no VPN check — unreliable on CGNAT carriers)
+    // Any API call that hits the server guard (403 NETWORK_BLOCKED) triggers
+    // the overlay INSTANTLY — no need to wait for the next poll tick.
+    setNetworkBlockHandler(() => {
+      setBlockType(prev => (prev === null || prev === 'adblock') ? 'network' : prev);
+    });
+
+    // Re-check ad-blocker + network guard every 60 s
+    // (no client-side VPN heuristics — unreliable on CGNAT carriers; the
+    //  network verdict comes from the server, which sees the real IP)
     intervalRef.current = setInterval(async () => {
       if (await checkAdBlocker()) {
         setBlockType('adblock');
         return;
       }
-      setBlockType(prev => prev === 'adblock' ? null : prev);
+      if (await checkNetworkBlocked()) {
+        setBlockType(prev => (prev === null || prev === 'adblock') ? 'network' : prev);
+        return;
+      }
+      setBlockType(prev => (prev === 'adblock' || prev === 'network') ? null : prev);
     }, 60_000);
+
+    // Re-check network guard the moment the app returns to the foreground —
+    // catches "backgrounded app → turned on VPN → came back" within seconds.
+    const appStateSub = AppState.addEventListener('change', async (state) => {
+      if (state !== 'active') return;
+      if (await checkNetworkBlocked()) {
+        setBlockType(prev => (prev === null || prev === 'adblock') ? 'network' : prev);
+      } else {
+        setBlockType(prev => (prev === 'network' ? null : prev));
+      }
+    });
 
     return () => {
       clearTimeout(delayedTimer);
       if (intervalRef.current) clearInterval(intervalRef.current);
+      appStateSub.remove();
+      setNetworkBlockHandler(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

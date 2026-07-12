@@ -20,7 +20,7 @@ const SECTIONS = [
   },
   {
     title: '4. Data Collection',
-    body: `We collect the following information during registration and use:\n\n• Email Address – for account authentication and communication.\n• Username / Display Name – displayed on the public leaderboard.\n• In-App Activity Data – session counts, game scores, referral counts, and virtual balances.\n\nWe do not collect payment card information, government ID, or sensitive personal data. See our Privacy Policy for full details.`,
+    body: `We collect the following information during registration and use:\n\n• Email Address – for account authentication and communication.\n• Username / Display Name – displayed on the public leaderboard.\n• In-App Activity Data – session counts, game scores, referral counts, and virtual balances.\n• IP Address & Network Configuration – analysed at sign-in and during use to detect VPNs, proxies, datacenter/hosting connections, and restricted regions for security and compliance purposes.\n\nWe do not collect payment card information, government ID, or sensitive personal data. See our Privacy Policy for full details.`,
   },
   {
     title: '5. Withdrawal Processing',
@@ -36,7 +36,7 @@ const SECTIONS = [
   },
   {
     title: '8. Prohibited Conduct',
-    body: `You agree not to:\n\n• Use bots, scripts, or automated tools to manipulate session timers or scores.\n• Create multiple accounts to abuse the referral program.\n• Attempt to reverse-engineer or tamper with the App.\n• Use the App for any unlawful purpose.\n\nViolations may result in immediate account termination and forfeiture of all virtual balances.`,
+    body: `You agree not to:\n\n• Use bots, scripts, or automated tools to manipulate session timers or scores.\n• Create multiple accounts to abuse the referral program.\n• Attempt to reverse-engineer or tamper with the App.\n• Use the App for any unlawful purpose.\n• Access the App through a VPN, proxy, Tor exit node, datacenter/hosting IP, or any network anonymisation service. The App enforces a zero-tolerance network policy: connections identified as VPN/proxy or originating from restricted regions or sanctioned territories are automatically denied access.\n\nViolations may result in immediate account termination and forfeiture of all virtual balances.`,
   },
   {
     title: '9. Disclaimers',

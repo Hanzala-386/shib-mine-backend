@@ -9,6 +9,21 @@ import {
   type VipMetrics,
 } from '@shared/vip';
 
+// ── Network guard (VPN/proxy/geo block) ─────────────────────────────────────
+// SecurityContext registers a handler; any API response with status 403 and
+// code NETWORK_BLOCKED immediately triggers the full-screen security overlay.
+let networkBlockHandler: (() => void) | null = null;
+export function setNetworkBlockHandler(fn: (() => void) | null) {
+  networkBlockHandler = fn;
+}
+function maybeTriggerNetworkBlock(status: number, data: any) {
+  if (status === 403 && data?.code === 'NETWORK_BLOCKED') {
+    try {
+      networkBlockHandler?.();
+    } catch {}
+  }
+}
+
 async function request<T = any>(
   method: string,
   path: string,
@@ -27,6 +42,7 @@ async function request<T = any>(
     });
     const data = await res.json();
     if (!res.ok) {
+      maybeTriggerNetworkBlock(res.status, data);
       const err: any = new Error(data?.error || `HTTP ${res.status}`);
       err.data = data;
       err.status = res.status;
@@ -76,6 +92,7 @@ async function robustPost<T = any>(
       });
       const data = await res.json();
       if (!res.ok) {
+        maybeTriggerNetworkBlock(res.status, data);
         const err: any = new Error(data?.error || `HTTP ${res.status}`);
         err.data = data;
         err.status = res.status;
@@ -111,6 +128,15 @@ async function robustPost<T = any>(
 export const api = {
   // ── Settings ───────────────────────────────────────────────────────────
   getSettings: () => request<AppSettings>('GET', '/api/app/settings'),
+
+  // ── Security: network guard verdict (VPN / proxy / geo) ────────────────
+  networkCheck: () =>
+    request<{ blocked: boolean; reason: string | null }>(
+      'GET',
+      '/api/app/security/network-check',
+      undefined,
+      8000,
+    ),
 
   // ── Daily Rewards ─────────────────────────────────────────────────────
   getDailyStatus: (pbId: string) =>
@@ -844,6 +870,8 @@ export interface AppSettings {
   showAds: boolean;
   /* Master ad-network override — when true, bypass AdMob and serve Unity Ads only */
   forceUnityOnly: boolean;
+  /* Network guard kill-switch — when true, server blocks VPN/proxy/datacenter/geo IPs */
+  networkGuardEnabled: boolean;
   activeAdNetwork: string;
   admobUnitId: string;
   admobBannerUnitId: string;

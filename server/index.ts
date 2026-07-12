@@ -8,9 +8,19 @@ import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
 import { createProxyMiddleware } from "http-proxy-middleware";
+import {
+  initNetworkGuard,
+  networkGuardMiddleware,
+  guardWebSocketUpgrade,
+} from "./networkGuard";
 
 const app = express();
 const log = console.log;
+
+// Behind exactly ONE trusted reverse proxy (Railway edge / Replit ingress).
+// `1` (not `true`) — trusting all XFF entries would let clients spoof a clean
+// IP. This makes req.ip the real client IP (also fixes mining_sessions.ip_address).
+app.set("trust proxy", 1);
 
 declare module "http" {
   interface IncomingMessage {
@@ -308,6 +318,13 @@ function setupErrorHandler(app: express.Application) {
 
   configureExpoAndLanding(app);
 
+  // ── Network guard: VPN / proxy / datacenter / geo blocking ──────────────
+  // Mounted on /api/app only (static /game, /arcade, health etc. stay open).
+  // Enforcement is gated by the PB settings kill-switch (network_guard_enabled)
+  // wired up inside registerRoutes; the check endpoint is whitelisted inside.
+  initNetworkGuard();
+  app.use("/api/app", networkGuardMiddleware());
+
   const server = await registerRoutes(app);
 
   setupErrorHandler(app);
@@ -345,8 +362,13 @@ function setupErrorHandler(app: express.Application) {
   // Handle WebSocket upgrade requests for the game scoring path.
   // The Metro proxy upgrade handler skips paths starting with /api (pathFilter),
   // so this listener receives /api/ws/game upgrades cleanly.
-  server.on("upgrade", (request, socket, head) => {
+  server.on("upgrade", async (request, socket, head) => {
     const url = request.url || "";
+    // Network guard covers WebSocket upgrades too (same verdict cache).
+    if (url.startsWith("/api/ws/")) {
+      const allowed = await guardWebSocketUpgrade(request, socket as any);
+      if (!allowed) return; // guard already wrote 403 + destroyed the socket
+    }
     if (url.startsWith("/api/ws/hub-arcade")) {
       arcadeWss.handleUpgrade(request, socket as any, head, (ws) => {
         arcadeWss.emit("connection", ws, request);

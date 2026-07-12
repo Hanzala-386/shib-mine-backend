@@ -83,6 +83,15 @@ const BLOCK_CONFIG: Record<NonNullable<SecurityBlockType>, BlockConfig> = {
       'Please disable your ad-blocker or DNS filter to continue using the app.',
     canRetry: true,
   },
+  network: {
+    icon:     'globe',
+    title:    'Access Restricted',
+    subtitle: 'VPN / Proxy / Restricted Network Detected',
+    message:
+      'Your network configuration is not allowed on this platform. ' +
+      'Please disable any VPN or proxy services to continue.',
+    canRetry: true,
+  },
 };
 
 // ── Exit helper ───────────────────────────────────────────────────────────────
