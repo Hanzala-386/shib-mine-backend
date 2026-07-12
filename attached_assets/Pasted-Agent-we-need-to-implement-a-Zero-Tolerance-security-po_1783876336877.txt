@@ -1,0 +1,26 @@
+Agent, we need to implement a 'Zero-Tolerance' security policy for our app to prevent cheating, botting, and access from restricted regions. I need you to implement a multi-layered security architecture. You must ensure this does not violate Google Play policies (i.e., we are NOT tracking precise user GPS, but performing network-level security verification).
+
+Task 1: Multi-Layered VPN/VPS & Bot Detection
+Implement these checks during the app initialization and on every API request:
+
+IP Reputation & Geo-blocking: Use a professional IP Geolocation service (like MaxMind or similar) to check the user's IP. Block access immediately if the IP originates from: [List: Iran, North Korea, Syria, Cuba, Crimea, Donetsk, Luhansk, Afghanistan, Venezuela, Yemen, Somalia, Sudan, Zimbabwe].
+
+VPS/Data-Center Detection: Cross-reference the IP with a 'Hosting Provider Database'. If the IP belongs to a VPS (DigitalOcean, AWS, Linode, etc.), block the access.
+
+VPN/Proxy Detection: Implement checks for VPN signatures (detecting known VPN exit nodes).
+
+DNS/WebRTC Leak Checks: Implement checks to ensure the user's real location isn't leaking via DNS or WebRTC while they attempt to mask it.
+
+Task 2: User Communication
+
+If ANY of the above security flags are triggered, the app must stop functioning and show a clear, full-screen overlay in English: "Access Restricted: Your network configuration is not allowed on this platform. Please disable any VPN or proxy services to continue."
+
+Forceful Requirements:
+
+No Permissions Needed: This logic must operate purely on the server-side/network-level to avoid asking for user location permissions unnecessarily.
+
+Strict Enforcement: This system must be powerful enough to catch users trying to bypass it. If a user toggles a VPN, it must be detected instantly.
+
+Privacy Policy Update: Ensure our Terms of Service reflect that network configuration is monitored for security purposes.
+
+Provide the architectural plan to integrate this middleware into our Node/Express backend. Ensure that no user can bypass this using a standard VPN.
