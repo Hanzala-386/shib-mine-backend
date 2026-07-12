@@ -21,6 +21,7 @@ import {
   checkNetworkAccess,
   isNetworkGuardEnabled,
   setNetworkGuardSettingsProvider,
+  setNetworkGuardKeyProvider,
 } from "./networkGuard";
 
 // ─── Multer — memory storage for proof screenshot uploads ─────────────────
@@ -1335,6 +1336,171 @@ setNetworkGuardSettingsProvider(async () => {
   return !!s?.network_guard_enabled;
 });
 
+// ─── proxycheck.io API-key rotation (PB `proxy_api` collection) ──────────────
+// Admin adds/removes keys manually in PocketBase. Backend re-reads the list
+// every 60 s, serves the first active key with usage_count < 900, and rotates
+// to the next active key when one is exhausted. If ALL keys are exhausted it
+// keeps serving the last one (avoid downtime — proxycheck fails open anyway).
+// usage_count auto-resets when a key's last_used is a previous UTC day
+// (proxycheck limits are per-day).
+const PROXY_KEY_DAILY_LIMIT = 900;
+const PROXY_KEYS_TTL = 60_000;
+type ProxyKeyRec = {
+  id: string;
+  api_key: string;
+  is_active: boolean;
+  usage_count: number;
+  last_used: string;
+};
+let proxyKeysCache: ProxyKeyRec[] = [];
+let proxyKeysCacheAt = 0;
+let lastServedProxyKey: string | null = null;
+
+function pbNowDate(): string {
+  // PB date format: "YYYY-MM-DD HH:MM:SS.sssZ" (space separator)
+  return new Date().toISOString().replace("T", " ");
+}
+
+async function refreshProxyKeys(): Promise<void> {
+  const token = await getAdminToken();
+  const res = await pbHttp(
+    "GET",
+    "/api/collections/proxy_api/records?perPage=200&sort=created",
+    null,
+    token,
+  );
+  const items: ProxyKeyRec[] = (res.items || []).map((r: any) => ({
+    id: r.id,
+    api_key: String(r.api_key || "").trim(),
+    is_active: !!r.is_active,
+    usage_count: Number(r.usage_count) || 0,
+    last_used: String(r.last_used || ""),
+  }));
+  // Daily reset: proxycheck quotas reset per UTC day
+  const today = new Date().toISOString().slice(0, 10);
+  for (const rec of items) {
+    if (rec.usage_count > 0 && rec.last_used && rec.last_used.slice(0, 10) < today) {
+      rec.usage_count = 0;
+      pbHttp(
+        "PATCH",
+        `/api/collections/proxy_api/records/${rec.id}`,
+        { usage_count: 0 },
+        token,
+      )
+        .then(() => console.log(`[proxy_api] daily reset: ${rec.api_key.slice(0, 6)}…`))
+        .catch((e: any) => console.warn("[proxy_api] daily reset failed:", e?.message));
+    }
+  }
+  proxyKeysCache = items;
+  proxyKeysCacheAt = Date.now();
+}
+
+async function getProxyApiKey(): Promise<string | null> {
+  if (Date.now() - proxyKeysCacheAt > PROXY_KEYS_TTL) {
+    try {
+      await refreshProxyKeys();
+    } catch (e: any) {
+      console.warn("[proxy_api] key refresh failed:", e?.message);
+      proxyKeysCacheAt = Date.now(); // don't hammer PB on repeated failures
+    }
+  }
+  const active = proxyKeysCache.filter((k) => k.is_active && k.api_key);
+  if (active.length === 0) return null; // guard falls back to env key / keyless
+  const available = active.find((k) => k.usage_count < PROXY_KEY_DAILY_LIMIT);
+  if (available) {
+    if (available.api_key !== lastServedProxyKey) {
+      console.log(
+        `[proxy_api] serving key ${available.api_key.slice(0, 6)}… (used ${available.usage_count}/${PROXY_KEY_DAILY_LIMIT})`,
+      );
+    }
+    lastServedProxyKey = available.api_key;
+    return available.api_key;
+  }
+  // All active keys exhausted — keep using the last served (or first) key
+  const fallback =
+    active.find((k) => k.api_key === lastServedProxyKey) || active[0];
+  lastServedProxyKey = fallback.api_key;
+  console.warn(
+    `[proxy_api] all ${active.length} active keys ≥${PROXY_KEY_DAILY_LIMIT} today — reusing ${fallback.api_key.slice(0, 6)}… to avoid downtime`,
+  );
+  return fallback.api_key;
+}
+
+function flushProxyKeyUsage(rec: ProxyKeyRec, body: Record<string, any>): void {
+  getAdminToken()
+    .then((token) =>
+      pbHttp("PATCH", `/api/collections/proxy_api/records/${rec.id}`, body, token),
+    )
+    .catch((e: any) => console.warn("[proxy_api] usage flush failed:", e?.message));
+}
+
+function reportProxyKeyUse(key: string): void {
+  const rec = proxyKeysCache.find((k) => k.api_key === key);
+  if (!rec) return;
+  rec.usage_count += 1;
+  rec.last_used = pbNowDate();
+  // "usage_count+" is PocketBase's atomic increment — safe with the Railway
+  // prod backend counting against the same shared collection.
+  flushProxyKeyUsage(rec, { "usage_count+": 1, last_used: rec.last_used });
+}
+
+function reportProxyKeyExhausted(key: string): void {
+  const rec = proxyKeysCache.find((k) => k.api_key === key);
+  if (!rec) return;
+  if (rec.usage_count < PROXY_KEY_DAILY_LIMIT) {
+    rec.usage_count = PROXY_KEY_DAILY_LIMIT;
+    rec.last_used = pbNowDate();
+    console.warn(`[proxy_api] key ${key.slice(0, 6)}… denied by proxycheck — marked exhausted, rotating`);
+    flushProxyKeyUsage(rec, {
+      usage_count: PROXY_KEY_DAILY_LIMIT,
+      last_used: rec.last_used,
+    });
+  }
+}
+
+setNetworkGuardKeyProvider({
+  getKey: getProxyApiKey,
+  reportUse: reportProxyKeyUse,
+  reportExhausted: reportProxyKeyExhausted,
+});
+
+// Ensure the proxy_api collection exists (schema only — keys are added
+// manually by the admin in PocketBase). All API rules null = admin-only, so
+// API keys are NEVER readable by clients.
+async function ensureProxyApiCollection(): Promise<void> {
+  try {
+    const token = await getAdminToken();
+    const colls = await pbHttp("GET", "/api/collections?perPage=200", null, token);
+    if ((colls.items || []).find((c: any) => c.name === "proxy_api")) {
+      console.log("[proxy_api] collection present ✓");
+      return;
+    }
+    await pbHttp(
+      "POST",
+      "/api/collections",
+      {
+        name: "proxy_api",
+        type: "base",
+        schema: [
+          { name: "api_key", type: "text", required: false },
+          { name: "is_active", type: "bool", required: false },
+          { name: "usage_count", type: "number", required: false },
+          { name: "last_used", type: "date", required: false },
+        ],
+        listRule: null,
+        viewRule: null,
+        createRule: null,
+        updateRule: null,
+        deleteRule: null,
+      },
+      token,
+    );
+    console.log("[proxy_api] collection created (admin-only rules) ✓");
+  } catch (e: any) {
+    console.warn("[proxy_api] ensure collection skipped:", e?.message);
+  }
+}
+
 function generateReferralCode() {
   return Math.random().toString(36).substr(2, 6).toUpperCase();
 }
@@ -1537,6 +1703,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureTaskSubmissionsUniqueIndex())
     .then(() => migrateProofScreenshotToFile())
     .then(() => patchTasksCollectionRules())
+    .then(() => ensureProxyApiCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
 
   // ── Security: Network check (VPN / proxy / geo guard verdict) ────────────

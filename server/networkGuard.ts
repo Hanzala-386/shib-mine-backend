@@ -200,11 +200,34 @@ function cidrLookup(rawIp: string): string | null {
   return null;
 }
 
+// ── proxycheck.io API-key rotation ────────────────────────────────────────────
+// Keys live in the PB `proxy_api` collection (admin-only rules). routes.ts
+// injects a provider that picks an active key with usage_count < limit and
+// rotates when a key is exhausted. Fallback order: provider → env → keyless.
+export interface NetworkGuardKeyProvider {
+  getKey(): Promise<string | null>;
+  reportUse(key: string): void;
+  reportExhausted(key: string): void;
+}
+let keyProvider: NetworkGuardKeyProvider | null = null;
+
+export function setNetworkGuardKeyProvider(p: NetworkGuardKeyProvider) {
+  keyProvider = p;
+}
+
 // ── Layer 2: proxycheck.io lookup ─────────────────────────────────────────────
 // Returns a verdict, or null when the provider is unreachable (fail-open).
 async function proxycheckLookup(rawIp: string): Promise<NetworkVerdict | null> {
   const ip = normalizeIp(rawIp);
-  const key = process.env.PROXYCHECK_API_KEY || "";
+  let key = "";
+  if (keyProvider) {
+    try {
+      key = (await keyProvider.getKey()) || "";
+    } catch {
+      // provider failure → fall through to env/keyless
+    }
+  }
+  if (!key) key = process.env.PROXYCHECK_API_KEY || "";
   const url =
     `https://proxycheck.io/v2/${encodeURIComponent(ip)}` +
     `?vpn=3&asn=1&risk=1${key ? `&key=${encodeURIComponent(key)}` : ""}`;
@@ -213,10 +236,15 @@ async function proxycheckLookup(rawIp: string): Promise<NetworkVerdict | null> {
     const timer = setTimeout(() => ctrl.abort(), 4_000);
     const resp = await fetch(url, { signal: ctrl.signal });
     clearTimeout(timer);
+    // The query hit proxycheck — count it against the key regardless of outcome
+    if (key && keyProvider) keyProvider.reportUse(key);
     if (!resp.ok) return null;
     const data: any = await resp.json();
     if (data?.status && data.status !== "ok" && data.status !== "warning") {
       // "denied" (rate limit / bad key) or "error" — fail open
+      if (key && keyProvider && String(data.status).toLowerCase() === "denied") {
+        keyProvider.reportExhausted(key); // force rotation to the next key
+      }
       console.warn(`[networkGuard] proxycheck status=${data.status} ${data.message ?? ""}`);
       return null;
     }
