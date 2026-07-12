@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Platform, Pressable, TextInput, Alert, Modal,
+  View, Text, StyleSheet, ScrollView, Platform, Pressable, TextInput, Alert, Modal, Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,10 +12,12 @@ import { useAuth } from '@/context/AuthContext';
 import { useAds } from '@/context/AdContext';
 import Colors from '@/constants/colors';
 import SpinningCoin from '@/components/SpinningCoin';
-import TicketIcon from '@/components/TicketIcon';
 import { InlineBannerAd } from '@/components/StickyBannerAd';
 import { pb } from '@/lib/pocketbase';
 import type { MiningHistoryRecord } from '@/lib/api';
+
+const SHIBA_TICKET = require('@/assets/images/shiba_ticket_diamond.png');
+const REDEEM_BG = require('@/assets/images/redeem_bg.png');
 
 const BEP20_FEE         = 3680;   // fixed SHIB fee for BEP-20 network withdrawals
 const BEP20_MIN_BALANCE = 50_000; // balance required to unlock BEP-20 withdrawals
@@ -381,7 +383,7 @@ export default function WalletScreen() {
           >
             <View style={styles.ptRow}>
               <View style={styles.htIconWrap}>
-                <TicketIcon size={24} color={Colors.gold} />
+                <Image source={SHIBA_TICKET} style={{ width: 34, height: 24 }} resizeMode="contain" />
               </View>
               <View style={styles.ptInfo}>
                 <Text style={styles.ptLabel}>Hit Tickets</Text>
@@ -396,15 +398,7 @@ export default function WalletScreen() {
               style={({ pressed }) => [styles.redeemBtn, { opacity: pressed ? 0.85 : 1 }]}
               onPress={() => router.push('/redeem' as any)}
             >
-              <LinearGradient
-                colors={[Colors.gold, Colors.neonOrange]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.redeemBtnGradient}
-              >
-                <Ionicons name="gift-outline" size={16} color="#000" />
-                <Text style={styles.redeemBtnText}>Redemption Center</Text>
-              </LinearGradient>
+              <Image source={REDEEM_BG} style={styles.redeemBtnImg} resizeMode="contain" />
             </Pressable>
           </LinearGradient>
         </Animated.View>
@@ -763,8 +757,7 @@ const styles = StyleSheet.create({
   htIconWrap: { width: 46, height: 46, borderRadius: 23, backgroundColor: 'rgba(244,196,48,0.15)', alignItems: 'center', justifyContent: 'center' },
   htValue: { fontFamily: 'Inter_700Bold', fontSize: 28, color: Colors.gold },
   redeemBtn: { marginTop: 14 },
-  redeemBtnGradient: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 46, borderRadius: 12 },
-  redeemBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#000' },
+  redeemBtnImg: { width: '100%', height: 'auto' as const, aspectRatio: 654 / 162 },
 
   sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 },
   emptyState: { backgroundColor: Colors.darkCard, borderRadius: 18, padding: 40, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: Colors.darkBorder },

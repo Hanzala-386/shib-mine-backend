@@ -10,7 +10,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useWallet } from '@/context/WalletContext';
-import TicketIcon from '@/components/TicketIcon';
 import LightningBorder from '@/components/LightningBorder';
 import FloatingImage from '@/components/FloatingImage';
 import NebulaBg from '@/components/NebulaBg';
@@ -20,6 +19,7 @@ const TROPHY = require('@/assets/images/trophy_gold.png');
 const SOLO_BG = require('@/assets/images/solo_card_bg.png');
 const MP_BG = require('@/assets/images/mp_card_bg.png');
 const REDEEM_BG = require('@/assets/images/redeem_bg.png');
+const SHIBA_TICKET = require('@/assets/images/shiba_ticket_diamond.png');
 
 // Aspect ratios of the ready-made card artwork (width / height).
 const SOLO_AR = 611 / 419;
@@ -51,7 +51,7 @@ export default function GamesScreen() {
             <Text style={styles.balanceTxt}>{powerTokens.toLocaleString()} PT</Text>
           </View>
           <Pressable style={styles.balancePill} onPress={() => router.push('/redeem')} testID="games-tickets">
-            <TicketIcon size={15} color={Colors.gold} />
+            <Image source={SHIBA_TICKET} style={{ width: 21, height: 15 }} contentFit="contain" />
             <Text style={styles.balanceTxt}>{hitTickets.toLocaleString()} Tickets</Text>
           </Pressable>
         </View>
