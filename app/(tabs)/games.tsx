@@ -13,6 +13,7 @@ import { useWallet } from '@/context/WalletContext';
 import LightningBorder from '@/components/LightningBorder';
 import FloatingImage from '@/components/FloatingImage';
 import NebulaBg from '@/components/NebulaBg';
+import { BANNER_HEIGHT } from '@/components/StickyBannerAd';
 
 const KNIFE = require('@/assets/images/knife_cyber.png');
 const TROPHY = require('@/assets/images/trophy_gold.png');
@@ -31,6 +32,11 @@ export default function GamesScreen() {
   const { powerTokens, hitTickets } = useWallet();
   const webTop = Platform.OS === 'web' ? 67 : 0;
   const webBottom = Platform.OS === 'web' ? 34 : 0;
+  // The custom tab bar is absolutely positioned (banner ~50px + buttons 56px +
+  // bottom inset), so the scroll content must clear it or the redeem pill is
+  // unreachable behind the bar. Same pattern as profile.tsx.
+  const tabBarClearance =
+    Platform.OS === 'web' ? 0 : insets.bottom + BANNER_HEIGHT + 90;
   const [soloW, setSoloW] = useState(0);
   const soloH = soloW > 0 ? soloW / SOLO_AR : 0;
 
@@ -38,8 +44,13 @@ export default function GamesScreen() {
     <View style={styles.root}>
       <NebulaBg />
       <ScrollView
-        contentContainerStyle={{ paddingTop: insets.top + webTop + 12, paddingHorizontal: 16, paddingBottom: 32 + webBottom }}
+        contentContainerStyle={{
+          paddingTop: insets.top + webTop + 12,
+          paddingHorizontal: 16,
+          paddingBottom: 32 + webBottom + tabBarClearance,
+        }}
         showsVerticalScrollIndicator={false}
+        alwaysBounceVertical
       >
         {/* Header */}
         <Text style={styles.title}>Game Arena</Text>

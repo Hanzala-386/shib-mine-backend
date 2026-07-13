@@ -337,13 +337,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // Update the in-memory record so the displayed balance is accurate immediately
           pbRecord = {
             ...pbRecord,
-            shib_balance:      (Number(pbRecord.shib_balance)      || 0) + pendingCommission,
-            referral_balance:  (Number(pbRecord.referral_balance)  || 0) + pendingCommission,
-            referral_earnings: (Number(pbRecord.referral_earnings) || 0) + pendingCommission,
+            shibBalance:      (Number(pbRecord.shibBalance)      || 0) + pendingCommission,
+            referralBalance:  (Number(pbRecord.referralBalance)  || 0) + pendingCommission,
+            referralEarnings: (Number(pbRecord.referralEarnings) || 0) + pendingCommission,
           };
         }
       }
 
+      if (!pbRecord) throw new Error('Failed to load or create the user record');
       setPbUser(pbRecord);
       setUser(pbToProfile(pbRecord, fbUser));
       await storage.setItem(`shib_profile_${fbUser.uid}`, JSON.stringify(pbToProfile(pbRecord, fbUser)));

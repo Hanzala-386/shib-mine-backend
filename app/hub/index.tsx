@@ -1,7 +1,7 @@
 /* Multiplayer Tournament Hub — 6-game arcade PvP grid on the shared cyberpunk backdrop. */
 
 import React from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, Platform } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, Platform, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -30,10 +30,21 @@ const GAMES: HubGame[] = [
   { id: 'color', name: 'Color Rush', image: COLOR_ICON },
 ];
 
+const GRID_PAD = 16;   // ScrollView horizontal padding
+const CELL_GAP = 14;   // spacing between the two columns / rows
+
 export default function HubScreen() {
   const insets = useSafeAreaInsets();
+  const { width: winW } = useWindowDimensions();
   const webTop = Platform.OS === 'web' ? 67 : 0;
   const webBottom = Platform.OS === 'web' ? 34 : 0;
+
+  // Explicit pixel sizing — two columns that always fit, no percentage
+  // rounding or flex-gap quirks. Cap the grid width on tablets/web so the
+  // frames don't blow up.
+  const gridW = Math.min(winW, 560) - GRID_PAD * 2;
+  const cellW = Math.floor((gridW - CELL_GAP) / 2);
+  const cellH = Math.round(cellW / FRAME_AR);
 
   const openGame = (g: HubGame) => {
     router.push({ pathname: '/hub/arcade-lobby', params: { gameId: g.id } } as any);
@@ -54,19 +65,42 @@ export default function HubScreen() {
         <View style={styles.back} />
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 24 + webBottom }} showsVerticalScrollIndicator={false}>
-        <View style={styles.grid}>
-          {GAMES.map((g) => (
+      <ScrollView
+        contentContainerStyle={{
+          paddingVertical: GRID_PAD,
+          paddingBottom: 24 + webBottom + insets.bottom,
+          alignItems: 'center',
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={[styles.grid, { width: gridW }]}>
+          {GAMES.map((g, i) => (
             <Pressable
               key={g.id}
               onPress={() => openGame(g)}
               testID={`hub-game-${g.id}`}
-              style={({ pressed }) => [styles.cell, { opacity: pressed ? 0.9 : 1 }]}
+              style={({ pressed }) => [
+                {
+                  width: cellW,
+                  height: cellH,
+                  marginRight: i % 2 === 0 ? CELL_GAP : 0,
+                  marginBottom: CELL_GAP,
+                  opacity: pressed ? 0.9 : 1,
+                },
+              ]}
             >
               <Image source={FRAME} style={StyleSheet.absoluteFill} contentFit="contain" />
               <View style={styles.cellContent}>
                 <Image source={g.image} style={styles.iconImg} contentFit="cover" />
-                <Text style={styles.cellName} numberOfLines={1}>{g.name}</Text>
+                <Text
+                  style={styles.cellName}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.7}
+                  maxFontSizeMultiplier={1.1}
+                >
+                  {g.name}
+                </Text>
               </View>
             </Pressable>
           ))}
@@ -84,9 +118,8 @@ const styles = StyleSheet.create({
   title: { color: Colors.textPrimary, fontSize: 20, fontWeight: '800' },
   sub: { color: Colors.textSecondary, fontSize: 12, marginTop: 2 },
 
-  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 14 },
-  // Each cell = the ready-made frame image; content overlays the hollow area.
-  cell: { width: '47.5%', aspectRatio: FRAME_AR, justifyContent: 'center' },
+  grid: { flexDirection: 'row', flexWrap: 'wrap' },
+  // Content overlays the hollow area of the ready-made frame image.
   cellContent: {
     position: 'absolute',
     top: '9%',

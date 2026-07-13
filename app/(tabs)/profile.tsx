@@ -331,11 +331,11 @@ export default function ProfileScreen() {
       try {
         // ── Step 1: Ensure PB auth token is valid ──────────────────────────
         // Token expires after ~5 days; refresh silently before the upload.
-        if (!pb.authStore.isValid && user.email && user.firebaseUid) {
+        if (!pb.authStore.isValid && user.email && user.uid) {
           try {
             await pb.collection('users').authWithPassword(
               user.email,
-              `SHIB_${user.firebaseUid}_SECURE`,
+              `SHIB_${user.uid}_SECURE`,
             );
           } catch (authErr) {
             console.log('[Avatar2] re-auth failed:', authErr);
