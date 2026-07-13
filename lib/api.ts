@@ -264,18 +264,20 @@ export const api = {
     ),
 
   // ── Ad reward tokens ──────────────────────────────────────────────────
-  requestAdToken: (pbId: string) =>
+  // matchId binds the 2× ad reward to the server-committed game session so the
+  // same match cannot be double-claimed via the ad path AND the regular path.
+  requestAdToken: (pbId: string, matchId?: string) =>
     request<{ token: string; reward: number }>(
       'POST',
       '/api/app/ad/token',
-      { pbId },
+      { pbId, ...(matchId ? { matchId } : {}) },
     ),
 
-  claimAdToken: (pbId: string, token: string) =>
+  claimAdToken: (pbId: string, token: string, matchId?: string) =>
     request<{ success: boolean; newPowerTokens: number; reward: number }>(
       'POST',
       '/api/app/ad/claim',
-      { pbId, token },
+      { pbId, token, ...(matchId ? { matchId } : {}) },
     ),
 
   // ── Shop ──────────────────────────────────────────────────────────────

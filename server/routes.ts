@@ -141,8 +141,11 @@ interface WsGameSession {
   serverPT: number;
   startMs: number;
   lastHitMs: number;
-  hitLog: number[];   // timestamps of recent hits
+  hitLog: number[];    // timestamps of recent hits
+  rejectLog: number[]; // timestamps of REJECTED hits (shadow-blacklist monitor)
   committed: boolean;
+  blacklisted: boolean; // impossible score detected → match voided, 0 PT
+  logId: string | null; // game_logs record id created at GAME_START
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -152,25 +155,36 @@ async function wsCommitSession(sid: string, session: WsGameSession): Promise<voi
   if (session.committed) return;
   session.committed = true;
   if (session.timer) { clearTimeout(session.timer); session.timer = null; }
-  const finalPT = session.serverPT;
-  console.log(`[ws/game] commit ${sid.slice(0, 8)}: ${session.hits} hits = ${finalPT} PT (${session.pbId})`);
+  const finalPT = session.blacklisted ? 0 : session.serverPT;
+  const status  = session.blacklisted ? "blacklisted" : "started";
+  console.log(`[ws/game] commit ${sid.slice(0, 8)}: ${session.hits} hits = ${finalPT} PT status=${status} (${session.pbId})`);
   try {
     // Store as last_session_score — the existing REST claim/double flow reads it
     await pbPatch(`/api/collections/users/records/${session.pbId}`, {
       last_session_score: finalPT,
     });
-    // Write a game_logs record with match_id = sid + status "started".
-    // The /api/app/game/reward endpoint flips this to "completed" atomically,
-    // which is the primary replay-attack guard.
-    pbPost("/api/collections/game_logs/records", {
-      user:         session.pbId,
+    // Match lifecycle: the game_logs row was created at GAME_START with
+    // match_status "active". Flip it to "started" (= awaiting claim) here.
+    // /api/app/game/reward flips it to "completed" atomically — that flip is
+    // the primary replay-attack guard. "blacklisted" voids the match entirely.
+    const logBody = {
       raw_score:    finalPT,
-      is_double:    false,
       final_tokens: finalPT,
-      match_id:     sid,
-      start_time:   new Date(session.startMs).toISOString(),
-      match_status: "started",
-    }).catch(() => {});
+      match_status: status,
+    };
+    if (session.logId) {
+      pbPatch(`/api/collections/game_logs/records/${session.logId}`, logBody).catch(() => {});
+    } else {
+      // GAME_START row creation failed (PB blip) — create the row now so the
+      // claim path still has a match record to validate against.
+      pbPost("/api/collections/game_logs/records", {
+        user:         session.pbId,
+        is_double:    false,
+        match_id:     sid,
+        start_time:   new Date(session.startMs).toISOString(),
+        ...logBody,
+      }).catch(() => {});
+    }
   } catch (e: any) {
     console.error(`[ws/game] commit error (${session.pbId}):`, e.message);
   }
@@ -201,8 +215,23 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           sid = crypto.randomUUID();
           const session: WsGameSession = {
             pbId, hits: 0, serverPT: 0, startMs: Date.now(),
-            lastHitMs: 0, hitLog: [], committed: false, timer: null,
+            lastHitMs: 0, hitLog: [], rejectLog: [],
+            committed: false, blacklisted: false, logId: null, timer: null,
           };
+          // Create the match record IMMEDIATELY at game start (match_status
+          // "active"). Lifecycle: active → started (game-over commit) →
+          // completed | expired | blacklisted. The expiry sweeper voids any
+          // row stuck in active/started for too long.
+          pbPost("/api/collections/game_logs/records", {
+            user:         pbId,
+            raw_score:    0,
+            is_double:    false,
+            final_tokens: 0,
+            match_id:     sid,
+            start_time:   new Date(session.startMs).toISOString(),
+            match_status: "active",
+          }).then((r: any) => { if (r?.id) session.logId = r.id; })
+            .catch(() => {});
           // Auto-commit when the 3-minute server timer fires
           session.timer = setTimeout(async () => {
             const s = wsSessions.get(sid!);
@@ -223,12 +252,24 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           // Guard: minimum time between throws (physics-enforced minimum ~300 ms)
           if (session.lastHitMs > 0 && (now - session.lastHitMs) < WS_MIN_HIT_MS) {
             console.warn(`[ws/game] ${sid.slice(0, 8)} too_fast (${now - session.lastHitMs}ms)`);
+            // Shadow-blacklist monitor: log-only for now (no enforcement) —
+            // flag sessions with >10 rejected hits in any 30s window.
+            session.rejectLog.push(now);
+            session.rejectLog = session.rejectLog.filter(t => now - t < 30_000);
+            if (session.rejectLog.length > 10) {
+              console.warn(`[ws/game] ${sid.slice(0, 8)} SHADOW-BLACKLIST candidate: ${session.rejectLog.length} rejected hits/30s (${session.pbId})`);
+            }
             send({ type: "HIT_REJECTED", reason: "too_fast" }); return;
           }
           // Guard: burst detection — max 15 valid hits in any 5-second window
           session.hitLog = session.hitLog.filter(t => now - t < WS_BURST_WINDOW);
           if (session.hitLog.length >= WS_BURST_MAX) {
             console.warn(`[ws/game] ${sid.slice(0, 8)} burst (${session.hitLog.length} hits/${WS_BURST_WINDOW}ms)`);
+            session.rejectLog.push(now);
+            session.rejectLog = session.rejectLog.filter(t => now - t < 30_000);
+            if (session.rejectLog.length > 10) {
+              console.warn(`[ws/game] ${sid.slice(0, 8)} SHADOW-BLACKLIST candidate: ${session.rejectLog.length} rejected hits/30s (${session.pbId})`);
+            }
             send({ type: "HIT_REJECTED", reason: "burst_detected" }); return;
           }
           // Guard: hard session cap — force end if 400 hits reached
@@ -252,12 +293,26 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
 
           // Weapon Master mode: no KNIFE_HITs were sent — validate score from message
           if (session.hits === 0 && msg.score !== undefined) {
-            const rawScore  = Math.max(0, Number(msg.score) || 0);
-            const elapsedMs = Math.max(1000, Number(msg.elapsed_ms) || (Date.now() - session.startMs));
+            const rawScore = Math.max(0, Number(msg.score) || 0);
+            // Clamp client-reported elapsed_ms to the server-observed session
+            // length — a cheater cannot inflate elapsed_ms to raise the time
+            // cap beyond real wall-clock time (+2s network-latency tolerance).
+            const serverElapsed = Date.now() - session.startMs;
+            const clientElapsed = Number(msg.elapsed_ms) || 0;
+            const elapsedMs = Math.max(1000, Math.min(clientElapsed || serverElapsed, serverElapsed + 2000));
             // Time-based cap mirrors bridge.js client check: max 15 pts/sec
             const maxForTime = Math.ceil((elapsedMs / 1000) * 15);
-            session.serverPT = Math.min(rawScore, WS_MAX_PT, maxForTime);
-            console.log(`[ws/game] WeaponMaster score: raw=${rawScore} elapsed=${Math.round(elapsedMs/1000)}s cap=${maxForTime} validated=${session.serverPT} (${session.pbId})`);
+            if (rawScore > maxForTime * 1.2 + 20) {
+              // Impossible score for the elapsed time → blacklist the match.
+              // wsCommitSession stores 0 PT + match_status "blacklisted";
+              // any reward claim on this matchId is denied.
+              session.blacklisted = true;
+              session.serverPT = 0;
+              console.warn(`[ws/game] BLACKLIST ${sid.slice(0, 8)}: impossible score ${rawScore} in ${Math.round(elapsedMs/1000)}s (max ${maxForTime}) (${session.pbId})`);
+            } else {
+              session.serverPT = Math.min(rawScore, WS_MAX_PT, maxForTime);
+              console.log(`[ws/game] WeaponMaster score: raw=${rawScore} elapsed=${Math.round(elapsedMs/1000)}s cap=${maxForTime} validated=${session.serverPT} (${session.pbId})`);
+            }
           }
 
           await wsCommitSession(sid, session);
@@ -788,6 +843,60 @@ async function ensureGameLogsCollection() {
     console.log("[game_logs] Collection created ✓");
   } catch (e: any) {
     console.warn("[game_logs] Setup failed:", e.message);
+  }
+}
+
+// ─── Auto-expire unclaimed matches ─────────────────────────────────────────
+// A match must be claimed within MATCH_CLAIM_WINDOW_MS of its last transition
+// ("active" set at GAME_START, "started" set at the game-over commit — each
+// PB write bumps `updated`). The sweeper marks stale rows "expired" so the
+// reward endpoints reject them. Window is aligned with the 10-minute ad-token
+// TTL so a slow rewarded ad can never outlive its match. Runs on both the dev
+// and Railway servers against the shared PB — the patch is idempotent.
+const MATCH_CLAIM_WINDOW_MS = 10 * 60_000;
+function startMatchExpirySweeper() {
+  setInterval(async () => {
+    try {
+      // PB datetime filters require a SPACE separator (not ISO "T")
+      const cutoff = new Date(Date.now() - MATCH_CLAIM_WINDOW_MS)
+        .toISOString().replace("T", " ");
+      const filter = encodeURIComponent(
+        `(match_status="active" || match_status="started") && updated < "${cutoff}"`
+      );
+      const page = await pbGet(`/api/collections/game_logs/records?filter=${filter}&perPage=50&fields=id`);
+      const ids: string[] = (page?.items || []).map((r: any) => r.id);
+      for (const id of ids) {
+        await pbPatch(`/api/collections/game_logs/records/${id}`, { match_status: "expired" }).catch(() => {});
+      }
+      if (ids.length) console.log(`[game_logs] sweeper: expired ${ids.length} stale match(es)`);
+    } catch { /* transient PB errors — next tick retries */ }
+  }, 60_000).unref();
+}
+
+// ─── One-time archival of legacy game_logs rows with blank match_id ────────
+// Marks pre-matchId rows match_status="archived" so admin views and the
+// sweeper can distinguish them from live matches. Read-ids-first: collect ALL
+// ids BEFORE mutating (never paginate a result set while patching rows out of
+// it). Capped per boot; a huge backlog drains over several restarts.
+async function archiveBlankGameLogs() {
+  try {
+    const filter = encodeURIComponent(`match_id="" && match_status!="archived"`);
+    const ids: string[] = [];
+    let page = 1;
+    for (;;) {
+      const res = await pbGet(`/api/collections/game_logs/records?filter=${filter}&perPage=200&page=${page}&fields=id&sort=created`);
+      const items: any[] = res?.items || [];
+      for (const r of items) ids.push(r.id);
+      if (items.length < 200 || ids.length >= 2000) break;
+      page++;
+    }
+    for (const id of ids) {
+      await pbPatch(`/api/collections/game_logs/records/${id}`, { match_status: "archived" }).catch(() => {});
+    }
+    if (ids.length) console.log(`[game_logs] archived ${ids.length} legacy record(s) with blank match_id ✓`);
+    else console.log("[game_logs] no blank legacy records to archive ✓");
+  } catch (e: any) {
+    console.warn("[game_logs] blank-record archival failed:", e.message);
   }
 }
 
@@ -1599,6 +1708,17 @@ async function ensureBrevoKeyInSettings(): Promise<void> {
     } else {
       console.log(`[${settingsCol.name}] network_guard_enabled field already present ✓`);
     }
+    // strict_match_enforcement (default false = grace mode): when true, the
+    // game reward endpoints REJECT claims without a valid matchId. Flip to
+    // true only after all three artifacts ship the matchId chain:
+    // Railway backend redeploy, bridge.js re-upload to webcod.in, new APK.
+    if (!schema.find((f: any) => f.name === "strict_match_enforcement")) {
+      schema.push({ name: "strict_match_enforcement", type: "bool", required: false });
+      changed = true;
+      console.log(`[${settingsCol.name}] strict_match_enforcement field added (default false) ✓`);
+    } else {
+      console.log(`[${settingsCol.name}] strict_match_enforcement field already present ✓`);
+    }
     if (changed) {
       await pbHttp("PATCH", `/api/collections/${settingsCol.id}`, { schema }, token);
     }
@@ -1612,8 +1732,10 @@ async function ensureBrevoKeyInSettings(): Promise<void> {
 const gameRewardHourly = new Map<string, { count: number; windowStart: number }>();
 // Daily PT cap: max 5 000 PT earned per calendar day per user
 const dailyPtEarned   = new Map<string, { earned: number; day: string }>();
-// One-time ad tokens: token → { pbId, reward, expiresAt }
-const adTokenStore    = new Map<string, { pbId: string; reward: number; expiresAt: number }>();
+// One-time ad tokens: token → { pbId, reward, matchId?, expiresAt }
+// matchId is bound at issue time so the 2× ad claim closes the SAME match the
+// game committed — the client cannot swap in a different matchId at claim time.
+const adTokenStore    = new Map<string, { pbId: string; reward: number; matchId?: string; expiresAt: number }>();
 // Replay-attack guard: match IDs that have already been claimed this server instance.
 // Prevents TOCTOU race conditions where two simultaneous requests both read
 // match_status="started" before either has written "completed".
@@ -1695,6 +1817,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureSessionLogsCollection())
     .then(() => ensureGameLogsCollection())
     .then(() => ensureGameLogsFields())
+    .then(() => { startMatchExpirySweeper(); return archiveBlankGameLogs(); })
     .then(() => ensureIsFlaggedField())
     .then(() => ensureBlacklistFields())
     .then(() => ensureReferralHistoryCollection())
@@ -3820,7 +3943,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ── Ad: Request one-time reward token (call BEFORE showing rewarded ad) ──
   app.post("/api/app/ad/token", async (req: Request, res: Response) => {
     try {
-      const { pbId } = req.body;
+      const { pbId, matchId } = req.body;
       if (!pbId) return res.status(400).json({ error: "pbId required" });
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
@@ -3828,9 +3951,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const sessionScore = Math.max(0, Math.round(Number(user.last_session_score) || 0));
       const reward = Math.min(sessionScore * 2, ABSOLUTE_MAX_SCORE * 2);
       const token = crypto.randomUUID();
+      // Bind matchId at issue time — the claim step closes the SAME match the
+      // game committed; the client cannot swap in a different matchId later.
+      const boundMatchId = typeof matchId === "string" && matchId ? matchId : undefined;
       // Token expires in 10 minutes — enough time to watch the ad
-      adTokenStore.set(token, { pbId, reward, expiresAt: Date.now() + 10 * 60_000 });
-      console.log(`[ad/token] Issued token for ${pbId}, reward=${reward}PT`);
+      adTokenStore.set(token, { pbId, reward, matchId: boundMatchId, expiresAt: Date.now() + 10 * 60_000 });
+      console.log(`[ad/token] Issued token for ${pbId}, reward=${reward}PT match=${boundMatchId ?? "none"}`);
       res.json({ token, reward });
     } catch (e: any) {
       console.error("[/api/app/ad/token]", e.message);
@@ -3840,6 +3966,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ── Ad: Claim PT reward after watching ad (validates one-time token) ──────
   app.post("/api/app/ad/claim", async (req: Request, res: Response) => {
+    // Slot-leak guard: if we locked a matchId but crashed before awarding,
+    // release the in-memory slot so the player's retry isn't 403'd for hours.
+    let lockedMatchId: string | null = null;
+    let awarded = false;
     try {
       const { token, pbId } = req.body;
       if (!token || !pbId) return res.status(400).json({ error: "token and pbId required" });
@@ -3852,8 +3982,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       adTokenStore.delete(token); // single-use: consume immediately
 
+      // ── Match validation — use the matchId BOUND AT ISSUE TIME (not the body)
+      // Strict mode (PB settings.strict_match_enforcement) rejects claims with
+      // no matchId; grace mode (default) lets legacy clients through.
+      const matchId = entry.matchId;
+      let strictMatch = false;
+      try { const s: any = await fetchSettings(); strictMatch = !!s?.strict_match_enforcement; } catch {}
+      if (strictMatch && !matchId) {
+        console.warn(`[ad/claim] MISSING matchId (${pbId}) — rejected (strict)`);
+        return res.status(403).json({ error: "Session verification failed — please play a new game." });
+      }
+
+      let gameLogId: string | null = null;
+      if (matchId) {
+        // LAYER 1: in-process replay guard — shared with /api/app/game/reward
+        // so the SAME match can never pay out via both the 1× and 2× paths.
+        if (claimedMatchIds.has(matchId)) {
+          console.warn(`[ad/claim] REPLAY BLOCKED (in-memory): ${matchId} (${pbId})`);
+          return res.status(403).json({ error: "Duplicate submission — this session has already been claimed." });
+        }
+        claimedMatchIds.set(matchId, Date.now());
+        lockedMatchId = matchId;
+
+        // LAYER 2: DB-level match lifecycle check
+        try {
+          const logRes = await pbGet(
+            `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
+          );
+          const logRecord = logRes?.items?.[0];
+          if (!logRecord) {
+            if (strictMatch) {
+              claimedMatchIds.delete(matchId);
+              console.warn(`[ad/claim] UNKNOWN matchId ${matchId} (${pbId}) — rejected (strict)`);
+              return res.status(403).json({ error: "Invalid session — please play a new game." });
+            }
+            console.warn(`[ad/claim] unknown matchId ${matchId} (${pbId}) — grace mode, continuing`);
+          } else {
+            gameLogId = logRecord.id;
+            const st = String(logRecord.match_status || "");
+            if (st === "completed") {
+              console.warn(`[ad/claim] REPLAY BLOCKED (db): ${matchId} (${pbId})`);
+              return res.status(403).json({ error: "Duplicate submission — this session has already been claimed." });
+            }
+            if (st === "expired") {
+              console.warn(`[ad/claim] EXPIRED match ${matchId} (${pbId})`);
+              return res.status(403).json({ error: "Session expired — rewards must be claimed shortly after the game ends." });
+            }
+            if (st === "blacklisted") {
+              console.warn(`[ad/claim] BLACKLISTED match ${matchId} (${pbId})`);
+              return res.status(403).json({ error: "Session flagged for suspicious activity — reward denied." });
+            }
+          }
+        } catch (logErr: any) {
+          // PB lookup blip — fail open (the in-memory slot still blocks replays)
+          console.warn("[ad/claim] game_logs lookup failed:", logErr.message);
+        }
+      }
+
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
-      if (user.code) return res.status(404).json({ error: "User not found" });
+      if (user.code) {
+        if (matchId) claimedMatchIds.delete(matchId);
+        return res.status(404).json({ error: "User not found" });
+      }
 
       const newPT    = (Number(user.power_tokens) || 0) + entry.reward;
       const newTotal = (Number(user.total_accumulated_score) || 0) + entry.reward;
@@ -3862,16 +4052,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         total_accumulated_score: newTotal,
         last_session_score:      0,
       });
+      awarded = true; // PT credited — keep the slot locked even on later errors
       console.log(`[ad/claim] pbId=${pbId} claimed ${entry.reward}PT → newPT=${newPT}`);
-      // Log 2× game reward for admin analytics
-      pbPost("/api/collections/game_logs/records", {
-        user:         pbId,
-        raw_score:    Math.floor(entry.reward / 2),  // base score before 2× multiplier
-        is_double:    true,
-        final_tokens: entry.reward,
-      }).catch(() => {});
+      // Close the match atomically (durable replay guard) or, for legacy
+      // no-matchId claims, log a new record for admin analytics.
+      if (gameLogId) {
+        pbPatch(`/api/collections/game_logs/records/${gameLogId}`, {
+          match_status: "completed",
+          is_double:    true,
+          final_tokens: entry.reward,
+        }).catch(() => {});
+      } else {
+        pbPost("/api/collections/game_logs/records", {
+          user:         pbId,
+          raw_score:    Math.floor(entry.reward / 2),  // base score before 2× multiplier
+          is_double:    true,
+          final_tokens: entry.reward,
+          ...(matchId ? { match_id: matchId, match_status: "completed" } : {}),
+        }).catch(() => {});
+      }
       res.json({ success: true, newPowerTokens: newPT, reward: entry.reward });
     } catch (e: any) {
+      // No award happened — release the slot so the player's retry can succeed
+      if (lockedMatchId && !awarded) claimedMatchIds.delete(lockedMatchId);
       console.error("[/api/app/ad/claim]", e.message);
       res.status(500).json({ error: "Failed to claim ad reward" });
     }
@@ -3879,10 +4082,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ── Game: Add power tokens ────────────────────────────────────────────────
   app.post("/api/app/game/reward", async (req: Request, res: Response) => {
+    // Slot-leak guard: if we locked a matchId but crashed before awarding,
+    // release the in-memory slot so the player's retry isn't 403'd for hours.
+    let lockedMatchId: string | null = null;
+    let awarded = false;
     try {
       const { pbId, amount, type, matchId } = req.body;
       if (!pbId || !amount)
         return res.status(400).json({ error: "pbId and amount required" });
+
+      // ── STRICT MODE (PB settings.strict_match_enforcement, default false) ──
+      // Strict: claims WITHOUT a matchId are rejected outright. Grace (default)
+      // exists because three artifacts deploy independently (Railway backend,
+      // bridge.js on webcod.in, the APK) — flip strict only after all three
+      // ship the matchId chain end-to-end.
+      let strictMatch = false;
+      try { const s: any = await fetchSettings(); strictMatch = !!s?.strict_match_enforcement; } catch {}
+      if (strictMatch && !matchId) {
+        console.warn(`[/api/app/game/reward] MISSING matchId (${pbId}) — rejected (strict)`);
+        return res.status(403).json({ error: "Session verification failed — please play a new game." });
+      }
 
       // ── LAYER 1: In-process replay-attack guard (sub-ms, no DB round-trip) ──
       // Claimed before any async work so concurrent requests for the same matchId
@@ -3893,6 +4112,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(403).json({ error: "Duplicate submission — this session has already been claimed." });
         }
         claimedMatchIds.set(matchId, Date.now()); // claim the slot immediately
+        lockedMatchId = matchId;
       }
 
       // Cap incoming amount to prevent inflated rewards from client tampering.
@@ -3922,15 +4142,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
             `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
           );
           const logRecord = logRes?.items?.[0];
-          if (logRecord) {
+          if (!logRecord) {
+            if (strictMatch) {
+              claimedMatchIds.delete(matchId);
+              console.warn(`[/api/app/game/reward] UNKNOWN matchId ${matchId} (${pbId}) — rejected (strict)`);
+              return res.status(403).json({ error: "Invalid session — please play a new game." });
+            }
+            console.warn(`[/api/app/game/reward] unknown matchId ${matchId} (${pbId}) — grace mode, continuing`);
+          } else {
             gameLogId = logRecord.id;
-            if (logRecord.match_status === "completed") {
+            const st = String(logRecord.match_status || "");
+            if (st === "completed") {
               console.warn(`[/api/app/game/reward] REPLAY BLOCKED (db): ${matchId} (${pbId})`);
               return res.status(403).json({ error: "Duplicate submission — this session has already been claimed." });
             }
-            // Time-to-score check: duration × 5 PT/sec = max achievable score.
-            // A tiny 10 PT buffer covers legitimate rounding and network delays.
-            if (logRecord.start_time) {
+            if (st === "expired") {
+              console.warn(`[/api/app/game/reward] EXPIRED match ${matchId} (${pbId})`);
+              return res.status(403).json({ error: "Session expired — rewards must be claimed shortly after the game ends." });
+            }
+            if (st === "blacklisted") {
+              console.warn(`[/api/app/game/reward] BLACKLISTED match ${matchId} (${pbId})`);
+              return res.status(403).json({ error: "Session flagged for suspicious activity — reward denied." });
+            }
+            if (strictMatch && st === "active") {
+              // Game-over commit never happened — a claim without a finished
+              // game. In grace mode we let the score caps below handle it.
+              console.warn(`[/api/app/game/reward] ACTIVE (unfinished) match ${matchId} (${pbId}) — rejected (strict)`);
+              return res.status(403).json({ error: "Session not finished — please finish the game first." });
+            }
+            // Server-committed score check: wsCommitSession stored the
+            // WS-validated score on this row (final_tokens) at game over.
+            // A claim may be at most 2× that (ad double-reward path). This is
+            // the authoritative check — wall-clock heuristics false-positive
+            // on legit high scores (the WS validator allows up to ~15 PT/s of
+            // play time, far above the old 5 PT/s-of-elapsed-time guess).
+            const committedPT = Number(logRecord.final_tokens) || 0;
+            if (committedPT > 0 && safeAmount > committedPT * 2) {
+              if (strictMatch) {
+                // Claiming more than 2× the server-validated score is
+                // unambiguous tampering → blacklist the match, deny outright.
+                pbPatch(`/api/collections/game_logs/records/${logRecord.id}`, {
+                  match_status: "blacklisted",
+                }).catch(() => {});
+                console.warn(
+                  `[/api/app/game/reward] BLACKLIST ${matchId}: claim ${safeAmount}PT > 2× committed ${committedPT}PT (${pbId})`
+                );
+                return res.status(403).json({ error: "Score could not be verified — reward denied." });
+              }
+              console.warn(
+                `[/api/app/game/reward] claim ${safeAmount}PT > 2× committed ${committedPT}PT — capping (${pbId})`
+              );
+              safeAmount = committedPT * 2;
+            } else if (committedPT === 0 && logRecord.start_time) {
+              // No WS-committed score on the row (grace-mode "active" rows or
+              // genuine 0-score games): fall back to a wall-clock CAP only.
+              // Never blacklist on this heuristic — it undercounts legit play.
               const startMs      = new Date(logRecord.start_time).getTime();
               const durationSec  = (Date.now() - startMs) / 1000;
               const maxPossible  = Math.ceil(durationSec * 5) + 10;
@@ -3943,6 +4209,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
           }
         } catch (logErr: any) {
+          // PB lookup blip — fail open (the in-memory slot still blocks replays)
           console.warn("[/api/app/game/reward] game_logs lookup failed:", logErr.message);
         }
       }
@@ -3977,6 +4244,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         total_accumulated_score: newTotal,
         last_session_score:      0,        // reset after claim
       });
+      awarded = true; // PT credited — keep the slot locked even on later errors
       console.log(`[/api/app/game/reward] pbId=${pbId} +${safeAmount}PT → newPT=${newPT} totalScore=${newTotal}`);
 
       // ── LAYER 2 (cont): Flip match_status → "completed" atomically ────────
@@ -4006,6 +4274,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({ success: true, newPowerTokens: newPT });
     } catch (e: any) {
+      // No award happened — release the slot so the player's retry can succeed
+      if (lockedMatchId && !awarded) claimedMatchIds.delete(lockedMatchId);
       console.error("[/api/app/game/reward]", e.message);
       res.status(500).json({ error: "Failed to grant reward" });
     }

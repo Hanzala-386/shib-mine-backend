@@ -53,7 +53,7 @@ function formatTime(s: number): string {
 
 export default function SoloPlayScreen() {
   const insets = useSafeAreaInsets();
-  const { addPowerTokens, powerTokens } = useWallet();
+  const { powerTokens } = useWallet();
   const { pbUser, refreshBalance } = useAuth();
   const { showGameInterstitial, showRewarded } = useAds();
   const { triggerAutoClicker } = useSecurity();
@@ -90,6 +90,10 @@ export default function SoloPlayScreen() {
   const [gameError,     setGameError]     = useState(false);
   const [isAutoRetrying, setIsAutoRetrying] = useState(false);
   const [claimLoading,  setClaimLoading]  = useState(false);
+  // Double-click lock: the FIRST tap on Claim OR 2× disables BOTH buttons
+  const [actionsLocked, setActionsLocked] = useState(false);
+  // Honest failure: server rejected the claim — shown on summary, no fake reward
+  const [claimError,    setClaimError]    = useState<string | null>(null);
 
   const TOP    = Platform.OS === 'web' ? 10 : insets.top;
   const HUDTOP = TOP + 4;
@@ -201,6 +205,9 @@ export default function SoloPlayScreen() {
     liveScoreRef.current = 0;
     sessionPeakScoreRef.current = 0;
     sessionActiveRef.current = false;
+    claimInFlightRef.current = false;
+    setActionsLocked(false);
+    setClaimError(null);
     setScore(0);
     setLiveScore(0);
     setEarned(0);
@@ -281,6 +288,8 @@ export default function SoloPlayScreen() {
     // Reset anti-replay state for new session
     matchIdRef.current        = '';
     claimInFlightRef.current  = false;
+    setActionsLocked(false);
+    setClaimError(null);
     // Reset auto-clicker monitor for fresh session
     tapMonitor.reset();
     setLiveScore(0);
@@ -354,55 +363,72 @@ export default function SoloPlayScreen() {
 
   /* ── DOUBLE (2×) → rewarded ad → server-validated one-time token → add PT ── */
   const handleDouble = useCallback(async () => {
+    // Shared double-click lock: first tap on EITHER button freezes both
+    if (claimInFlightRef.current) return;
+    claimInFlightRef.current = true;
+    setActionsLocked(true);
+    setClaimError(null);
     setPhase('double_ad');
 
     // Request a one-time server token BEFORE showing the ad.
     // The server locks in reward = last_session_score × 2 at this moment,
     // so the client cannot manipulate the amount after the ad plays.
+    // matchId binds the token to this game session (server closes the match).
     let adToken: string | null = null;
-    let lockedReward: number | null = null;
     const pbId = pbIdRef.current;
+    const matchId = matchIdRef.current || undefined;
     if (pbId) {
       try {
-        const tokenRes = await api.requestAdToken(pbId);
+        const tokenRes = await api.requestAdToken(pbId, matchId);
         adToken = tokenRes.token;
-        lockedReward = tokenRes.reward;
       } catch { /* fall through — use regular reward path as backup */ }
     }
 
     showRewarded(async (watched) => {
-      if (!watched) { setPhase('summary'); return; }
+      if (!watched) {
+        // Ad not watched — unlock both buttons so the player can still claim 1×
+        claimInFlightRef.current = false;
+        setActionsLocked(false);
+        setPhase('summary');
+        return;
+      }
       setPhase('saving');
       try {
         let pts: number;
         if (adToken && pbId) {
           // Secure path: claim the server-issued token (single-use, amount locked server-side)
-          const claimRes = await api.claimAdToken(pbId, adToken);
+          const claimRes = await api.claimAdToken(pbId, adToken, matchId);
           pts = claimRes.reward;
-          await refreshBalance();
         } else {
-          // Fallback path (no token): use regular reward endpoint with server-side caps
+          // Fallback path (no token): regular reward endpoint with matchId so the
+          // server can still validate and close the match (server-side caps apply)
           pts = Math.min(scoreRef.current * 2, SCORE_LIMIT * 2);
-          await addPowerTokens(pts, 'weapon_master');
-          await refreshBalance();
+          await api.gameReward(pbId, pts, 'weapon_master', matchId);
         }
+        await refreshBalance();
         setEarned(pts);
         setPhase('reward');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         if (pbIdRef.current) fetchGameData(pbIdRef.current);
       } catch {
+        // Honest failure: the server rejected the claim — nothing was credited.
+        // Do NOT show a fake reward screen; surface the error on the summary.
         await refreshBalance().catch(() => {});
-        const pts = lockedReward ?? Math.min(scoreRef.current * 2, SCORE_LIMIT * 2);
-        setEarned(pts); setPhase('reward');
+        claimInFlightRef.current = false;
+        setActionsLocked(false);
+        setClaimError('Reward could not be verified by the server. Nothing was credited.');
+        setPhase('summary');
       }
     });
-  }, [addPowerTokens, fetchGameData, refreshBalance, showRewarded]);
+  }, [fetchGameData, refreshBalance, showRewarded]);
 
   /* ── CLAIM → interstitial ad (AdMob → Unity → AppLovin) then add score PT ── */
   const handleClaim = useCallback(async () => {
-    // Layer 3 — double-tap / multi-submit guard: freeze immediately on first tap
+    // Shared double-click lock: first tap on EITHER button freezes both
     if (claimInFlightRef.current) return;
     claimInFlightRef.current = true;
+    setActionsLocked(true);
+    setClaimError(null);
     setClaimLoading(true);
 
     // Show interstitial before processing the claim
@@ -422,8 +448,13 @@ export default function SoloPlayScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       if (pbId) fetchGameData(pbId);
     } catch {
+      // Honest failure: the server rejected the claim — nothing was credited.
+      // Do NOT show a fake reward screen; surface the error on the summary.
       await refreshBalance().catch(() => {});
-      setEarned(pts); setPhase('reward');
+      claimInFlightRef.current = false;
+      setActionsLocked(false);
+      setClaimError('Claim could not be verified by the server. Nothing was credited.');
+      setPhase('summary');
     } finally {
       setClaimLoading(false);
     }
@@ -494,15 +525,20 @@ export default function SoloPlayScreen() {
     return () => window.removeEventListener('message', h);
   }, [handleBridgeReady, handleScoreUpdate, handleGameOver, tapMonitor, triggerAutoClicker]);
 
-  /* ── Android back button ── */
+  /* ── Android back button ─────────────────────────────────────────────────
+   *  Back navigation is BLOCKED during an active game, on the summary and
+   *  while saving/watching ads. It is allowed ONLY when it is safe to leave:
+   *  the reward ("Play Again") screen, a load error, or the idle game screen
+   *  before a session starts. This prevents exit-and-replay reward abuse.  */
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (phase !== 'game') { setPhase('game'); return true; }
-      return false;
+      const canLeave = phase === 'reward' || gameError ||
+                       (phase === 'game' && !sessionActive);
+      return !canLeave; // true = swallow the back press (block navigation)
     });
     return () => sub.remove();
-  }, [phase]);
+  }, [phase, gameError, sessionActive]);
 
   /* ── Render game WebView / iframe ── */
   const renderGame = () => {
@@ -578,15 +614,19 @@ export default function SoloPlayScreen() {
     <View style={S.root}>
       {renderGame()}
 
-      {/* ── Back to Game Arena ── */}
-      <Pressable
-        onPress={() => router.back()}
-        hitSlop={12}
-        style={[S.ptBadge, { top: HUDTOP, left: 14, right: undefined }]}
-        testID="solo-back"
-      >
-        <Ionicons name="chevron-back" size={16} color={Colors.gold} />
-      </Pressable>
+      {/* ── Back to Game Arena — shown ONLY when it is safe to leave:
+           reward screen, load error, or idle game screen before a session.
+           Hidden during active play / summary / saving to block exit-replay. ── */}
+      {(phase === 'reward' || gameError || (phase === 'game' && !sessionActive)) && (
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={12}
+          style={[S.ptBadge, { top: HUDTOP, left: 14, right: undefined }]}
+          testID="solo-back"
+        >
+          <Ionicons name="chevron-back" size={16} color={Colors.gold} />
+        </Pressable>
+      )}
 
       {/* ── Game unavailable overlay (HTTP error / 404) ── */}
       {gameError && (
@@ -673,8 +713,13 @@ export default function SoloPlayScreen() {
             <View style={S.sep} />
 
             {/* Double Tokens — rewarded ad (primary action when score > 0) */}
+            {/* Double-click lock: first tap on EITHER button disables BOTH */}
             {score > 0 && (
-              <Pressable style={S.doubleBtn} onPress={handleDouble}>
+              <Pressable
+                style={[S.doubleBtn, actionsLocked && S.claimBtnDim]}
+                onPress={handleDouble}
+                disabled={actionsLocked}
+              >
                 <Ionicons name="play-circle" size={18} color="#fff" />
                 <Text style={S.doubleTxt}>Watch Ad  →  {score * 2} PT  (2×)</Text>
               </Pressable>
@@ -683,9 +728,9 @@ export default function SoloPlayScreen() {
             {/* Claim Tokens — direct, no ad */}
             {/* Disabled + spinner after first tap until server responds — prevents replay attacks */}
             <Pressable
-              style={[S.claimBtn, (score === 0 || claimLoading) && S.claimBtnDim]}
+              style={[S.claimBtn, (score === 0 || actionsLocked) && S.claimBtnDim]}
               onPress={handleClaim}
-              disabled={score === 0 || claimLoading}
+              disabled={score === 0 || actionsLocked}
             >
               {claimLoading ? (
                 <ActivityIndicator size="small" color="#fff" />
@@ -696,7 +741,12 @@ export default function SoloPlayScreen() {
               )}
             </Pressable>
 
-            {score === 0 && (
+            {/* Honest failure message — server rejected the claim, nothing credited */}
+            {claimError && (
+              <Text style={S.claimErrTxt}>{claimError}</Text>
+            )}
+
+            {(score === 0 || !!claimError) && (
               <Pressable style={S.retryLink} onPress={reloadGame}>
                 <Text style={S.retryLinkTxt}>Restart game</Text>
               </Pressable>
@@ -838,6 +888,7 @@ const S = StyleSheet.create({
 
   retryLink:    { paddingVertical: 4 },
   retryLinkTxt: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textMuted, textDecorationLine: 'underline' },
+  claimErrTxt:  { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#ff5252', textAlign: 'center', marginTop: 10, lineHeight: 17 },
 
   /* Ad overlay */
   adFull: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },

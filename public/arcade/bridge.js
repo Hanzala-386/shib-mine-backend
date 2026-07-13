@@ -61,7 +61,16 @@
         console.log('[Bridge] WS connected → GAME_START sent');
       };
       wsConn.onmessage = function (e) {
-        try { console.log('[Bridge] WS <<<', e.data); } catch (err) {}
+        try {
+          console.log('[Bridge] WS <<<', e.data);
+          var m = JSON.parse(e.data);
+          /* Relay server messages the RN app needs:
+           *   COMMITTED — carries matchId (server replay-attack guard for reward claims)
+           *   HIT_ACK   — feeds the RN auto-clicker monitor
+           * Server GAME_OVER / SESSION_READY are NOT relayed — their payload shape
+           * would collide with the bridge's own GAME_OVER handling in the app. */
+          if (m && (m.type === 'COMMITTED' || m.type === 'HIT_ACK')) post(m.type, m);
+        } catch (err) {}
       };
       wsConn.onerror = function () { wsReady = false; wsConn = null; };
       wsConn.onclose = function () { wsReady = false; wsConn = null; };
