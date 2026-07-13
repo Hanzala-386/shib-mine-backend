@@ -795,6 +795,9 @@ export default function SoloPlayScreen() {
             <Pressable style={S.claimBtn} onPress={reloadGame}>
               <Text style={S.claimTxt}>Play Again</Text>
             </Pressable>
+            <Pressable style={S.backBtn} onPress={() => router.back()} testID="reward-back-btn">
+              <Text style={S.backTxt}>Back</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -883,6 +886,8 @@ const S = StyleSheet.create({
   doubleTxt: { fontFamily: 'Inter_700Bold', fontSize: 15, color: '#fff', letterSpacing: 0.4 },
 
   claimBtn:    { backgroundColor: Colors.gold, paddingVertical: 14, borderRadius: 28, width: '100%', alignItems: 'center' },
+  backBtn:     { marginTop: 10, paddingVertical: 12, borderRadius: 28, width: '100%', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' },
+  backTxt:     { fontFamily: 'Inter_700Bold', fontSize: 15, color: 'rgba(255,255,255,0.85)', letterSpacing: 0.5 },
   claimBtnDim: { opacity: 0.55 },
   claimTxt:    { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#000', letterSpacing: 0.5 },
 
