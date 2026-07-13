@@ -3969,7 +3969,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           raw_score:    Math.floor(entry.reward / 2),  // base score before 2× multiplier
           is_double:    true,
           final_tokens: entry.reward,
-          ...(matchId ? { match_id: matchId, match_status: "completed" } : {}),
+          ...(matchId
+            ? { match_id: matchId, match_status: "completed" }
+            : { match_status: "legacy" }),
         }).catch(() => {});
       }
       res.json({ success: true, newPowerTokens: newPT, reward: entry.reward });
@@ -4158,12 +4160,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           final_tokens: safeAmount,
         }).catch(() => {});
       } else if (!matchId) {
-        // Legacy path (no matchId): log a new record for admin analytics
+        // Legacy path (no matchId): log a new record for admin analytics.
+        // Tagged "legacy" so it is never confused with an untracked match —
+        // only pre-matchId clients (old APK / old bridge.js) hit this path.
         pbPost("/api/collections/game_logs/records", {
           user:         pbId,
           raw_score:    safeAmount,
           is_double:    false,
           final_tokens: safeAmount,
+          match_status: "legacy",
         }).catch(() => {});
       }
 

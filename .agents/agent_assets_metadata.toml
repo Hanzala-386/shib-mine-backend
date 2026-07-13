@@ -65,3 +65,9 @@ id = "1OFy91d1UMdDKTt1QX8fQ"
 uri = "file://dist/stack-arcade.zip"
 type = "unspecified"
 title = "Tower Stack — upload to webcod.in/stack/"
+
+[[outputs]]
+id = "VE3YejJOp6O8FpTedkv3g"
+uri = "file://dist/bridge-upload.zip"
+type = "unspecified"
+title = "bridge.js (zipped) — unzip and upload to webcod.in, folder /arcade/, replacing the old bridge.js"
