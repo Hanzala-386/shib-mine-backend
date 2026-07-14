@@ -49,8 +49,60 @@
   var wsConn   = null;
   var wsReady  = false;
 
+  /* ── Match-gate overlay ─────────────────────────────────────────────────
+   *  HARD GATE: the game must NOT start until the server confirms the match
+   *  row is written in the database (SESSION_READY). Until then a full-screen
+   *  blocker eats all input. On ERROR/timeout it shows a Retry screen.
+   * ──────────────────────────────────────────────────────────────────────── */
+  var sessionReady = false;
+  var gateTimer    = null;
+
+  function gateEl() {
+    var el = document.getElementById('shib-match-gate');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'shib-match-gate';
+    el.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;' +
+      'background:rgba(6,6,10,0.94);display:flex;flex-direction:column;align-items:center;' +
+      'justify-content:center;font-family:sans-serif;color:#F4C430;text-align:center;padding:24px;';
+    el.innerHTML =
+      '<div id="shib-gate-msg" style="font-size:18px;font-weight:bold;margin-bottom:18px;max-width:280px;">Connecting…</div>' +
+      '<div id="shib-gate-btn" style="display:none;background:#FF6B00;color:#fff;font-weight:bold;' +
+      'padding:12px 36px;border-radius:24px;font-size:16px;cursor:pointer;">Retry</div>';
+    el.querySelector('#shib-gate-btn').addEventListener('click', function () { window.location.reload(); });
+    (document.body || document.documentElement).appendChild(el);
+    return el;
+  }
+  function gateShow(msg, retry) {
+    try {
+      var el = gateEl();
+      el.style.display = 'flex';
+      el.querySelector('#shib-gate-msg').textContent = msg;
+      el.querySelector('#shib-gate-btn').style.display = retry ? 'block' : 'none';
+    } catch (e) {}
+  }
+  function gateHide() {
+    try {
+      var el = document.getElementById('shib-match-gate');
+      if (el) el.style.display = 'none';
+    } catch (e) {}
+  }
+  function gateFail() {
+    if (sessionReady) return;
+    console.warn('[Bridge] MATCH GATE FAILED — game blocked until retry');
+    gateShow('Connection failed — the match could not be verified. Please retry.', true);
+  }
+
+  /* Show the gate immediately at boot; 20s boot deadline until SESSION_READY */
+  function gateBoot() { if (!sessionReady) gateShow('Connecting…', false); }
+  if (document.body) gateBoot();
+  else document.addEventListener('DOMContentLoaded', gateBoot);
+  gateTimer = setTimeout(gateFail, 20000);
+
   function wsOpen(pbId) {
     if (!wsApiUrl || wsConn) return;
+    if (gateTimer) clearTimeout(gateTimer);
+    gateTimer = setTimeout(gateFail, 12000);
     try {
       var base = wsApiUrl.replace(/\/+$/, '').replace(/^https?:\/\//, '');
       var url  = 'wss://' + base + '/api/ws/game';
@@ -70,10 +122,21 @@
            * Server GAME_OVER / SESSION_READY are NOT relayed — their payload shape
            * would collide with the bridge's own GAME_OVER handling in the app. */
           if (m && (m.type === 'COMMITTED' || m.type === 'HIT_ACK')) post(m.type, m);
+          /* MATCH GATE: server confirmed the match row is in the database —
+           * unlock the game. Until this message arrives, input is blocked. */
+          if (m && m.type === 'SESSION_READY') {
+            sessionReady = true;
+            if (gateTimer) { clearTimeout(gateTimer); gateTimer = null; }
+            gateHide();
+            console.log('[Bridge] SESSION_READY — match row confirmed, game unlocked');
+          }
+          if (m && m.type === 'ERROR' && m.reason === 'match_create_failed') {
+            gateFail();
+          }
         } catch (err) {}
       };
-      wsConn.onerror = function () { wsReady = false; wsConn = null; };
-      wsConn.onclose = function () { wsReady = false; wsConn = null; };
+      wsConn.onerror = function () { wsReady = false; wsConn = null; if (!sessionReady) gateFail(); };
+      wsConn.onclose = function () { wsReady = false; wsConn = null; if (!sessionReady) gateFail(); };
       console.log('[Bridge] WS opening:', url);
     } catch (err) {
       console.warn('[Bridge] WS open failed:', err);

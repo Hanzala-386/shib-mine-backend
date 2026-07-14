@@ -254,3 +254,11 @@ Gold (#F4C430) + Neon Orange (#FF6B00) on deep dark (#0A0A0F)
 
 ## User Preferences
 - **NO design/UI work by the agent** (declared July 11, 2026): The user has permanently denied all design and UI overhaul tasks. Do NOT touch design or UI files (styles, themes, layouts, visual components, assets) unless the user explicitly reverses this. Agent scope is strictly logic and backend tasks.
+
+## Session 10 — game_logs "One Game = One Row" (Weapon Master)
+- **GAME_START hard gate** (both `server/routes.ts` copies, WS handler): the game_logs row (`match_status:"active"`) is now `await`ed and CONFIRMED before `SESSION_READY` is sent; on write failure → `ERROR match_create_failed`, session never starts. `session.logId` always set → the fallback INSERT in `wsCommitSession` was deleted (INSERT exists ONLY at GAME_START).
+- **Claim correlation (UPDATE, never INSERT)**: `/api/app/game/reward` + `/api/app/ad/claim` — if the claim has no matchId (old APK), the server finds the user's newest OPEN row (`match_status="started"||"active"`, sort=-created) and closes THAT row. The "legacy" INSERT fallback is deleted from both endpoints: no resolvable match → PT still paid (grace) but NOTHING written to game_logs.
+- **bridge.js match gate**: full-screen `shib-match-gate` overlay from boot; unlocks ONLY on `SESSION_READY`; 20s boot / 12s post-WS deadlines, WS error/close or `match_create_failed` pre-ready → Retry screen (reload). Re-zipped to `dist/bridge-upload.zip` → manual upload to webcod.in `/arcade/`.
+- Zero-score WS disconnect now patches the row to `expired` immediately (no sweeper wait).
+- E2E verified 16/16 vs live dev backend (one row/game; no-matchId claim updates same row; replay writes nothing; 2x path updates same row `is_double`; matchId claim + duplicate-403 intact).
+- **Deploy**: user runs `git push github main` (Railway auto-deploys); flip `strict_match_enforcement` in PB settings AFTER bridge.js upload + new APK ship.

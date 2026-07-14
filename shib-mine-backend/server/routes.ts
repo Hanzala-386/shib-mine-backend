@@ -174,17 +174,9 @@ async function wsCommitSession(sid: string, session: WsGameSession): Promise<voi
     };
     if (session.logId) {
       pbPatch(`/api/collections/game_logs/records/${session.logId}`, logBody).catch(() => {});
-    } else {
-      // GAME_START row creation failed (PB blip) — create the row now so the
-      // claim path still has a match record to validate against.
-      pbPost("/api/collections/game_logs/records", {
-        user:         session.pbId,
-        is_double:    false,
-        match_id:     sid,
-        start_time:   new Date(session.startMs).toISOString(),
-        ...logBody,
-      }).catch(() => {});
     }
+    // No logId is impossible now — the GAME_START hard gate refuses to start
+    // a session unless the row write is confirmed (INSERT happens ONLY there).
   } catch (e: any) {
     console.error(`[ws/game] commit error (${session.pbId}):`, e.message);
   }
@@ -222,16 +214,28 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           // "active"). Lifecycle: active → started (game-over commit) →
           // completed | expired | blacklisted. The expiry sweeper voids any
           // row stuck in active/started for too long.
-          pbPost("/api/collections/game_logs/records", {
-            user:         pbId,
-            raw_score:    0,
-            is_double:    false,
-            final_tokens: 0,
-            match_id:     sid,
-            start_time:   new Date(session.startMs).toISOString(),
-            match_status: "active",
-          }).then((r: any) => { if (r?.id) session.logId = r.id; })
-            .catch(() => {});
+          // HARD GATE: SESSION_READY is sent ONLY after the row write is
+          // CONFIRMED. If the write fails, the game must NOT start — the
+          // client gets ERROR match_create_failed and shows a retry screen.
+          let matchRow: any = null;
+          try {
+            matchRow = await pbPost("/api/collections/game_logs/records", {
+              user:         pbId,
+              raw_score:    0,
+              is_double:    false,
+              final_tokens: 0,
+              match_id:     sid,
+              start_time:   new Date(session.startMs).toISOString(),
+              match_status: "active",
+            });
+          } catch {}
+          if (!matchRow || matchRow.code || !matchRow.id) {
+            console.error(`[ws/game] match row create FAILED for ${pbId} — game start BLOCKED`);
+            sid = null;
+            send({ type: "ERROR", reason: "match_create_failed" });
+            break;
+          }
+          session.logId = matchRow.id;
           // Auto-commit when the 3-minute server timer fires
           session.timer = setTimeout(async () => {
             const s = wsSessions.get(sid!);
@@ -333,7 +337,15 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
       if (session.hits > 0 || session.serverPT > 0) {
         wsCommitSession(sid, session).catch(() => {});
       } else {
+        // Zero-score disconnect: void the match row immediately so it never
+        // lingers as an open "active" row (would otherwise wait for sweeper).
         if (session.timer) clearTimeout(session.timer);
+        session.committed = true;
+        if (session.logId) {
+          pbPatch(`/api/collections/game_logs/records/${session.logId}`, {
+            match_status: "expired",
+          }).catch(() => {});
+        }
         wsSessions.delete(sid);
       }
     });
@@ -3883,14 +3895,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       adTokenStore.delete(token); // single-use: consume immediately
 
-      // ── Match validation — use the matchId BOUND AT ISSUE TIME (not the body)
-      // Strict mode (PB settings.strict_match_enforcement) rejects claims with
-      // no matchId; grace mode (default) lets legacy clients through.
-      const matchId = entry.matchId;
+      // ── Match resolution — matchId BOUND AT ISSUE TIME (not the body), with
+      // correlation fallback for old clients that never sent one: find the
+      // player's newest OPEN match and close THAT row (UPDATE, never INSERT).
+      let matchId: string | null = entry.matchId || null;
+      let correlatedRecord: any = null;
+      if (!matchId) {
+        try {
+          const openRes = await pbGet(
+            `/api/collections/game_logs/records?filter=${encodeURIComponent(
+              `user="${pbId}" && (match_status="started" || match_status="active")`
+            )}&sort=-created&perPage=1`
+          );
+          const open = openRes?.items?.[0];
+          if (open?.match_id) {
+            matchId = String(open.match_id);
+            correlatedRecord = open;
+            console.log(`[ad/claim] no-matchId claim correlated → open match ${matchId.slice(0, 8)} (${pbId})`);
+          }
+        } catch (corrErr: any) {
+          console.warn("[ad/claim] match correlation failed:", corrErr.message);
+        }
+      }
       let strictMatch = false;
       try { const s: any = await fetchSettings(); strictMatch = !!s?.strict_match_enforcement; } catch {}
       if (strictMatch && !matchId) {
-        console.warn(`[ad/claim] MISSING matchId (${pbId}) — rejected (strict)`);
+        console.warn(`[ad/claim] NO resolvable match (${pbId}) — rejected (strict)`);
         return res.status(403).json({ error: "Session verification failed — please play a new game." });
       }
 
@@ -3907,9 +3937,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // LAYER 2: DB-level match lifecycle check
         try {
-          const logRes = await pbGet(
-            `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
-          );
+          const logRes = correlatedRecord
+            ? { items: [correlatedRecord] }
+            : await pbGet(
+                `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
+              );
           const logRecord = logRes?.items?.[0];
           if (!logRecord) {
             if (strictMatch) {
@@ -3955,25 +3987,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
       awarded = true; // PT credited — keep the slot locked even on later errors
       console.log(`[ad/claim] pbId=${pbId} claimed ${entry.reward}PT → newPT=${newPT}`);
-      // Close the match atomically (durable replay guard) or, for legacy
-      // no-matchId claims, log a new record for admin analytics.
+      // Close the match atomically (durable replay guard) — UPDATE only.
       if (gameLogId) {
         pbPatch(`/api/collections/game_logs/records/${gameLogId}`, {
           match_status: "completed",
           is_double:    true,
           final_tokens: entry.reward,
         }).catch(() => {});
-      } else {
-        pbPost("/api/collections/game_logs/records", {
-          user:         pbId,
-          raw_score:    Math.floor(entry.reward / 2),  // base score before 2× multiplier
-          is_double:    true,
-          final_tokens: entry.reward,
-          ...(matchId
-            ? { match_id: matchId, match_status: "completed" }
-            : { match_status: "legacy" }),
-        }).catch(() => {});
       }
+      // No resolvable match row → NO game_logs write. One game = one row;
+      // the old "legacy" INSERT fallback is deliberately removed.
       res.json({ success: true, newPowerTokens: newPT, reward: entry.reward });
     } catch (e: any) {
       // No award happened — release the slot so the player's retry can succeed
@@ -3990,19 +4013,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
     let lockedMatchId: string | null = null;
     let awarded = false;
     try {
-      const { pbId, amount, type, matchId } = req.body;
+      const { pbId, amount, type } = req.body;
       if (!pbId || !amount)
         return res.status(400).json({ error: "pbId and amount required" });
 
+      // ── MATCH RESOLUTION — single source of truth ────────────────────────
+      // New clients send matchId directly. OLD clients (pre-matchId APK /
+      // bridge.js) claim WITHOUT one even though the WebSocket already created
+      // this game's row at GAME_START — so we CORRELATE: find the player's
+      // newest OPEN match (active/started) and close THAT row. A claim only
+      // ever UPDATEs the existing match row; it never INSERTs a second one.
+      let matchId: string | null =
+        typeof req.body.matchId === "string" && req.body.matchId ? req.body.matchId : null;
+      let correlatedRecord: any = null;
+      if (!matchId) {
+        try {
+          const openRes = await pbGet(
+            `/api/collections/game_logs/records?filter=${encodeURIComponent(
+              `user="${pbId}" && (match_status="started" || match_status="active")`
+            )}&sort=-created&perPage=1`
+          );
+          const open = openRes?.items?.[0];
+          if (open?.match_id) {
+            matchId = String(open.match_id);
+            correlatedRecord = open;
+            console.log(`[/api/app/game/reward] no-matchId claim correlated → open match ${matchId.slice(0, 8)} (${pbId})`);
+          }
+        } catch (corrErr: any) {
+          console.warn("[/api/app/game/reward] match correlation failed:", corrErr.message);
+        }
+      }
+
       // ── STRICT MODE (PB settings.strict_match_enforcement, default false) ──
-      // Strict: claims WITHOUT a matchId are rejected outright. Grace (default)
-      // exists because three artifacts deploy independently (Railway backend,
-      // bridge.js on webcod.in, the APK) — flip strict only after all three
-      // ship the matchId chain end-to-end.
+      // Strict: claims with NO resolvable match are rejected outright. Grace
+      // (default) still pays the player but writes NOTHING to game_logs — a
+      // claim that cannot be tied to a real match leaves no row at all.
       let strictMatch = false;
       try { const s: any = await fetchSettings(); strictMatch = !!s?.strict_match_enforcement; } catch {}
       if (strictMatch && !matchId) {
-        console.warn(`[/api/app/game/reward] MISSING matchId (${pbId}) — rejected (strict)`);
+        console.warn(`[/api/app/game/reward] NO resolvable match (${pbId}) — rejected (strict)`);
         return res.status(403).json({ error: "Session verification failed — please play a new game." });
       }
 
@@ -4041,9 +4090,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let gameLogId: string | null = null;
       if (matchId) {
         try {
-          const logRes = await pbGet(
-            `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
-          );
+          const logRes = correlatedRecord
+            ? { items: [correlatedRecord] }
+            : await pbGet(
+                `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
+              );
           const logRecord = logRes?.items?.[0];
           if (!logRecord) {
             if (strictMatch) {
@@ -4159,18 +4210,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           match_status: "completed",
           final_tokens: safeAmount,
         }).catch(() => {});
-      } else if (!matchId) {
-        // Legacy path (no matchId): log a new record for admin analytics.
-        // Tagged "legacy" so it is never confused with an untracked match —
-        // only pre-matchId clients (old APK / old bridge.js) hit this path.
-        pbPost("/api/collections/game_logs/records", {
-          user:         pbId,
-          raw_score:    safeAmount,
-          is_double:    false,
-          final_tokens: safeAmount,
-          match_status: "legacy",
-        }).catch(() => {});
       }
+      // No resolvable match row → NO game_logs write. One game = one row;
+      // a claim that cannot be tied to a real match must never create rows
+      // (the old "legacy" INSERT fallback is deliberately removed).
 
       // ── NO referral commission on gameplay ──────────────────────────────
       // Referral commission is paid EXCLUSIVELY on a referee's mining rewards
