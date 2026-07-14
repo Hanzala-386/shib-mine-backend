@@ -109,7 +109,9 @@
       wsConn = new WebSocket(url);
       wsConn.onopen = function () {
         wsReady = true;
-        wsConn.send(JSON.stringify({ type: 'GAME_START', pbId: pbId }));
+        /* v:2 = updated bridge — tells the server to enforce the strict
+         * match-row hard gate. Legacy APKs (no v) bypass it server-side. */
+        wsConn.send(JSON.stringify({ type: 'GAME_START', pbId: pbId, v: 2 }));
         console.log('[Bridge] WS connected → GAME_START sent');
       };
       wsConn.onmessage = function (e) {

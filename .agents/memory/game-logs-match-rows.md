@@ -9,8 +9,10 @@ description: Weapon Master match logging — INSERT only at GAME_START, claims c
 
 **Why:** Old flow produced two rows per game (WS row stuck "started" + a "legacy" INSERT from no-matchId claims), polluting admin analytics and hiding fraud. User explicitly demanded no row without a verified match.
 
+**VERSION-AWARE gate:** the hard gate broke old APKs — the old bridge treats a delayed/blocked SESSION_READY as "Connection failed". Enforcement is now keyed on `GAME_START.v`: new bridge sends `v:2` → strict gate; legacy (no `v`) → immediate SESSION_READY + async best-effort row, `wsCommitSession` legacy-only fallback INSERT, and late-landing async inserts after session end are DELETED (stray-duplicate race). Never remove the legacy branch while old APKs are in the wild; retire it only when the legacy APK share is ~0.
+
 **How to apply:**
-- Never re-add an INSERT to a claim endpoint or to wsCommitSession — the "PB blip" fallback INSERT there was deliberately deleted (logId is guaranteed by the gate).
+- Never re-add an INSERT to a claim endpoint. wsCommitSession's fallback INSERT is allowed ONLY for `session.legacy` sessions (strict v>=2 sessions always have logId).
 - Correlation feeds the existing Layer-1 in-memory `claimedMatchIds` guard (synchronous check-and-set → concurrent claims on the same open row can't double-pay) and short-circuits Layer 2 with the correlated record.
 - Grace-mode replays are currently invisible in game_logs (paid, no trace) — flip PB `settings.strict_match_enforcement` once bridge.js (webcod.in /arcade/) + new APK ship. Bridge gate ordering: 20s boot / 12s post-WS < nothing server-side (no server AFK for solo) — gate is purely client UX.
 - Anti-cheat rate clamp still applies before commit: unrealistic scores get `blacklisted` rows and clamped serverPT; tests must use honest scores (~0.75 PT/s).

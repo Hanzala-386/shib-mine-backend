@@ -145,6 +145,7 @@ interface WsGameSession {
   rejectLog: number[]; // timestamps of REJECTED hits (shadow-blacklist monitor)
   committed: boolean;
   blacklisted: boolean; // impossible score detected → match voided, 0 PT
+  legacy: boolean;      // old-bridge client (no `v` in GAME_START) → no hard gate
   logId: string | null; // game_logs record id created at GAME_START
   timer: ReturnType<typeof setTimeout> | null;
 }
@@ -174,9 +175,19 @@ async function wsCommitSession(sid: string, session: WsGameSession): Promise<voi
     };
     if (session.logId) {
       pbPatch(`/api/collections/game_logs/records/${session.logId}`, logBody).catch(() => {});
+    } else if (session.legacy) {
+      // LEGACY clients only: the best-effort async row create at GAME_START
+      // never landed — write the row now so the claim path can still
+      // correlate and validate. Strict (v>=2) sessions can never reach this:
+      // the GAME_START hard gate refuses to start without a confirmed row.
+      pbPost("/api/collections/game_logs/records", {
+        user:         session.pbId,
+        is_double:    false,
+        match_id:     sid,
+        start_time:   new Date(session.startMs).toISOString(),
+        ...logBody,
+      }).catch(() => {});
     }
-    // No logId is impossible now — the GAME_START hard gate refuses to start
-    // a session unless the row write is confirmed (INSERT happens ONLY there).
   } catch (e: any) {
     console.error(`[ws/game] commit error (${session.pbId}):`, e.message);
   }
@@ -197,6 +208,11 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
         case "GAME_START": {
           const { pbId } = msg;
           if (!pbId) { send({ type: "ERROR", reason: "pbId_required" }); return; }
+          // VERSION-AWARE gate: the updated bridge.js sends `v: 2` in
+          // GAME_START. Legacy APKs (old bridge, no `v` field) must NOT be
+          // blocked — they get the pre-gate immediate-start behavior with a
+          // best-effort async match row. Only v>=2 clients get the hard gate.
+          const strictClient = Number(msg.v) >= 2;
           const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
           if (user.code) { send({ type: "ERROR", reason: "user_not_found" }); return; }
           // Clean up any prior session on this connection
@@ -208,34 +224,59 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           const session: WsGameSession = {
             pbId, hits: 0, serverPT: 0, startMs: Date.now(),
             lastHitMs: 0, hitLog: [], rejectLog: [],
-            committed: false, blacklisted: false, logId: null, timer: null,
+            committed: false, blacklisted: false, legacy: !strictClient,
+            logId: null, timer: null,
           };
-          // Create the match record IMMEDIATELY at game start (match_status
-          // "active"). Lifecycle: active → started (game-over commit) →
+          // Create the match record at game start (match_status "active").
+          // Lifecycle: active → started (game-over commit) →
           // completed | expired | blacklisted. The expiry sweeper voids any
           // row stuck in active/started for too long.
-          // HARD GATE: SESSION_READY is sent ONLY after the row write is
-          // CONFIRMED. If the write fails, the game must NOT start — the
-          // client gets ERROR match_create_failed and shows a retry screen.
-          let matchRow: any = null;
-          try {
-            matchRow = await pbPost("/api/collections/game_logs/records", {
-              user:         pbId,
-              raw_score:    0,
-              is_double:    false,
-              final_tokens: 0,
-              match_id:     sid,
-              start_time:   new Date(session.startMs).toISOString(),
-              match_status: "active",
-            });
-          } catch {}
-          if (!matchRow || matchRow.code || !matchRow.id) {
-            console.error(`[ws/game] match row create FAILED for ${pbId} — game start BLOCKED`);
-            sid = null;
-            send({ type: "ERROR", reason: "match_create_failed" });
-            break;
+          const rowBody = {
+            user:         pbId,
+            raw_score:    0,
+            is_double:    false,
+            final_tokens: 0,
+            match_id:     sid,
+            start_time:   new Date(session.startMs).toISOString(),
+            match_status: "active",
+          };
+          if (strictClient) {
+            // HARD GATE (new bridge only): SESSION_READY is sent ONLY after
+            // the row write is CONFIRMED. If the write fails, the game must
+            // NOT start — the client gets ERROR match_create_failed and shows
+            // a retry screen.
+            let matchRow: any = null;
+            try {
+              matchRow = await pbPost("/api/collections/game_logs/records", rowBody);
+            } catch {}
+            if (!matchRow || matchRow.code || !matchRow.id) {
+              console.error(`[ws/game] match row create FAILED for ${pbId} — game start BLOCKED`);
+              sid = null;
+              send({ type: "ERROR", reason: "match_create_failed" });
+              break;
+            }
+            session.logId = matchRow.id;
+          } else {
+            // LEGACY (old APKs): start immediately — the old bridge treats a
+            // delayed/blocked SESSION_READY as "Connection failed". The row is
+            // created async best-effort; wsCommitSession has a legacy-only
+            // fallback INSERT if this write never lands.
+            pbPost("/api/collections/game_logs/records", rowBody)
+              .then((r: any) => {
+                if (!r || !r.id || r.code) return;
+                if (session.committed) {
+                  // RACE: session already ended (fast game-over commit or
+                  // zero-score disconnect) before this insert landed. The
+                  // commit path handled the outcome (legacy fallback INSERT
+                  // wrote the final row / zero-score wrote nothing) — this
+                  // late row is a stray duplicate, remove it.
+                  pbDelete(`/api/collections/game_logs/records/${r.id}`).catch(() => {});
+                  return;
+                }
+                session.logId = r.id;
+              })
+              .catch(() => {});
           }
-          session.logId = matchRow.id;
           // Auto-commit when the 3-minute server timer fires
           session.timer = setTimeout(async () => {
             const s = wsSessions.get(sid!);
@@ -244,7 +285,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           }, WS_SESSION_MS);
           wsSessions.set(sid, session);
           send({ type: "SESSION_READY", sessionId: sid });
-          console.log(`[ws/game] session ${sid.slice(0, 8)} started for ${pbId}`);
+          console.log(`[ws/game] session ${sid.slice(0, 8)} started for ${pbId}${strictClient ? "" : " (legacy client)"}`);
           break;
         }
 
