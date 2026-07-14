@@ -12,7 +12,7 @@
    *    INJECT_DONE    { state }
    *
    *  Messages IN ← React Native:
-   *    INJECT_VARS    { pbId, powerTokens, collectedTomatoes, lastSessionScore, totalScore }
+   *    INJECT_VARS    { pbId, appVersion, powerTokens, collectedTomatoes, lastSessionScore, totalScore }
    *    TIME_UP
    *    RESUME_NAVIGATION
    *    RELOAD_GAME
@@ -88,31 +88,47 @@
     } catch (e) {}
   }
   function gateFail() {
-    if (sessionReady) return;
+    if (!gateArmed || sessionReady) return;
     console.warn('[Bridge] MATCH GATE FAILED — game blocked until retry');
     gateShow('Connection failed — the match could not be verified. Please retry.', true);
   }
 
-  /* Show the gate immediately at boot; 20s boot deadline until SESSION_READY */
-  function gateBoot() { if (!sessionReady) gateShow('Connecting…', false); }
-  if (document.body) gateBoot();
-  else document.addEventListener('DOMContentLoaded', gateBoot);
-  gateTimer = setTimeout(gateFail, 20000);
+  /* ── VERSION-AWARE gating ────────────────────────────────────────────
+   *  This bridge.js is SHARED by ALL APK versions (hosted on webcod.in).
+   *  The gate is ARMED only when the RN app injects appVersion >= 1.0.3
+   *  via INJECT_VARS. Legacy apps (1.0.2 and older inject NO appVersion)
+   *  NEVER see the gate — no overlay, no timers, no "Connecting…" hang;
+   *  they play exactly as before the hard gate existed. */
+  var gateArmed  = false;
+  var appVersion = '';
+  function verAtLeast(v, min) {
+    if (typeof v !== 'string' || !v) return false;
+    var a = v.split('.'), b = min.split('.');
+    for (var i = 0; i < 3; i++) {
+      var x = parseInt(a[i], 10), y = parseInt(b[i], 10) || 0;
+      if (isNaN(x)) return false;
+      if (x > y) return true;
+      if (x < y) return false;
+    }
+    return true;
+  }
 
   function wsOpen(pbId) {
     if (!wsApiUrl || wsConn) return;
-    if (gateTimer) clearTimeout(gateTimer);
-    gateTimer = setTimeout(gateFail, 12000);
+    if (gateArmed) {
+      if (gateTimer) clearTimeout(gateTimer);
+      gateTimer = setTimeout(gateFail, 12000);
+    }
     try {
       var base = wsApiUrl.replace(/\/+$/, '').replace(/^https?:\/\//, '');
       var url  = 'wss://' + base + '/api/ws/game';
       wsConn = new WebSocket(url);
       wsConn.onopen = function () {
         wsReady = true;
-        /* v:2 = updated bridge — tells the server to enforce the strict
-         * match-row hard gate. Legacy APKs (no v) bypass it server-side. */
-        wsConn.send(JSON.stringify({ type: 'GAME_START', pbId: pbId, v: 2 }));
-        console.log('[Bridge] WS connected → GAME_START sent');
+        /* appVersion drives server-side routing: >=1.0.3 → strict hard
+         * gate; absent/older (legacy APKs) → old immediate-start logic. */
+        wsConn.send(JSON.stringify({ type: 'GAME_START', pbId: pbId, v: 2, appVersion: appVersion }));
+        console.log('[Bridge] WS connected → GAME_START sent (appVersion=' + (appVersion || 'legacy') + ')');
       };
       wsConn.onmessage = function (e) {
         try {
@@ -483,7 +499,21 @@
     if (msg.type === 'INJECT_VARS') {
       if (runtime) applyInject(runtime, msg);
       else         injectQueue = msg;
-      wsApiUrl = msg.apiUrl || '';
+      wsApiUrl   = msg.apiUrl || '';
+      appVersion = msg.appVersion || '';
+      /* Arm the match gate ONLY for 1.0.3+ apps. 1.0.2 sends no
+       * appVersion → gate stays disarmed → no overlay, no hang. */
+      if (verAtLeast(appVersion, '1.0.3')) {
+        gateArmed = true;
+        if (!sessionReady) {
+          gateShow('Connecting…', false);
+          /* Backstop: if wsOpen never runs (missing apiUrl/pbId), the
+           * 12s post-WS timer never starts — fail to the Retry screen
+           * after 20s instead of hanging on "Connecting…" forever. */
+          if (gateTimer) clearTimeout(gateTimer);
+          gateTimer = setTimeout(gateFail, 20000);
+        }
+      }
       if (wsApiUrl && msg.pbId) wsOpen(msg.pbId);
     }
 

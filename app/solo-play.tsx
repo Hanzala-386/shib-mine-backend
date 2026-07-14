@@ -12,6 +12,7 @@ import { useAuth } from '@/context/AuthContext';
 import { pb } from '@/lib/pocketbase';
 import { api } from '@/lib/api';
 import { getApiUrl } from '@/lib/query-client';
+import Constants from 'expo-constants';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
 import { useSecurity } from '@/context/SecurityContext';
@@ -346,6 +347,10 @@ export default function SoloPlayScreen() {
       type:              'INJECT_VARS',
       pbId,
       apiUrl,                              // game uses this for WebSocket URL
+      // appVersion drives version-aware routing: bridge arms the match gate
+      // and server enforces the hard gate ONLY for >= 1.0.3. Old 1.0.2 APKs
+      // never send this field → full legacy behavior everywhere.
+      appVersion:        Constants.expoConfig?.version ?? '1.0.3',
       powerTokens:       data.power_tokens,
       collectedTomatoes: data.collected_tomatoes,
       lastSessionScore:  data.last_session_score,

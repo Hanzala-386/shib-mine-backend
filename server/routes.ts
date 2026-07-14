@@ -152,6 +152,21 @@ interface WsGameSession {
 
 const wsSessions = new Map<string, WsGameSession>();
 
+// Semver-ish compare: true iff v is a parseable "x.y.z" >= min.
+// Absent/garbage input → false (treated as legacy — never blocks a client).
+function appVersionAtLeast(v: unknown, min: string): boolean {
+  if (typeof v !== "string" || !v.trim()) return false;
+  const a = v.trim().split(".").map(n => parseInt(n, 10));
+  const b = min.split(".").map(n => parseInt(n, 10));
+  for (let i = 0; i < 3; i++) {
+    const x = a[i], y = b[i] ?? 0;
+    if (!Number.isFinite(x)) return false;
+    if (x > y) return true;
+    if (x < y) return false;
+  }
+  return true;
+}
+
 async function wsCommitSession(sid: string, session: WsGameSession): Promise<void> {
   if (session.committed) return;
   session.committed = true;
@@ -208,11 +223,17 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
         case "GAME_START": {
           const { pbId } = msg;
           if (!pbId) { send({ type: "ERROR", reason: "pbId_required" }); return; }
-          // VERSION-AWARE gate: the updated bridge.js sends `v: 2` in
-          // GAME_START. Legacy APKs (old bridge, no `v` field) must NOT be
-          // blocked — they get the pre-gate immediate-start behavior with a
-          // best-effort async match row. Only v>=2 clients get the hard gate.
-          const strictClient = Number(msg.v) >= 2;
+          // VERSION-AWARE routing keyed on APP version (NOT bridge version —
+          // bridge.js on webcod.in is SHARED by all APKs, so a bridge flag
+          // alone cannot separate 1.0.2 from 1.0.3):
+          //   appVersion >= 1.0.3 → NEW security logic: hard gate (match row
+          //     confirmed before SESSION_READY) + strict verification.
+          //   appVersion absent or < 1.0.3 (ALL legacy APKs incl. 1.0.2) →
+          //     LEGACY logic: immediate SESSION_READY, best-effort match row,
+          //     no hard gate — plays exactly as before.
+          // The 1.0.3+ RN app passes appVersion via INJECT_VARS and the
+          // bridge forwards it here in GAME_START.
+          const strictClient = appVersionAtLeast(msg.appVersion, "1.0.3");
           const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
           if (user.code) { send({ type: "ERROR", reason: "user_not_found" }); return; }
           // Clean up any prior session on this connection
