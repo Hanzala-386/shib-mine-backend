@@ -5,63 +5,26 @@
  *
  *  1. AGP version       — Pins to 8.10.2 (required for compileSdk 36 / Gradle 8.13)
  *  2. Gradle wrapper    — Updates to Gradle 8.13 (required for compileSdk 35/36 on EAS)
- *  3. Yodo1 MAS repos   — Adds the 7 mediation-network Maven repositories Yodo1 needs,
- *                         injected AFTER google()/mavenCentral() so they are queried
- *                         last-resort only (no latency hit on the bulk of deps).
- *  4. gradle.properties — useAndroidX / enableJetifier / enableDexingArtifactTransform
- *                         + the dormant `yodo1Enabled` master toggle (default false).
- *  5. NDK version       — Pins to 26.1.10909125 (stable LTS for RN 0.81)
- *  6. C++ config        — Sets -DANDROID_STL=c++_shared + cppFlags "-std=c++17" in cmake
- *  7. subprojects sdk   — Forces compileSdk 35 on any third-party module below it
- *  8. ADI registration  — Writes adi-registration.properties into native assets
+ *  3. gradle.properties — filters deprecated keys that hard-fail AGP 8.3+
+ *  4. NDK version       — Pins to 26.1.10909125 (stable LTS for RN 0.81)
+ *  5. C++ config        — Sets -DANDROID_STL=c++_shared + cppFlags "-std=c++17" in cmake
+ *  6. subprojects sdk   — Forces compileSdk 35 on any third-party module below it
+ *  7. ADI registration  — Writes adi-registration.properties into native assets
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * YODO1 MAS MIGRATION — PHASE 1 (DORMANT FOUNDATION)
- * ─────────────────────────────────────────────────────────────────────────────
- * The old AdMob-mediation injection (Unity / AppLovin / Meta / ironSource /
- * InMobi / Digital Turbine adapter pins, their extra repos, the ironSource
- * hardware-acceleration manifest patch and the InMobi location permissions) has
- * been REMOVED — Yodo1 MAS Full SDK bundles those networks internally.
- *
- * This phase only lays prebuild-safe infrastructure: the Maven repos + the
- * gradle.properties flags. The actual Yodo1 SDK dependencies live in the local
- * Expo module `modules/yodo1-mas/android/build.gradle`, gated behind the
- * `yodo1Enabled` gradle property (default false set here). While false the module
- * compiles a no-op stub and pulls ZERO Yodo1 deps, so the current
- * react-native-google-mobile-ads (.aab) build keeps working unchanged. Phase 2
- * flips `yodo1Enabled` → true (and removes react-native-google-mobile-ads).
+ * NOTE: The Yodo1 MAS migration (repos, gradle flags, dormant toggle) and the
+ * old AdMob-mediation injection have BOTH been fully removed. The app is
+ * AdMob-only via react-native-google-mobile-ads — its own Expo config plugin
+ * (configured in app.json) writes the AdMob App ID into AndroidManifest.xml.
  */
 
 const {
   withProjectBuildGradle,
   withAppBuildGradle,
-  withSettingsGradle,
   withGradleProperties,
   withDangerousMod,
-  withAndroidManifest,
 } = require('@expo/config-plugins');
 const path = require('path');
 const fs   = require('fs');
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * YODO1 PHASE TOGGLE — the single source of truth for the migration phase.
- * ─────────────────────────────────────────────────────────────────────────────
- * Phase 1 (current) = false → TRULY DORMANT. None of the Yodo1 build-environment
- * changes are applied: the vendor Maven repos are NOT injected and the
- * AndroidX/dexing gradle.properties are NOT written, so the current
- * react-native-google-mobile-ads (.aab) build pipeline is byte-for-byte
- * untouched. The only thing written is the `yodo1Enabled=false` marker property,
- * which nothing consumes while false (the modules/yodo1-mas Gradle gate compiles
- * its no-op stub and pulls zero Yodo1 deps).
- *
- * Phase 2 = flip to true → this one switch (a) injects the 7 Yodo1 vendor Maven
- * repos, (b) writes the Yodo1/AndroidX/dexing gradle.properties, and (c) writes
- * `yodo1Enabled=true`, which makes modules/yodo1-mas/android/build.gradle compile
- * the real bridge + pull the Yodo1 MAS SDK. (Phase 2 must also remove
- * react-native-google-mobile-ads first — GMA 25.x cannot coexist with Yodo1's
- * bundled play-services-ads.)
- */
-const YODO1_ENABLED = true;
 
 /* ─── 1. Root build.gradle — pin AGP to 8.10.2 (supports compileSdk 36) ─────── */
 function withAgpVersion(config) {
@@ -105,250 +68,25 @@ function withGradleWrapper(config) {
   ]);
 }
 
-/* ─── 3. Yodo1 MAS — mediation-network Maven repositories ────────────────────── */
+/* ─── 3. gradle.properties — filter deprecated keys ─────────────────────────── */
 //
-// Yodo1 MAS Full SDK aggregates many ad networks (Pangle, ironSource, Mintegral,
-// BidMachine, YSO Network, PubMatic, Chartboost, …). Each network's SDK artifact
-// is hosted on its own vendor Maven repo — these are the exact URLs Yodo1's
-// integration guide requires.
-//
-// IMPORTANT (latency / fragility): these vendor repos are injected AFTER
-// google()/mavenCentral() (see findReposInsertIndex) so Gradle only consults
-// them as a last resort. The bulk of the build's dependencies (React Native,
-// AndroidX, Expo, etc.) resolve from google()/mavenCentral() first and never hit
-// these slower vendor endpoints. In Phase 1 no Yodo1 dependency is present at all
-// (the module stub pulls nothing), so these repos are declared-but-unused.
-//
-const REPOS_MARKER_OPEN  = '// [yodo1-mas-repos] injected by withAndroidConfig.js — DO NOT EDIT';
-const REPOS_MARKER_CLOSE = '// [/yodo1-mas-repos]';
-
-const YODO1_MAVEN_REPOS = [
-  { marker: 'artifact.bytedance.com',        line: 'maven { url "https://artifact.bytedance.com/repository/pangle" }' },
-  { marker: 'android-sdk.is.com',            line: 'maven { url "https://android-sdk.is.com" }' },
-  { marker: 'dl-maven-android.mintegral.com', line: 'maven { url "https://dl-maven-android.mintegral.com/repository/mbridge_android_sdk_oversea" }' },
-  { marker: 'artifactory.bidmachine.io',     line: 'maven { url "https://artifactory.bidmachine.io/bidmachine" }' },
-  { marker: 'ysonetwork.s3',                 line: 'maven { url "https://ysonetwork.s3.eu-west-3.amazonaws.com/sdk/android" }' },
-  { marker: 'repo.pubmatic.com',             line: 'maven { url "https://repo.pubmatic.com/artifactory/public-repos" }' },
-  { marker: 'bitbucket.org/sdkcenter',       line: 'maven { url "https://bitbucket.org/sdkcenter/sdkcenter/raw/release" }' },
-];
-
-/**
- * Brace-aware locator: returns the string index at which to insert the vendor
- * repos INSIDE the `repositories { }` child of the `blockKeyword { … }` block.
- *
- * Insertion point preference (to keep vendor repos last-resort):
- *   1. immediately AFTER the last `mavenCentral()` call, else
- *   2. immediately AFTER the last `google()` call, else
- *   3. immediately after the `repositories {` opener.
- *
- * Returns -1 if the block (or its repositories child) is absent. Brace-counting
- * bounds every search to the relevant block body so we never match a
- * `repositories {` that sits OUTSIDE the target block.
- */
-function findReposInsertIndex(contents, blockKeyword) {
-  const open = new RegExp(blockKeyword + '\\s*\\{');
-  const m = open.exec(contents);
-  if (!m) return -1;
-
-  // Walk braces from the block's opening `{` to find the block-body extent.
-  let depth = 0, blockStart = -1, blockEnd = -1;
-  for (let i = m.index + m[0].length - 1; i < contents.length; i++) {
-    const ch = contents[i];
-    if (ch === '{') { depth++; if (depth === 1) blockStart = i; }
-    else if (ch === '}') { depth--; if (depth === 0) { blockEnd = i; break; } }
-  }
-  if (blockStart === -1 || blockEnd === -1) return -1;
-
-  // First `repositories {` strictly within the block body.
-  const body = contents.slice(blockStart, blockEnd);
-  const rm = /repositories\s*\{/.exec(body);
-  if (!rm) return -1;
-
-  // Bound the search to the repositories child block body.
-  const repoOpenAbs = blockStart + rm.index + rm[0].length - 1; // index of its `{`
-  let d = 0, repoEndAbs = -1;
-  for (let i = repoOpenAbs; i < contents.length; i++) {
-    const ch = contents[i];
-    if (ch === '{') d++;
-    else if (ch === '}') { d--; if (d === 0) { repoEndAbs = i; break; } }
-  }
-  if (repoEndAbs === -1) return -1;
-
-  const repoBody = contents.slice(repoOpenAbs, repoEndAbs);
-
-  // Insert after the LAST mavenCentral() (preferred) or google() so the vendor
-  // repos are queried only after the standard repos.
-  for (const re of [/mavenCentral\s*\(\s*\)/g, /google\s*\(\s*\)/g]) {
-    let mm, last = -1;
-    while ((mm = re.exec(repoBody)) !== null) { last = mm.index + mm[0].length; }
-    if (last > -1) return repoOpenAbs + last;
-  }
-
-  // Fallback: right after the `repositories {` opener.
-  return repoOpenAbs + 1;
-}
-
-/**
- * Pure transform (exported for tests): inject YODO1_MAVEN_REPOS after
- * google()/mavenCentral() inside the `blockKeyword { … }` block, indenting each
- * line with `indent`.
- *
- * Returns { contents, changed, alreadyPresent, found }. Never throws — the caller
- * decides whether a missing block is fatal (so it can fall back to another file).
- */
-function injectYodo1ReposIntoBlock(contents, blockKeyword, indent) {
-  if (typeof contents !== 'string') {
-    return { contents, changed: false, alreadyPresent: false, found: false };
-  }
-  if (contents.includes(REPOS_MARKER_OPEN)) {
-    return { contents, changed: false, alreadyPresent: true, found: true };
-  }
-  const insertAt = findReposInsertIndex(contents, blockKeyword);
-  if (insertAt < 0) return { contents, changed: false, alreadyPresent: false, found: false };
-
-  const repoLines = [
-    '',
-    indent + REPOS_MARKER_OPEN,
-    ...YODO1_MAVEN_REPOS.map(r => indent + r.line),
-    indent + REPOS_MARKER_CLOSE,
-  ].join('\n');
-
-  const out = contents.slice(0, insertAt) + repoLines + contents.slice(insertAt);
-  return { contents: out, changed: true, alreadyPresent: false, found: true };
-}
-
-/* ─── 3. Maven repos — fail-loud, version-proof injection ────────────────────── */
-//
-// Repositories can live in different files depending on the RN/Expo version:
-//   • Expo 54:                 root build.gradle → allprojects { repositories { } }
-//   • newer bare-RN templates: settings.gradle   → dependencyResolutionManagement { repositories { } }
-//
-// Both passes run in-memory through modResults. The fail-loud throw is
-// ORDER-INDEPENDENT — each pass records that it ran, and whichever pass runs LAST
-// throws iff BOTH files were inspected and nothing was injected anywhere.
-//
-function withYodo1Repositories(config) {
-  const state = { injected: false, buildGradleRan: false, settingsGradleRan: false };
-
-  const failIfBothCheckedAndEmpty = () => {
-    if (state.buildGradleRan && state.settingsGradleRan && !state.injected) {
-      throw new Error(
-        '[withAndroidConfig] FATAL: could not inject the Yodo1 MAS Maven repositories — no ' +
-        '`allprojects { repositories { … } }` (root build.gradle) or ' +
-        '`dependencyResolutionManagement { repositories { … } }` (settings.gradle) block was ' +
-        'found in either file. Yodo1 mediation-network SDKs would fail to resolve at build time. ' +
-        'Aborting prebuild.'
-      );
-    }
-  };
-
-  // Pass A — root build.gradle: Expo 54's allprojects block (or a DRM block if a
-  // future template put one here).
-  config = withProjectBuildGradle(config, (cfg) => {
-    state.buildGradleRan = true;
-    if (!state.injected) {
-      let res = injectYodo1ReposIntoBlock(cfg.modResults.contents, 'allprojects', '        ');
-      if (!res.found) {
-        res = injectYodo1ReposIntoBlock(cfg.modResults.contents, 'dependencyResolutionManagement', '            ');
-      }
-      if (res.found) {
-        cfg.modResults.contents = res.contents;
-        state.injected = true;
-        console.log(res.changed
-          ? '[withAndroidConfig] ✓ Yodo1 MAS Maven repos injected into root build.gradle (after mavenCentral)'
-          : '[withAndroidConfig] ✓ Yodo1 MAS Maven repos already present in root build.gradle');
-      }
-    }
-    failIfBothCheckedAndEmpty();
-    return cfg;
-  });
-
-  // Pass B — settings.gradle: newer templates' dependencyResolutionManagement block.
-  // No-op on Expo 54 (repos already injected in Pass A). Order-independent throw.
-  config = withSettingsGradle(config, (cfg) => {
-    state.settingsGradleRan = true;
-    if (!state.injected) {
-      const res = injectYodo1ReposIntoBlock(cfg.modResults.contents, 'dependencyResolutionManagement', '            ');
-      if (res.found) {
-        cfg.modResults.contents = res.contents;
-        state.injected = true;
-        console.log(res.changed
-          ? '[withAndroidConfig] ✓ Yodo1 MAS Maven repos injected into settings.gradle dependencyResolutionManagement { repositories }'
-          : '[withAndroidConfig] ✓ Yodo1 MAS Maven repos already present in settings.gradle');
-      }
-    }
-    failIfBothCheckedAndEmpty();
-    return cfg;
-  });
-
-  return config;
-}
-
-/* ─── 4. gradle.properties — Yodo1 / AndroidX flags + dormant toggle ─────────── */
-//
-// Yodo1 MAS + its bundled networks (and the Jetifier-dependent legacy SDKs they
-// pull) require AndroidX + Jetifier to be enabled.
-//
-// ⚠️ `android.enableDexingArtifactTransform` was DELIBERATELY REMOVED. That option
-// was deprecated and then REMOVED in Android Gradle Plugin 8.3, so setting it at
-// all (even to `false`) makes AGP 8.3+ fail the build with a hard error:
-//   "The option 'android.enableDexingArtifactTransform' is deprecated.
-//    It was removed in version 8.3 of the Android Gradle plugin."
-// Modern AGP manages the dexing artifact transform automatically — no replacement
-// flag is needed. Do NOT re-add it.
-//
-// These flags ALTER THE CURRENT BUILD PIPELINE (Jetifier rewriting) even when no
-// Yodo1 dependency is present, so they are applied ONLY in Phase 2
-// (YODO1_ENABLED=true) to keep Phase 1 truly dormant.
-//
-const YODO1_GRADLE_PROPERTIES = [
-  { key: 'android.useAndroidX',    value: 'true' },
-  { key: 'android.enableJetifier', value: 'true' },
-];
-
 // Keys that must NEVER appear in gradle.properties — actively filtered out of any
 // existing/cached modResults so a stale file can't re-introduce them. AGP 8.3+
 // hard-fails the build if android.enableDexingArtifactTransform is present at all.
+//
 const DEPRECATED_GRADLE_KEYS = ['android.enableDexingArtifactTransform'];
 
-/**
- * Pure transform (exported for tests): idempotently set/overwrite the Yodo1
- * gradle.properties on an `expo-build-properties`-style PropertiesItem[].
- *
- * Always writes the dormant master marker `yodo1Enabled` (mirroring `enabled`).
- * The pipeline-altering AndroidX/dexing flags are written ONLY when `enabled` is
- * true (Phase 2), so Phase 1 leaves the existing build pipeline untouched.
- */
-function applyYodo1GradleProperties(items, enabled = YODO1_ENABLED) {
-  // Drop any deprecated/removed flags from an existing (possibly cached/generated)
-  // gradle.properties first, so a stale file can never re-introduce a property
-  // that fails the modern build (e.g. android.enableDexingArtifactTransform).
-  const props = (Array.isArray(items) ? items : []).filter(
+/** Pure transform (exported for tests): drop deprecated/removed gradle flags. */
+function filterDeprecatedGradleKeys(items) {
+  return (Array.isArray(items) ? items : []).filter(
     (i) => !(i && i.type === 'property' && DEPRECATED_GRADLE_KEYS.includes(i.key))
   );
-  const upsert = (key, value) => {
-    const existing = props.find((i) => i && i.type === 'property' && i.key === key);
-    if (existing) existing.value = value;
-    else props.push({ type: 'property', key, value });
-  };
-
-  // Master toggle marker — always present, consumed by modules/yodo1-mas build.gradle.
-  upsert('yodo1Enabled', String(enabled));
-
-  // Build-pipeline flags — Phase 2 only.
-  if (enabled) {
-    YODO1_GRADLE_PROPERTIES.forEach(({ key, value }) => upsert(key, value));
-  }
-  return props;
 }
 
-function withYodo1GradleProperties(config) {
+function withGradlePropertiesCleanup(config) {
   return withGradleProperties(config, (cfg) => {
-    cfg.modResults = applyYodo1GradleProperties(cfg.modResults, YODO1_ENABLED);
-    console.log(
-      `[withAndroidConfig] ✓ Yodo1 gradle.properties applied (yodo1Enabled=${YODO1_ENABLED}` +
-      (YODO1_ENABLED ? ')' : ' — dormant; AndroidX/dexing flags deferred to Phase 2)')
-    );
+    cfg.modResults = filterDeprecatedGradleKeys(cfg.modResults);
+    console.log('[withAndroidConfig] ✓ gradle.properties cleaned (deprecated keys filtered)');
     return cfg;
   });
 }
@@ -579,54 +317,15 @@ function withAdiRegistration(config) {
   ]);
 }
 
-/* ─── 9. AdMob App ID in AndroidManifest.xml ─────────────────────────────────── */
-const ADMOB_APP_ID = 'ca-app-pub-5784311004955543~3992313953';
-
-function withAdMobManifest(config) {
-  return withAndroidManifest(config, (cfg) => {
-    const manifest = cfg.modResults;
-    if (!manifest.manifest || !manifest.manifest.application) return cfg;
-    const app = manifest.manifest.application[0];
-    if (!app['meta-data']) app['meta-data'] = [];
-    const existing = app['meta-data'].find(
-      (m) => m.$ && m.$['android:name'] === 'com.google.android.gms.ads.APPLICATION_ID'
-    );
-    if (existing) {
-      existing.$['android:value'] = ADMOB_APP_ID;
-    } else {
-      app['meta-data'].push({
-        $: {
-          'android:name': 'com.google.android.gms.ads.APPLICATION_ID',
-          'android:value': ADMOB_APP_ID,
-        },
-      });
-    }
-    console.log('[withAndroidConfig] AdMob App ID written to AndroidManifest.xml');
-    return cfg;
-  });
-}
-
 /* ─── Compose all patches and export ─────────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   // Build system
   config = withAgpVersion(config);
   config = withGradleWrapper(config);
+  config = withGradlePropertiesCleanup(config);
   config = withNdkVersion(config);
   config = withCppConfig(config);
   config = withSubprojectsCompileSdk(config);
-
-  // Yodo1 MAS — mediation-network Maven repositories. These change the Gradle
-  // resolution environment, so they are injected ONLY in Phase 2. Phase 1 skips
-  // them entirely (no repos, no fail-loud throw) to keep the current build inert.
-  if (YODO1_ENABLED) {
-    config = withYodo1Repositories(config);
-  }
-  // Yodo1 MAS — always writes the `yodo1Enabled` marker; the pipeline-altering
-  // AndroidX/dexing flags are written only when YODO1_ENABLED (Phase 2).
-  config = withYodo1GradleProperties(config);
-
-  // AdMob App ID for Yodo1 MAS bundled AdMob
-  config = withAdMobManifest(config);
 
   // App assets / Google Play ownership registration
   config = withAdiRegistration(config);
@@ -635,11 +334,6 @@ module.exports = function withAndroidConfig(config) {
 };
 
 /* ─── Exported pure transforms (for verification harness / unit tests) ───────── */
-module.exports.injectYodo1ReposIntoBlock    = injectYodo1ReposIntoBlock;
-module.exports.findReposInsertIndex         = findReposInsertIndex;
-module.exports.applyYodo1GradleProperties   = applyYodo1GradleProperties;
-module.exports.injectSubprojectsCompileSdk  = injectSubprojectsCompileSdk;
-module.exports.SUBPROJECTS_PATCH_MARKER     = SUBPROJECTS_PATCH_MARKER;
-module.exports.YODO1_MAVEN_REPOS            = YODO1_MAVEN_REPOS;
-module.exports.YODO1_GRADLE_PROPERTIES      = YODO1_GRADLE_PROPERTIES;
-module.exports.REPOS_MARKER_OPEN            = REPOS_MARKER_OPEN;
+module.exports.filterDeprecatedGradleKeys  = filterDeprecatedGradleKeys;
+module.exports.injectSubprojectsCompileSdk = injectSubprojectsCompileSdk;
+module.exports.SUBPROJECTS_PATCH_MARKER    = SUBPROJECTS_PATCH_MARKER;

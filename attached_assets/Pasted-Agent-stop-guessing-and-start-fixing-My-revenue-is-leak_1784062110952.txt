@@ -1,0 +1,46 @@
+Agent, stop guessing and start fixing. My revenue is leaking, and my logs are a mess. Fix these issues precisely as requested, or the task is considered failed.
+
+1. Accurate Calculation & Database Sync:
+
+The Issue: raw_score and final_tokens in game_logs do not match the UI. There is a discrepancy of 20-25 points.
+
+The Fix: The backend MUST perform the calculation server-side based on the match_id. If the user has a raw score of 100, the database MUST store raw_score: 100. If it's a 2x reward, final_tokens MUST be 200. Stop using client-side calculation. Validate the math on the server before committing to the DB.
+
+2. Button Locking (Race Condition Fix):
+
+The Issue: Users are clicking 'Claim' and '2x' simultaneously to double-dip.
+
+The Fix: Implement a 'State Lock'. As soon as either button is clicked, the UI must set both buttons to disabled state immediately. On the server side, add a check: if final_tokens for that match_id has already been credited, reject any subsequent 'Claim' or '2x' requests for that same match_id.
+
+3. Google AdMob Integration:
+
+SDK Removal: Completely remove the 'Yodo1' SDK and all its dependencies from the project.
+
+Integration: Install only the official Google AdMob SDK.
+
+Testing: Use official Google AdMob 'Test Ad IDs' in all locations (Banners and Interstitials and Rewarded) as we discussed. Replace Yodo1 tags with AdMob implementation.
+
+4. Ad Placement (Banners & Interstitials):
+
+Multiplayer Hub: Add Banner Ads at the TOP and BOTTOM of the display.
+
+Reward Flow: Show an Interstitial Ad only after the user clicks 'Claim' or '2x Reward' button, never before.
+
+Consistency: Ensure this ad layout is uniform across all game modes.
+
+5. Banner Ad Optimization (Timer & Logic):
+
+Refresh Rate: Set a hard refresh timer of 60 seconds (1 minute) for every banner ad.
+
+Lazy Loading (Active State Only): Implement an 'Active Visibility' logic for banners. The app must only request and load a banner ad when the user is physically on the page/screen where the banner is placed. If the user moves to another screen, the request for that specific banner must be paused/stopped immediately. No banner requests should run in the background.
+
+6. Implementation Detail:
+
+When the user enters a page: onStart() -> load/show banner -> start 60s timer.
+
+When the user leaves a page: onStop() -> hide/destroy banner -> stop/clear 60s timer.
+
+This ensures that banners are only requested and refreshed when they are actually visible to the user.
+
+Requirement:
+I need you to show me the specific code block where you validate the score on the server and the lock mechanism for the claim buttons. No more vague 'it's fixed' messages.

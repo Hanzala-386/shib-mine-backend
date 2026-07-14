@@ -1,82 +1,82 @@
-import React from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
-import {
-  Yodo1BannerNativeView,
-  isYodo1NativeAvailable,
-} from '@/modules/yodo1-mas';
-import {
-  isUnityAvailable,
-  UnityBannerNativeView,
-  UNITY_PLACEMENTS,
-} from '@/lib/unityAds';
-import { useAds } from '@/context/AdContext';
+import React, { useEffect, useState } from 'react';
+import { View, StyleSheet, Platform, AppState } from 'react-native';
+import { useIsFocused } from '@react-navigation/native';
+import { BannerAd, BannerAdSize, isAdMobAvailable } from '@/lib/admob';
+import { ADMOB_TEST_IDS } from '@/lib/AdService';
 
 export const BANNER_HEIGHT = 50;
 
-/* ── Yodo1 banner (Android APK only — null off-device) ──────────────────── */
-function Yodo1Banner() {
-  if (!isYodo1NativeAvailable() || !Yodo1BannerNativeView) return null;
+/* True when a real AdMob banner can render (native + SDK present). Screens
+ * use this to skip empty banner bars on web / Expo Go. */
+export const BANNERS_AVAILABLE =
+  Platform.OS !== 'web' && isAdMobAvailable() && !!BannerAd;
+
+/* 60-second HARD refresh — the banner is fully re-created (key remount →
+ * native view destroyed + new ad request), independent of AdMob's own
+ * server-side refresh setting. */
+const BANNER_REFRESH_MS = 60_000;
+
+/* ── Active-visibility gate ───────────────────────────────────────────────
+ * A banner may only load/run while its screen is focused AND the app is in
+ * the foreground. On blur/background the component unmounts the native
+ * BannerAd view entirely (destroy) and clears the refresh timer — zero ad
+ * requests from invisible placements. */
+function useBannerVisible(): boolean {
+  const isFocused = useIsFocused();
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) =>
+      setAppActive(s === 'active')
+    );
+    return () => sub.remove();
+  }, []);
+
+  return isFocused && appActive;
+}
+
+/* ── The actual AdMob banner (official Google TEST unit ID) ─────────────── */
+function AdMobBanner() {
+  const visible = useBannerVisible();
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // 60s hard-refresh timer — runs ONLY while visible; cleared on blur.
+  useEffect(() => {
+    if (!visible) return;
+    const id = setInterval(() => setRefreshKey(k => k + 1), BANNER_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [visible]);
+
+  if (!visible) return null; // blur/background → native banner destroyed
+
   return (
-    <Yodo1BannerNativeView
-      placementId="banner"
-      style={bannerStyles.native}
-      onBannerLoaded={() => console.log('[Banner/Yodo1] Loaded')}
-      onBannerFailed={(e: any) =>
-        console.warn('[Banner/Yodo1] Failed:', e?.nativeEvent?.message)
-      }
+    <BannerAd
+      key={refreshKey}
+      unitId={ADMOB_TEST_IDS.banner}
+      size={BannerAdSize.BANNER}
+      requestOptions={{ requestNonPersonalizedAdsOnly: true }}
+      onAdLoaded={() => console.log('[Banner/AdMob] Loaded')}
+      onAdFailedToLoad={(e: any) => console.warn('[Banner/AdMob] Failed:', e?.message ?? e)}
     />
   );
 }
 
-/* ── Unity banner (Android APK only — null off-device) ──────────────────── */
-function UnityBanner() {
-  if (!isUnityAvailable() || !UnityBannerNativeView) return null;
-  return (
-    <UnityBannerNativeView
-      placementId={UNITY_PLACEMENTS.banner}
-      style={bannerStyles.unity}
-      onBannerLoaded={() => console.log('[Banner/Unity] Loaded')}
-      onBannerFailed={(e: any) =>
-        console.warn('[Banner/Unity] Failed:', e?.nativeEvent?.message)
-      }
-    />
-  );
-}
-
-/* ── Banner slot — picks the active network ─────────────────────────────── */
-function BannerSlot() {
-  const { settings } = useAds();
-
-  // Phase A: forceUnityOnly → Unity only
-  if (settings.forceUnityOnly && Platform.OS === 'android') return <UnityBanner />;
-
-  // Normal: Yodo1 primary, Unity fallback
-  if (isYodo1NativeAvailable()) return <Yodo1Banner />;
-  if (isUnityAvailable()) return <UnityBanner />;
-
-  return null;
-}
-
-/* ── Sticky banner — absolute at bottom, below tab bar ──────────────────── */
+/* ── Sticky banner — absolute at bottom ─────────────────────────────────── */
 export function StickyBannerAd() {
-  if (Platform.OS === 'web') return null;
-  if (!isYodo1NativeAvailable() && !isUnityAvailable()) return null;
-
+  if (Platform.OS === 'web' || !isAdMobAvailable() || !BannerAd) return null;
   return (
     <View style={styles.wrapper}>
-      <BannerSlot />
+      <AdMobBanner />
     </View>
   );
 }
 
-/* ── Inline banner — renders in content flow ────────────────────────────── */
+/* ── Inline banner — renders in content flow (hub top/bottom, tab bar) ──── */
 export function InlineBannerAd() {
-  if (Platform.OS === 'web') return null;
-  if (!isYodo1NativeAvailable() && !isUnityAvailable()) return null;
-
+  if (Platform.OS === 'web' || !isAdMobAvailable() || !BannerAd) return null;
   return (
     <View style={inlineStyles.wrapper}>
-      <BannerSlot />
+      <AdMobBanner />
     </View>
   );
 }
@@ -102,16 +102,5 @@ const inlineStyles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'transparent',
     marginVertical: 8,
-  },
-});
-
-const bannerStyles = StyleSheet.create({
-  native: {
-    width: '100%',
-    height: BANNER_HEIGHT,
-  },
-  unity: {
-    width: 320,
-    height: BANNER_HEIGHT,
   },
 });

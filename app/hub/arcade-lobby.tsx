@@ -10,7 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useWallet } from '@/context/WalletContext';
-import { InlineBannerAd, BANNER_HEIGHT } from '@/components/StickyBannerAd';
+import { InlineBannerAd, BANNER_HEIGHT, BANNERS_AVAILABLE } from '@/components/StickyBannerAd';
 import { TIER_CONFIGS } from '@shared/arcade';
 
 // Room entry card artwork, keyed by PT entry (matches POOL_TIERS). All 677x369.
@@ -109,6 +109,9 @@ export default function ArcadeLobbyScreen() {
         </View>
       </View>
 
+      {/* TOP banner — lobby (uniform with hub) */}
+      <InlineBannerAd />
+
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 24 + webBottom + BANNER_HEIGHT, gap: 12 }} showsVerticalScrollIndicator={false}>
         {/* Hero */}
         <LinearGradient colors={['#1E1508', '#12121A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.hero}>
@@ -157,10 +160,12 @@ export default function ArcadeLobbyScreen() {
         </View>
       </ScrollView>
 
-      {/* Banner ad on the game hub / matchmaking funnel */}
-      <View style={[styles.bannerBar, { paddingBottom: webBottom }]}>
-        <InlineBannerAd />
-      </View>
+      {/* BOTTOM banner — lobby (skipped entirely when banners can't render) */}
+      {BANNERS_AVAILABLE && (
+        <View style={[styles.bannerBar, { paddingBottom: webBottom + insets.bottom }]}>
+          <InlineBannerAd />
+        </View>
+      )}
     </View>
   );
 }

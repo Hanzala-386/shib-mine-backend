@@ -376,8 +376,8 @@ export default function SoloPlayScreen() {
     setPhase('double_ad');
 
     // Request a one-time server token BEFORE showing the ad.
-    // The server locks in reward = last_session_score × 2 at this moment,
-    // so the client cannot manipulate the amount after the ad plays.
+    // The server locks in reward = game_logs.raw_score × 2 (by matchId) at
+    // this moment, so the client cannot manipulate the amount after the ad.
     // matchId binds the token to this game session (server closes the match).
     let adToken: string | null = null;
     const pbId = pbIdRef.current;
@@ -427,7 +427,7 @@ export default function SoloPlayScreen() {
     });
   }, [fetchGameData, refreshBalance, showRewarded]);
 
-  /* ── CLAIM → interstitial ad (AdMob → Unity → AppLovin) then add score PT ── */
+  /* ── CLAIM → AdMob interstitial (shown only AFTER the click) then add score PT ── */
   const handleClaim = useCallback(async () => {
     // Shared double-click lock: first tap on EITHER button freezes both
     if (claimInFlightRef.current) return;

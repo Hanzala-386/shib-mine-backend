@@ -4033,13 +4033,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!pbId) return res.status(400).json({ error: "pbId required" });
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
-      // Lock in reward = last_session_score × 2, capped at ABSOLUTE_MAX_SCORE × 2
-      const sessionScore = Math.max(0, Math.round(Number(user.last_session_score) || 0));
-      const reward = Math.min(sessionScore * 2, ABSOLUTE_MAX_SCORE * 2);
-      const token = crypto.randomUUID();
       // Bind matchId at issue time — the claim step closes the SAME match the
       // game committed; the client cannot swap in a different matchId later.
       const boundMatchId = typeof matchId === "string" && matchId ? matchId : undefined;
+      // ── SERVER-SIDE REWARD BASIS (authoritative, by match_id) ─────────────
+      // The game_logs row for THIS match holds raw_score, written by the
+      // server itself (wsCommitSession) at game over. That row is the payout
+      // basis: reward = raw_score × 2 exactly. last_session_score is only a
+      // fallback for legacy clients with no matchId — it can be overwritten
+      // by a newer game; the row cannot.
+      let baseScore = Math.max(0, Math.round(Number(user.last_session_score) || 0));
+      if (boundMatchId) {
+        try {
+          const logRes = await pbGet(
+            `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${boundMatchId}"`)}&perPage=1`
+          );
+          const row = logRes?.items?.[0];
+          const committedRaw = Math.max(0, Math.round(Number(row?.raw_score) || 0));
+          if (row && String(row.match_status || "") !== "completed" && committedRaw > 0) {
+            baseScore = committedRaw;
+          }
+        } catch (rowErr: any) {
+          console.warn("[ad/token] game_logs lookup failed — using last_session_score:", rowErr.message);
+        }
+      }
+      const reward = Math.min(baseScore * 2, ABSOLUTE_MAX_SCORE * 2);
+      const token = crypto.randomUUID();
       // Token expires in 10 minutes — enough time to watch the ad
       adTokenStore.set(token, { pbId, reward, matchId: boundMatchId, expiresAt: Date.now() + 10 * 60_000 });
       console.log(`[ad/token] Issued token for ${pbId}, reward=${reward}PT match=${boundMatchId ?? "none"}`);
@@ -4261,6 +4280,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Uses the game_logs record written by wsCommitSession (match_status="started").
       // If that record is already "completed" → 403 Duplicate Submission.
       let gameLogId: string | null = null;
+      let isDoubleClaim = false;
       if (matchId) {
         try {
           const logRes = correlatedRecord
@@ -4297,15 +4317,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
               console.warn(`[/api/app/game/reward] ACTIVE (unfinished) match ${matchId} (${pbId}) — rejected (strict)`);
               return res.status(403).json({ error: "Session not finished — please finish the game first." });
             }
-            // Server-committed score check: wsCommitSession stored the
-            // WS-validated score on this row (final_tokens) at game over.
-            // A claim may be at most 2× that (ad double-reward path). This is
-            // the authoritative check — wall-clock heuristics false-positive
-            // on legit high scores (the WS validator allows up to ~15 PT/s of
-            // play time, far above the old 5 PT/s-of-elapsed-time guess).
-            const committedPT = Number(logRecord.final_tokens) || 0;
-            if (committedPT > 0 && safeAmount > committedPT * 2) {
-              if (strictMatch) {
+            // ── SERVER-AUTHORITATIVE PAYOUT (by match_id) ───────────────────
+            // wsCommitSession stored the WS-validated raw score on this row
+            // (raw_score, mirrored into final_tokens) at game over. The client
+            // amount is NOT trusted as a payout basis — it is only a 1× vs 2×
+            // intent signal. The payout snaps to EXACTLY the committed score
+            // (1× Claim) or committed × 2 (2× ad path):
+            //   raw_score 100 → Claim credits 100, 2× credits 200. Never 120.
+            const committedPT = Math.max(
+              0,
+              Math.round(Number(logRecord.raw_score) || Number(logRecord.final_tokens) || 0)
+            );
+            if (committedPT > 0) {
+              if (strictMatch && safeAmount > committedPT * 2) {
                 // Claiming more than 2× the server-validated score is
                 // unambiguous tampering → blacklist the match, deny outright.
                 pbPatch(`/api/collections/game_logs/records/${logRecord.id}`, {
@@ -4316,11 +4340,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 );
                 return res.status(403).json({ error: "Score could not be verified — reward denied." });
               }
-              console.warn(
-                `[/api/app/game/reward] claim ${safeAmount}PT > 2× committed ${committedPT}PT — capping (${pbId})`
-              );
-              safeAmount = committedPT * 2;
-            } else if (committedPT === 0 && logRecord.start_time) {
+              // 1× vs 2× intent: anything above 1.5× the committed score is a
+              // double claim (the 2× fallback path sends score × 2).
+              isDoubleClaim = safeAmount > Math.round(committedPT * 1.5);
+              const paidPT = isDoubleClaim ? committedPT * 2 : committedPT;
+              if (safeAmount !== paidPT) {
+                console.warn(
+                  `[/api/app/game/reward] client amount ${safeAmount}PT → server-computed ${paidPT}PT (committed=${committedPT}, double=${isDoubleClaim}) (${pbId})`
+                );
+              }
+              safeAmount = paidPT;
+            } else if (logRecord.start_time) {
               // No WS-committed score on the row (grace-mode "active" rows or
               // genuine 0-score games): fall back to a wall-clock CAP only.
               // Never blacklist on this heuristic — it undercounts legit play.
@@ -4382,6 +4412,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         pbPatch(`/api/collections/game_logs/records/${gameLogId}`, {
           match_status: "completed",
           final_tokens: safeAmount,
+          is_double:    isDoubleClaim,
         }).catch(() => {});
       }
       // No resolvable match row → NO game_logs write. One game = one row;

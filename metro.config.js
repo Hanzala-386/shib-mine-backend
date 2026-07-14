@@ -62,6 +62,14 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     };
   }
 
+  /* ── Web stub for react-native-google-mobile-ads (native-only SDK) ── */
+  if (platform === "web" && moduleName.startsWith("react-native-google-mobile-ads")) {
+    return {
+      filePath: path.resolve(__dirname, "lib/admobWebStub.ts"),
+      type: "sourceFile",
+    };
+  }
+
   /* ── @iabtcf/core .js extension fix ── */
   const resolverFn = originalResolveRequest || context.resolveRequest;
   if (moduleName.endsWith(".js")) {

@@ -1,95 +1,82 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
-import {
-  BannerAdComponent,
-  BannerAdSize,
-  nativeSdkAvailable,
-  TEST_IDS,
-  useAds,
-} from '@/context/AdContext';
+import React, { useEffect, useState } from 'react';
+import { View, StyleSheet, Platform, AppState } from 'react-native';
+import { useIsFocused } from '@react-navigation/native';
+import { BannerAd, BannerAdSize, isAdMobAvailable } from '@/lib/admob';
+import { ADMOB_TEST_IDS } from '@/lib/AdService';
 
 export const BANNER_HEIGHT = 50;
 
-const REFRESH_INTERVAL_MS = 30_000;
-const RETRY_ON_FAIL_MS    = 10_000;
+/* True when a real AdMob banner can render (native + SDK present). Screens
+ * use this to skip empty banner bars on web / Expo Go. */
+export const BANNERS_AVAILABLE =
+  Platform.OS !== 'web' && isAdMobAvailable() && !!BannerAd;
 
-/*
- * Layout contract:
- *   - StickyBannerAd: position absolute, bottom: 0, zIndex: 5  (sits at very bottom)
- *   - Tab bar (in _layout.tsx): position absolute, bottom: BANNER_HEIGHT, zIndex: 20
- *   → Tab bar always renders ON TOP of the banner. Banner is below nav.
- */
+/* 60-second HARD refresh — the banner is fully re-created (key remount →
+ * native view destroyed + new ad request), independent of AdMob's own
+ * server-side refresh setting. */
+const BANNER_REFRESH_MS = 60_000;
 
-function AdMobBanner({ unitId }: { unitId: string }) {
-  const [refreshKey, setRefreshKey] = useState(0);
-  const timerRef  = useRef<ReturnType<typeof setInterval>  | null>(null);
-  const retryRef  = useRef<ReturnType<typeof setTimeout>   | null>(null);
-
-  const clearTimers = () => {
-    if (timerRef.current)  { clearInterval(timerRef.current);  timerRef.current  = null; }
-    if (retryRef.current)  { clearTimeout(retryRef.current);   retryRef.current  = null; }
-  };
+/* ── Active-visibility gate ───────────────────────────────────────────────
+ * A banner may only load/run while its screen is focused AND the app is in
+ * the foreground. On blur/background the component unmounts the native
+ * BannerAd view entirely (destroy) and clears the refresh timer — zero ad
+ * requests from invisible placements. */
+function useBannerVisible(): boolean {
+  const isFocused = useIsFocused();
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
 
   useEffect(() => {
-    timerRef.current = setInterval(() => {
-      setRefreshKey(k => k + 1);
-    }, REFRESH_INTERVAL_MS);
-    return clearTimers;
+    const sub = AppState.addEventListener('change', (s) =>
+      setAppActive(s === 'active')
+    );
+    return () => sub.remove();
   }, []);
 
-  const handleFailedToLoad = (e: Error) => {
-    console.warn('[Banner/AdMob] Failed:', e.message);
-    // Retry sooner than the normal 30 s refresh cycle
-    if (!retryRef.current) {
-      retryRef.current = setTimeout(() => {
-        retryRef.current = null;
-        setRefreshKey(k => k + 1);
-      }, RETRY_ON_FAIL_MS);
-    }
-  };
+  return isFocused && appActive;
+}
 
-  if (!nativeSdkAvailable || !BannerAdComponent) return null;
+/* ── The actual AdMob banner (official Google TEST unit ID) ─────────────── */
+function AdMobBanner() {
+  const visible = useBannerVisible();
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // 60s hard-refresh timer — runs ONLY while visible; cleared on blur.
+  useEffect(() => {
+    if (!visible) return;
+    const id = setInterval(() => setRefreshKey(k => k + 1), BANNER_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [visible]);
+
+  if (!visible) return null; // blur/background → native banner destroyed
 
   return (
-    <BannerAdComponent
-      key={`banner-${unitId}-${refreshKey}`}
-      unitId={unitId}
-      size={BannerAdSize?.ANCHORED_ADAPTIVE_BANNER || 'ANCHORED_ADAPTIVE_BANNER'}
-      requestOptions={{}}
-      onAdFailedToLoad={handleFailedToLoad}
-      onAdLoaded={() =>
-        console.log('[Banner/AdMob] Loaded unitId=', unitId, 'key=', refreshKey)
-      }
+    <BannerAd
+      key={refreshKey}
+      unitId={ADMOB_TEST_IDS.banner}
+      size={BannerAdSize.BANNER}
+      requestOptions={{ requestNonPersonalizedAdsOnly: true }}
+      onAdLoaded={() => console.log('[Banner/AdMob] Loaded')}
+      onAdFailedToLoad={(e: any) => console.warn('[Banner/AdMob] Failed:', e?.message ?? e)}
     />
   );
 }
 
-/* ── Sticky banner — absolute at bottom, below tab bar ───────────────────── */
+/* ── Sticky banner — absolute at bottom ─────────────────────────────────── */
 export function StickyBannerAd() {
-  const { settings } = useAds();
-  if (Platform.OS === 'web') return null;
-  if (!nativeSdkAvailable) return null;
-
-  const unitId = settings.admobBannerUnitId || TEST_IDS.BANNER;
-
+  if (Platform.OS === 'web' || !isAdMobAvailable() || !BannerAd) return null;
   return (
     <View style={styles.wrapper}>
-      <AdMobBanner unitId={unitId} />
+      <AdMobBanner />
     </View>
   );
 }
 
-/* ── Inline banner — renders in content flow (tab bar, between sections) ── */
+/* ── Inline banner — renders in content flow (hub top/bottom, tab bar) ──── */
 export function InlineBannerAd() {
-  const { settings } = useAds();
-  if (Platform.OS === 'web') return null;
-  if (!nativeSdkAvailable) return null;
-
-  const unitId = settings.admobBannerUnitId || TEST_IDS.BANNER;
-
+  if (Platform.OS === 'web' || !isAdMobAvailable() || !BannerAd) return null;
   return (
     <View style={inlineStyles.wrapper}>
-      <AdMobBanner unitId={unitId} />
+      <AdMobBanner />
     </View>
   );
 }

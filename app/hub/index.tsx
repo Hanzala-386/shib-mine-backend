@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import Colors from '@/constants/colors';
 import NebulaBg from '@/components/NebulaBg';
+import { InlineBannerAd, BANNER_HEIGHT, BANNERS_AVAILABLE } from '@/components/StickyBannerAd';
 
 const FRAME = require('@/assets/images/game_frame.png');
 const FRAME_AR = 1008 / 1053; // ready-made sci-fi frame (LIVE panel baked into the bottom)
@@ -65,10 +66,13 @@ export default function HubScreen() {
         <View style={styles.back} />
       </View>
 
+      {/* TOP banner — hub */}
+      <InlineBannerAd />
+
       <ScrollView
         contentContainerStyle={{
           paddingVertical: GRID_PAD,
-          paddingBottom: 24 + webBottom + insets.bottom,
+          paddingBottom: 24 + webBottom + insets.bottom + BANNER_HEIGHT,
           alignItems: 'center',
         }}
         showsVerticalScrollIndicator={false}
@@ -106,6 +110,13 @@ export default function HubScreen() {
           ))}
         </View>
       </ScrollView>
+
+      {/* BOTTOM banner — hub (skipped entirely when banners can't render) */}
+      {BANNERS_AVAILABLE && (
+        <View style={[styles.bannerBar, { paddingBottom: webBottom + insets.bottom }]}>
+          <InlineBannerAd />
+        </View>
+      )}
     </View>
   );
 }
@@ -117,6 +128,7 @@ const styles = StyleSheet.create({
   headTitle: { flex: 1 },
   title: { color: Colors.textPrimary, fontSize: 20, fontWeight: '800' },
   sub: { color: Colors.textSecondary, fontSize: 12, marginTop: 2 },
+  bannerBar: { position: 'absolute', left: 0, right: 0, bottom: 0, alignItems: 'center', backgroundColor: Colors.darkBg, borderTopColor: Colors.darkBorder, borderTopWidth: 1 },
 
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
   // Content overlays the hollow area of the ready-made frame image.

@@ -6,8 +6,8 @@
 - [Tournament config serialization](tournament-config-serialization.md) — tournament prizes are client-computed from config.reward_structure; the config endpoint must send it as a raw JSON string or the app's JSON.parse blanks all prizes.
 - [Expo/Metro dev server recovery](frontend-dev-server.md) — preview stuck on "Your app is starting" = Metro EADDRINUSE :8081; free port then restart; blank web preview ≈ reanimated-on-web, not a crash.
 - [AGP gradle config-plugin pitfalls](agp-gradle-config-plugin.md) — enableDexingArtifactTransform removed in AGP 8.3 hard-fails; an upsert-only gradle.properties plugin must also FILTER deprecated keys from cached modResults.
-- [Yodo1 MAS migration](yodo1-migration.md) — Android ad stack moving AdMob→Yodo1 via a phased DORMANT foundation; build-env changes (repos, jetifier/dexing props) are NOT dormant — gate them behind one phase toggle.
-- [AdMob mediation config plugin](admob-mediation-plugin.md) — SUPERSEDED by Yodo1 migration (mediation injection removed); still useful for Expo-54 gradle ground-truth + verify-without-CLI technique.
+- [Yodo1 MAS migration](yodo1-migration.md) — SUPERSEDED: Yodo1/Unity fully removed (Jul 2026); app is AdMob-only on Google TEST IDs; RNGMA expo plugin writes the manifest App ID.
+- [AdMob mediation config plugin](admob-mediation-plugin.md) — SUPERSEDED twice (mediation → Yodo1 → AdMob-only); keep only for Expo-54 gradle ground-truth + verify-without-CLI technique.
 - [PB admin-token route auth](pb-admin-token-routes.md) — admin-token /api/app/* routes bypass PB rules; money routes MUST verify caller token==pbId + TOCTOU-guard atomic debits; redeem tops up shib_balance, no withdrawal row.
 - [PB schema-vs-fields key](pb-schema-key-gotcha.md) — shared PB exposes collection fields under `col.schema` not `col.fields`; helpers reading only `fields` silently no-op (select values nested in `options.values`).
 - [Pool/Game-Hub money invariants](pool-hub-money-invariants.md) — atomic PB modifiers; checked pbHttp wrapper; settle-latch before first await; RESUME MATCH_FOUND must carry ballInHand.
