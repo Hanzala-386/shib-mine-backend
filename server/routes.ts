@@ -134,6 +134,7 @@ const WS_MIN_HIT_MS   = 280;         // 300ms poll interval - 20ms jitter tolera
 const WS_BURST_WINDOW = 5_000;       // rolling ms window for burst detection
 const WS_BURST_MAX    = 18;          // max hits in BURST_WINDOW: 1/300ms tick × 5s ≈ 16-17
 const WS_SESSION_MS   = 3 * 60_000; // 3-minute hard timer
+const WS_SESSION_GRACE_MS = 15_000;  // grace so the client's GAME_OVER (with the displayed score) lands BEFORE the server auto-commit on max-length games — payout stays bounded by the 185s elapsed clamp regardless
 
 interface WsGameSession {
   pbId: string;
@@ -303,7 +304,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
             const s = wsSessions.get(sid!);
             if (s) await wsCommitSession(sid!, s);
             send({ type: "GAME_OVER", reason: "time", serverPT: session.serverPT });
-          }, WS_SESSION_MS);
+          }, WS_SESSION_MS + WS_SESSION_GRACE_MS);
           wsSessions.set(sid, session);
           send({ type: "SESSION_READY", sessionId: sid });
           console.log(`[ws/game] session ${sid.slice(0, 8)} started for ${pbId}${strictClient ? "" : " (legacy client)"}`);
@@ -357,15 +358,24 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           const session = wsSessions.get(sid);
           if (!session || session.committed) { send({ type: "COMMITTED", serverPT: session?.serverPT ?? 0 }); return; }
 
-          // Weapon Master mode: no KNIFE_HITs were sent — validate score from message
-          if (session.hits === 0 && msg.score !== undefined) {
+          // SCORE RECONCILIATION — the score displayed on the player's screen
+          // is authoritative (bounded by the rate cap + hard cap below). The
+          // per-hit counter can UNDERCOUNT honest play two ways: (1) queued
+          // hits drain from the bridge every ~100ms and get rejected by the
+          // 280ms spacing guard; (2) hits thrown before the WS handshake
+          // completes never reach the server at all. Paying less than the
+          // displayed score (65 shown → 45 paid) is a payout bug, not
+          // security — so GAME_OVER reconciles UP to the client score.
+          if (msg.score !== undefined) {
             const rawScore = Math.max(0, Number(msg.score) || 0);
-            // Clamp client-reported elapsed_ms to the server-observed session
-            // length — a cheater cannot inflate elapsed_ms to raise the time
-            // cap beyond real wall-clock time (+2s network-latency tolerance).
             const serverElapsed = Date.now() - session.startMs;
             const clientElapsed = Number(msg.elapsed_ms) || 0;
-            const elapsedMs = Math.max(1000, Math.min(clientElapsed || serverElapsed, serverElapsed + 2000));
+            // The WS session can start LATE relative to real gameplay (legacy
+            // instant start / slow handshake), so serverElapsed may be far
+            // shorter than the real game — clamping to serverElapsed+2s was
+            // capping HONEST scores. Trust the LARGER of the two clocks,
+            // bounded by the 3-minute session hard limit (+5s tolerance).
+            const elapsedMs = Math.max(1000, Math.min(Math.max(clientElapsed, serverElapsed), 185_000));
             // Time-based cap mirrors bridge.js client check: max 15 pts/sec
             const maxForTime = Math.ceil((elapsedMs / 1000) * 15);
             if (rawScore > maxForTime * 1.2 + 20) {
@@ -376,8 +386,10 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
               session.serverPT = 0;
               console.warn(`[ws/game] BLACKLIST ${sid.slice(0, 8)}: impossible score ${rawScore} in ${Math.round(elapsedMs/1000)}s (max ${maxForTime}) (${session.pbId})`);
             } else {
-              session.serverPT = Math.min(rawScore, WS_MAX_PT, maxForTime);
-              console.log(`[ws/game] WeaponMaster score: raw=${rawScore} elapsed=${Math.round(elapsedMs/1000)}s cap=${maxForTime} validated=${session.serverPT} (${session.pbId})`);
+              // Never pay LESS than the honest displayed score; never MORE
+              // than the rate/hard caps. Per-hit tally stays as fraud telemetry.
+              session.serverPT = Math.max(session.serverPT, Math.min(rawScore, WS_MAX_PT, maxForTime));
+              console.log(`[ws/game] score reconciled: raw=${rawScore} perHit=${session.hits * WS_PT_PER_HIT} elapsed=${Math.round(elapsedMs/1000)}s cap=${maxForTime} final=${session.serverPT} (${session.pbId})`);
             }
           }
 
