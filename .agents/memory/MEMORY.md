@@ -18,4 +18,5 @@
 - [Artifact-managed workflows](artifact-managed-workflows.md) — `artifacts/*` workflows reject removeWorkflow (PROHIBITED_ACTION); reclaim disk by deleting sandbox node_modules; exclude `artifacts/` from root tsconfig.
 - [Network guard lessons](network-guard-lessons.md) — CIDR interval lists MUST be merged before binary search (~10% nested overlaps in X4BNet); boot-window verdicts need short TTL; SERVER_PORT beats PORT for test servers.
 - [Baked-art overlay coupling](redeem-baked-art-overlays.md) — overlays on baked-text frame PNGs: wrapper AR must match asset AR (+contentFit contain) or they drift; opaque center or art ghosts through.
+- [KYC gating on deep-link routes](kyc-gating-deep-links.md) — gate EVERY deep-linkable route; clear UI gates when async auth hydrates (else latch-open bug); LATCH money-path gates so re-hydration never kills a live socket.
 - [Workflow log snapshots](workflow-log-snapshots.md) — /tmp/logs files are per-refresh snapshots, never live tails; loop refresh_all_logs to await boot log lines (PB init chain ~60-90s).

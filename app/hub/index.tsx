@@ -1,12 +1,13 @@
 /* Multiplayer Tournament Hub — 6-game arcade PvP grid on the shared cyberpunk backdrop. */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, Platform, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import Colors from '@/constants/colors';
+import KycGateModal, { useKycGate } from '@/components/KycGate';
 import NebulaBg from '@/components/NebulaBg';
 import { InlineBannerAd, BANNER_HEIGHT, BANNERS_AVAILABLE } from '@/components/StickyBannerAd';
 
@@ -47,7 +48,20 @@ export default function HubScreen() {
   const cellW = Math.floor((gridW - CELL_GAP) / 2);
   const cellH = Math.round(cellW / FRAME_AR);
 
+  // Mount guard — hub is deep-linkable, so re-check KYC here too.
+  // Must clear when isKycVerified flips true: pbUser hydrates async on cold
+  // start, so the gate would otherwise latch open for verified users.
+  const { isKycVerified } = useKycGate();
+  const [showKycGate, setShowKycGate] = useState(false);
+  useEffect(() => {
+    setShowKycGate(!isKycVerified);
+  }, [isKycVerified]);
+
   const openGame = (g: HubGame) => {
+    if (!isKycVerified) {
+      setShowKycGate(true);
+      return;
+    }
     router.push({ pathname: '/hub/arcade-lobby', params: { gameId: g.id } } as any);
   };
 
@@ -117,6 +131,17 @@ export default function HubScreen() {
           <InlineBannerAd />
         </View>
       )}
+
+      {/* KYC gate — hub requires a verified account; closing sends the user back */}
+      <KycGateModal
+        visible={showKycGate}
+        feature="multiplayer"
+        onClose={() => {
+          setShowKycGate(false);
+          if (router.canGoBack()) router.back();
+          else router.replace('/(tabs)' as any);
+        }}
+      />
     </View>
   );
 }

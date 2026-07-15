@@ -18,6 +18,16 @@ import {
 } from "../shared/vip";
 import { ticketsToShib, validateRedeem } from "../shared/gamehub";
 import {
+  findKycCountry,
+  isKycCountryBlocked,
+  isBinanceSupported,
+  BINANCE_WITHDRAW_COUNTRY,
+  normalizeKycStatus,
+  validateBep20Address,
+  validateKycEmail,
+  validateKycPhone,
+} from "../shared/kyc";
+import {
   checkNetworkAccess,
   isNetworkGuardEnabled,
   setNetworkGuardSettingsProvider,
@@ -775,7 +785,19 @@ async function ensureCollectionRules() {
         // NOTE: referral commission cross-user updates are handled via the referral_earnings_log
         // collection (see ensureReferralEarningsLogCollection). The claimer writes a pending entry,
         // and the referrer processes it on their next app open (self-update, always allowed).
-        updateRule: "@request.auth.id = id",
+        //
+        // KYC fields are server-managed ONLY — the `:isset = false` guards stop a
+        // client from self-verifying or editing their verified payout destination.
+        updateRule:
+          "@request.auth.id = id" +
+          " && @request.data.kyc_status:isset = false" +
+          " && @request.data.kyc_country:isset = false" +
+          " && @request.data.kyc_country_code:isset = false" +
+          " && @request.data.kyc_full_name:isset = false" +
+          " && @request.data.kyc_phone:isset = false" +
+          " && @request.data.kyc_binance_email:isset = false" +
+          " && @request.data.kyc_bep20_address:isset = false" +
+          " && @request.data.kyc_reject_reason:isset = false",
         // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
         deleteRule: "@request.auth.id = id",
       }, token);
@@ -1104,6 +1126,81 @@ async function ensureBlacklistFields() {
     console.log("[users] blacklist tier fields added ✓");
   } catch (e: any) {
     console.warn("[users] blacklist migration failed:", e.message);
+  }
+}
+
+// ─── KYC verification: users fields + verification_requests collection ─────
+// users.kyc_status: '' | 'none' | 'under_review' | 'verified' | 'rejected'
+// On APPROVAL the verified destination is COPIED onto the users record
+// (kyc_country / kyc_binance_email / kyc_bep20_address / …) so the withdrawal
+// route reads it with zero extra PB calls; request rows stay as audit trail.
+async function ensureVerificationSchema() {
+  try {
+    const token = await getAdminToken();
+
+    // 1) users collection — additive kyc_* text fields
+    const coll = await pbGet("/api/collections/users");
+    if (!coll.code) {
+      const existingNames: string[] = (coll.schema || coll.fields || []).map((f: any) => f.name);
+      const wanted = [
+        "kyc_status", "kyc_reject_reason", "kyc_full_name", "kyc_country",
+        "kyc_country_code", "kyc_phone", "kyc_binance_email", "kyc_bep20_address",
+      ];
+      const missing = wanted.filter((n) => !existingNames.includes(n));
+      if (missing.length) {
+        const updatedSchema = [
+          ...(coll.schema || coll.fields || []),
+          ...missing.map((name) => ({ name, type: "text", required: false })),
+        ];
+        await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: updatedSchema }, token);
+        console.log(`[users] KYC fields added: ${missing.join(", ")} ✓`);
+      } else {
+        console.log("[users] KYC fields already present ✓");
+      }
+    }
+
+    // 2) verification_requests collection
+    const check = await pbGet("/api/collections/verification_requests");
+    if (!check.code) {
+      console.log("[verification_requests] Collection already exists ✓");
+      return;
+    }
+    const usersColl = await pbGet("/api/collections/users");
+    if (usersColl.code || !usersColl.id) {
+      console.warn("[verification_requests] users collection lookup failed — cannot create");
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "verification_requests",
+      type: "base",
+      schema: [
+        { name: "user",           type: "relation", required: true,
+          options: { collectionId: usersColl.id, maxSelect: 1, cascadeDelete: false } },
+        { name: "full_name",      type: "text", required: false },
+        { name: "country",        type: "text", required: false },
+        { name: "country_code",   type: "text", required: false },
+        { name: "phone",          type: "text", required: false },
+        { name: "binance_email",  type: "text", required: false },
+        { name: "bep20_address",  type: "text", required: false },
+        // 'under_review' | 'approved' | 'rejected' | 'unverified'
+        { name: "status",         type: "text", required: false },
+        { name: "reject_reason",  type: "text", required: false },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[verification_requests] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    // Owner may READ their own requests (status screen fallback). All writes are
+    // server-only (submit needs admin-token cross-user duplicate checks).
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule: 'user = @request.auth.id',
+      viewRule: 'user = @request.auth.id',
+      createRule: null, updateRule: null, deleteRule: null,
+    }, token);
+    console.log("[verification_requests] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[verification_requests] Setup failed:", e.message);
   }
 }
 
@@ -1947,6 +2044,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => { startMatchExpirySweeper(); })
     .then(() => ensureIsFlaggedField())
     .then(() => ensureBlacklistFields())
+    .then(() => ensureVerificationSchema())
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
@@ -3412,20 +3510,307 @@ export async function registerRoutes(app: Express): Promise<Server> {
     },
   );
 
+  // ═══ KYC VERIFICATION ══════════════════════════════════════════════════════
+  // Submit is EXPRESS-ONLY (needs admin-token cross-user duplicate checks that
+  // PB rules can never allow a client to run). Status reads fall back to direct
+  // PB in the APK (owner listRule on verification_requests + kyc_* on users).
+
+  // Strip characters that could break out of a PB filter string literal
+  const kycFilterEsc = (s: string) => String(s || "").replace(/["'\\\n\r]/g, "").trim();
+
+  // ── Submit verification request ───────────────────────────────────────────
+  app.post("/api/app/verification/submit", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.body;
+      const fullName = String(req.body.fullName || "").trim();
+      const country = String(req.body.country || "").trim();
+      const phone = String(req.body.phone || "").replace(/\D/g, "");
+      const binanceEmailRaw = String(req.body.binanceEmail || "").trim().toLowerCase();
+      const bep20Address = String(req.body.bep20Address || "").trim();
+
+      if (!pbId || !fullName || !country || !phone || !bep20Address)
+        return res.status(400).json({ error: "All fields are required" });
+      if (fullName.length < 3)
+        return res.status(400).json({ error: "Please enter your full name" });
+
+      // Country checks — Iran is completely blocked from verification
+      if (isKycCountryBlocked(country))
+        return res.status(403).json({
+          error: "Verification is not available in your country.",
+          countryBlocked: true,
+        });
+      const countryInfo = findKycCountry(country);
+      if (!countryInfo)
+        return res.status(400).json({ error: "Please select a valid country" });
+      const countryCode = countryInfo.dial; // server-authoritative dial code
+
+      if (!validateKycPhone(phone))
+        return res.status(400).json({ error: "Invalid phone number" });
+      if (!validateBep20Address(bep20Address))
+        return res.status(400).json({ error: "Invalid BEP20 wallet address (must be 0x + 40 hex characters)" });
+
+      // Binance email: REQUIRED for Binance-supported countries, ignored otherwise
+      const supported = isBinanceSupported(country);
+      let binanceEmail = "";
+      if (supported) {
+        if (!binanceEmailRaw || !validateKycEmail(binanceEmailRaw))
+          return res.status(400).json({ error: "Please enter a valid Binance email" });
+        binanceEmail = binanceEmailRaw;
+      }
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      const currentStatus = normalizeKycStatus(user.kyc_status);
+      if (currentStatus === "verified")
+        return res.status(400).json({ error: "Your account is already verified" });
+      if (currentStatus === "under_review")
+        return res.status(400).json({ error: "Your verification is already under review" });
+
+      // ── Duplicate check vs OTHER users' active (under_review/approved) rows ──
+      const orParts = [
+        `bep20_address = "${kycFilterEsc(bep20Address)}"`,
+        `(country_code = "${kycFilterEsc(countryCode)}" && phone = "${kycFilterEsc(phone)}")`,
+      ];
+      if (binanceEmail) orParts.push(`binance_email = "${kycFilterEsc(binanceEmail)}"`);
+      const dupFilter = encodeURIComponent(
+        `user != "${kycFilterEsc(pbId)}" && (status = "under_review" || status = "approved") && (${orParts.join(" || ")})`,
+      );
+      const dup = await pbGet(
+        `/api/collections/verification_requests/records?filter=${dupFilter}&perPage=10&fields=binance_email,bep20_address,phone,country_code`,
+      );
+      if ((dup?.items || []).length > 0) {
+        const fields: string[] = [];
+        for (const row of dup.items) {
+          if (row.bep20_address === bep20Address && !fields.includes("bep20Address")) fields.push("bep20Address");
+          if (row.phone === phone && row.country_code === countryCode && !fields.includes("phone")) fields.push("phone");
+          if (binanceEmail && row.binance_email === binanceEmail && !fields.includes("binanceEmail")) fields.push("binanceEmail");
+        }
+        return res.status(409).json({ error: "Field already in use", duplicate: true, fields });
+      }
+
+      // Supersede any previous rejected rows by this user (keeps audit trail,
+      // but only ONE active row per user at a time)
+      const created = await pbPost("/api/collections/verification_requests/records", {
+        user: pbId,
+        full_name: fullName,
+        country,
+        country_code: countryCode,
+        phone,
+        binance_email: binanceEmail,
+        bep20_address: bep20Address,
+        status: "under_review",
+        reject_reason: "",
+      });
+      if (created.code)
+        return res.status(500).json({ error: "Could not submit verification. Try again." });
+
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        kyc_status: "under_review",
+        kyc_reject_reason: "",
+      });
+
+      res.json({ success: true, status: "under_review", requestId: created.id });
+    } catch (e: any) {
+      console.error("[/api/app/verification/submit]", e.message);
+      res.status(500).json({ error: "Verification submit failed" });
+    }
+  });
+
+  // ── Verification status (user) ────────────────────────────────────────────
+  app.get("/api/app/verification/status/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+      const latest = await pbGet(
+        `/api/collections/verification_requests/records?filter=${encodeURIComponent(`user = "${kycFilterEsc(pbId)}"`)}&sort=-created&perPage=1`,
+      );
+      const row = (latest?.items || [])[0];
+      res.json({
+        kycStatus: normalizeKycStatus(user.kyc_status),
+        rejectReason: user.kyc_reject_reason || "",
+        request: row
+          ? {
+              id: row.id,
+              fullName: row.full_name,
+              country: row.country,
+              countryCode: row.country_code,
+              phone: row.phone,
+              binanceEmail: row.binance_email,
+              bep20Address: row.bep20_address,
+              status: row.status,
+              rejectReason: row.reject_reason || "",
+              created: row.created,
+            }
+          : null,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/verification/status]", e.message);
+      res.status(500).json({ error: "Failed to fetch verification status" });
+    }
+  });
+
+  // ── Admin: list verification requests ─────────────────────────────────────
+  app.get("/api/app/admin/verification", async (req: Request, res: Response) => {
+    try {
+      const status = String(req.query.status || "under_review");
+      const filter = status === "all" ? "" : `filter=${encodeURIComponent(`status = "${kycFilterEsc(status)}"`)}&`;
+      const r = await pbGet(
+        `/api/collections/verification_requests/records?${filter}sort=-created&perPage=100&expand=user`,
+      );
+      res.json({
+        items: (r.items || []).map((v: any) => ({
+          id: v.id,
+          userId: v.user,
+          userEmail: v.expand?.user?.email || "",
+          userName: v.expand?.user?.display_name || "",
+          fullName: v.full_name,
+          country: v.country,
+          countryCode: v.country_code,
+          phone: v.phone,
+          binanceEmail: v.binance_email,
+          bep20Address: v.bep20_address,
+          status: v.status,
+          rejectReason: v.reject_reason || "",
+          created: v.created,
+        })),
+        totalItems: r.totalItems || 0,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/admin/verification]", e.message);
+      res.status(500).json({ error: "Failed to fetch verification requests" });
+    }
+  });
+
+  // ── Admin: approve request → copy verified destination onto users record ──
+  app.post("/api/app/admin/verification/:id/approve", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const row = await pbGet(`/api/collections/verification_requests/records/${id}`);
+      if (row.code) return res.status(404).json({ error: "Request not found" });
+      if (row.status !== "under_review")
+        return res.status(400).json({ error: `Request is already ${row.status}` });
+
+      await pbPatch(`/api/collections/verification_requests/records/${id}`, {
+        status: "approved",
+        reject_reason: "",
+      });
+      await pbPatch(`/api/collections/users/records/${row.user}`, {
+        kyc_status: "verified",
+        kyc_reject_reason: "",
+        kyc_full_name: row.full_name,
+        kyc_country: row.country,
+        kyc_country_code: row.country_code,
+        kyc_phone: row.phone,
+        kyc_binance_email: row.binance_email || "",
+        kyc_bep20_address: row.bep20_address,
+      });
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/app/admin/verification/approve]", e.message);
+      res.status(500).json({ error: "Approve failed" });
+    }
+  });
+
+  // ── Admin: reject request with a reason (shown on the user's screen) ──────
+  app.post("/api/app/admin/verification/:id/reject", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const reason = String(req.body?.reason || "").trim();
+      if (!reason) return res.status(400).json({ error: "A rejection reason is required" });
+      const row = await pbGet(`/api/collections/verification_requests/records/${id}`);
+      if (row.code) return res.status(404).json({ error: "Request not found" });
+      if (row.status !== "under_review")
+        return res.status(400).json({ error: `Request is already ${row.status}` });
+
+      await pbPatch(`/api/collections/verification_requests/records/${id}`, {
+        status: "rejected",
+        reject_reason: reason,
+      });
+      await pbPatch(`/api/collections/users/records/${row.user}`, {
+        kyc_status: "rejected",
+        kyc_reject_reason: reason,
+      });
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/app/admin/verification/reject]", e.message);
+      res.status(500).json({ error: "Reject failed" });
+    }
+  });
+
+  // ── Admin: manually un-verify a user (frees their identifiers for reuse) ──
+  app.post("/api/app/admin/verification/unverify", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.body;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // Mark this user's active rows 'unverified' so the duplicate check no
+      // longer reserves their email/phone/address
+      const active = await pbGet(
+        `/api/collections/verification_requests/records?filter=${encodeURIComponent(`user = "${kycFilterEsc(pbId)}" && (status = "approved" || status = "under_review")`)}&perPage=50&fields=id`,
+      );
+      for (const r of active?.items || []) {
+        await pbPatch(`/api/collections/verification_requests/records/${r.id}`, { status: "unverified" }).catch(() => {});
+      }
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        kyc_status: "none",
+        kyc_reject_reason: "",
+        kyc_full_name: "",
+        kyc_country: "",
+        kyc_country_code: "",
+        kyc_phone: "",
+        kyc_binance_email: "",
+        kyc_bep20_address: "",
+      });
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("[/api/app/admin/verification/unverify]", e.message);
+      res.status(500).json({ error: "Unverify failed" });
+    }
+  });
+
   // ── Withdrawal: Create ────────────────────────────────────────────────────
   app.post("/api/app/withdrawals", async (req: Request, res: Response) => {
     try {
-      const { pbId, method, addressOrEmail, amount, netAmount } = req.body;
-      if (!pbId || !method || !addressOrEmail || !amount)
-        return res.status(400).json({ error: "pbId, method, addressOrEmail, amount required" });
+      // NOTE: legacy clients still send addressOrEmail/netAmount — both are now
+      // IGNORED. The destination comes from the user's KYC-verified record and
+      // the net amount is recomputed server-side, so funds can only ever go to
+      // the verified channel (AML compliance).
+      const { pbId, method, amount } = req.body;
+      if (!pbId || !amount)
+        return res.status(400).json({ error: "pbId, amount required" });
       const grossAmount = Number(amount);
       if (!Number.isFinite(grossAmount) || grossAmount <= 0)
         return res.status(400).json({ error: "Invalid withdrawal amount" });
-      const resolvedNet = typeof netAmount === 'number' && netAmount > 0 ? netAmount : grossAmount;
 
       // Verify user has sufficient balance
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
+
+      // ── KYC gate: only verified users may withdraw ────────────────────────
+      if (normalizeKycStatus(user.kyc_status) !== "verified")
+        return res.status(403).json({
+          error: "Your account is not verified. Please verify to access withdrawals.",
+          kycRequired: true,
+        });
+
+      // ── Destination pulled from the VERIFIED record (never from the client).
+      // Binance Email channel is available ONLY for India; all other countries
+      // withdraw via their verified BEP20 address.
+      const isIndiaUser = user.kyc_country === BINANCE_WITHDRAW_COUNTRY;
+      const resolvedMethod: "Binance Email" | "BEP-20" =
+        method === "Binance Email" && isIndiaUser && user.kyc_binance_email
+          ? "Binance Email"
+          : "BEP-20";
+      const destination: string =
+        resolvedMethod === "Binance Email" ? user.kyc_binance_email : (user.kyc_bep20_address || "");
+      if (!destination)
+        return res.status(400).json({
+          error: "No verified withdrawal destination on file. Please contact support.",
+        });
       if ((user.shib_balance || 0) < amount)
         return res.status(400).json({ error: "Insufficient balance" });
 
@@ -3452,6 +3837,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (amount < minAmount)
         return res.status(400).json({ error: `Minimum withdrawal is ${minAmount} SHIB` });
 
+      // Net amount recomputed SERVER-SIDE: BEP-20 carries the fixed network fee
+      // (mirrors the client's BEP20_FEE constant); Binance Email is free.
+      const bep20Fee = Number(settings?.bep20_fee) > 0 ? Number(settings.bep20_fee) : 3680;
+      const resolvedNet = resolvedMethod === "BEP-20" ? grossAmount - bep20Fee : grossAmount;
+      if (resolvedNet <= 0)
+        return res.status(400).json({ error: `Amount must exceed the ${bep20Fee} SHIB network fee` });
+
       // Deduct from balance
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         shib_balance: user.shib_balance - amount,
@@ -3466,8 +3858,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         "/api/collections/withdrawals/records",
         {
           user: pbId,
-          method,
-          address_or_email: addressOrEmail,
+          method: resolvedMethod,
+          address_or_email: destination,
           amount: resolvedNet,
           status: "pending",
           masked_name,
@@ -5234,5 +5626,14 @@ function formatUser(u: any) {
     vipLevel: normalizeVipLevel(u.vip_level),
     isAdminPromoted: !!u.is_admin_promoted,
     adminPromotedLevel: normalizeVipLevel(u.admin_promoted_level),
+    // KYC verification (server-managed)
+    kycStatus: normalizeKycStatus(u.kyc_status),
+    kycRejectReason: u.kyc_reject_reason || "",
+    kycFullName: u.kyc_full_name || "",
+    kycCountry: u.kyc_country || "",
+    kycCountryCode: u.kyc_country_code || "",
+    kycPhone: u.kyc_phone || "",
+    kycBinanceEmail: u.kyc_binance_email || "",
+    kycBep20Address: u.kyc_bep20_address || "",
   };
 }

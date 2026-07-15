@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useWallet } from '@/context/WalletContext';
+import KycGateModal, { useKycGate } from '@/components/KycGate';
 import LightningBorder from '@/components/LightningBorder';
 import FloatingImage from '@/components/FloatingImage';
 import NebulaBg from '@/components/NebulaBg';
@@ -39,6 +40,10 @@ export default function GamesScreen() {
     Platform.OS === 'web' ? 0 : insets.bottom + BANNER_HEIGHT + 90;
   const [soloW, setSoloW] = useState(0);
   const soloH = soloW > 0 ? soloW / SOLO_AR : 0;
+
+  // KYC gate — Multiplayer Hub requires a verified account (Solo Play stays open)
+  const { isKycVerified } = useKycGate();
+  const [showKycGate, setShowKycGate] = useState(false);
 
   return (
     <View style={styles.root}>
@@ -92,7 +97,17 @@ export default function GamesScreen() {
         </Pressable>
 
         {/* Multiplayer Hub — ready-made golden card + floating trophy */}
-        <Pressable onPress={() => router.push('/hub')} testID="mode-multiplayer" style={({ pressed }) => [{ opacity: pressed ? 0.94 : 1 }]}>
+        <Pressable
+          onPress={() => {
+            if (!isKycVerified) {
+              setShowKycGate(true);
+            } else {
+              router.push('/hub');
+            }
+          }}
+          testID="mode-multiplayer"
+          style={({ pressed }) => [{ opacity: pressed ? 0.94 : 1 }]}
+        >
           <View style={styles.mpWrap}>
             <Image
               source={MP_BG}
@@ -112,6 +127,13 @@ export default function GamesScreen() {
           />
         </Pressable>
       </ScrollView>
+
+      {/* KYC gate — blocks non-verified users from the Multiplayer Hub */}
+      <KycGateModal
+        visible={showKycGate}
+        feature="multiplayer"
+        onClose={() => setShowKycGate(false)}
+      />
     </View>
   );
 }

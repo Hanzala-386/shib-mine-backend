@@ -237,12 +237,12 @@ export const api = {
   getWithdrawalTier: (pbId: string) =>
     request<WithdrawalTier>('GET', `/api/app/withdrawals/tier/${pbId}`),
 
+  // Destination + net amount are resolved SERVER-SIDE from the user's
+  // KYC-verified record — only the method preference + gross amount are sent.
   createWithdrawal: (payload: {
     pbId: string;
     method: string;
-    addressOrEmail: string;
     amount: number;
-    netAmount: number;
   }) => request<WithdrawalResponse>('POST', '/api/app/withdrawals', payload),
 
   getWithdrawals: (pbId: string) =>
@@ -312,6 +312,42 @@ export const api = {
       'POST',
       `/api/app/user/${pbId}/claim-referral`,
     ),
+
+  // ── KYC Verification ──────────────────────────────────────────────────
+  submitVerification: (payload: {
+    pbId: string;
+    fullName: string;
+    country: string;
+    phone: string;
+    binanceEmail?: string;
+    bep20Address: string;
+  }) =>
+    robustPost<{ success: boolean; status: string; requestId: string }>(
+      '/api/app/verification/submit',
+      payload,
+    ),
+
+  getVerificationStatus: (pbId: string) =>
+    request<{
+      kycStatus: KycStatus;
+      rejectReason: string;
+      request: VerificationRequestRecord | null;
+    }>('GET', `/api/app/verification/status/${encodeURIComponent(pbId)}`),
+
+  adminGetVerifications: (status = 'under_review') =>
+    request<{ items: VerificationRequestRecord[]; totalItems: number }>(
+      'GET',
+      `/api/app/admin/verification?status=${encodeURIComponent(status)}`,
+    ),
+
+  adminApproveVerification: (id: string) =>
+    request<{ success: boolean }>('POST', `/api/app/admin/verification/${id}/approve`, {}),
+
+  adminRejectVerification: (id: string, reason: string) =>
+    request<{ success: boolean }>('POST', `/api/app/admin/verification/${id}/reject`, { reason }),
+
+  adminUnverifyUser: (pbId: string) =>
+    request<{ success: boolean }>('POST', '/api/app/admin/verification/unverify', { pbId }),
 
   // ── Admin ─────────────────────────────────────────────────────────────
   adminGetUsers: (page = 1) =>
@@ -857,6 +893,33 @@ export interface PBUser {
   adminPromotedLevel: number;
   isBlacklist1?: boolean;
   isBlacklist2?: boolean;
+  // ── KYC verification (server-managed) ──
+  kycStatus?: KycStatus;
+  kycRejectReason?: string;
+  kycFullName?: string;
+  kycCountry?: string;
+  kycCountryCode?: string;
+  kycPhone?: string;
+  kycBinanceEmail?: string;
+  kycBep20Address?: string;
+}
+
+export type KycStatus = 'none' | 'under_review' | 'verified' | 'rejected';
+
+export interface VerificationRequestRecord {
+  id: string;
+  userId?: string;
+  userEmail?: string;
+  userName?: string;
+  fullName: string;
+  country: string;
+  countryCode: string;
+  phone: string;
+  binanceEmail: string;
+  bep20Address: string;
+  status: string;
+  rejectReason: string;
+  created: string;
 }
 
 export interface AppSettings {

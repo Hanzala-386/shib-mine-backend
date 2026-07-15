@@ -2,13 +2,14 @@
  * matchmaking. Mirrors the 8-Ball pool lobby; economy (PT stake / Hit Ticket
  * payout / 10% fee) is shared via ARCADE_TIERS + TIER_CONFIGS from @shared/arcade. */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, Platform, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import Colors from '@/constants/colors';
+import KycGateModal, { useKycGate } from '@/components/KycGate';
 import { useWallet } from '@/context/WalletContext';
 import { InlineBannerAd, BANNER_HEIGHT, BANNERS_AVAILABLE } from '@/components/StickyBannerAd';
 import { TIER_CONFIGS } from '@shared/arcade';
@@ -86,7 +87,19 @@ export default function ArcadeLobbyScreen() {
   const gameId = typeof params.gameId === 'string' && GAME_META[params.gameId] ? params.gameId : 'flappy';
   const meta = GAME_META[gameId];
 
+  // Mount guard — lobby is deep-linkable, so KYC must be re-checked here too.
+  // Cleared when isKycVerified flips true (pbUser hydrates async on cold start).
+  const { isKycVerified } = useKycGate();
+  const [showKycGate, setShowKycGate] = useState(false);
+  useEffect(() => {
+    setShowKycGate(!isKycVerified);
+  }, [isKycVerified]);
+
   const openMatch = (tier: number, practice: boolean) => {
+    if (!isKycVerified) {
+      setShowKycGate(true);
+      return;
+    }
     router.push({
       pathname: '/hub/arcade-match',
       params: { gameId, tier: String(tier), practice: practice ? '1' : '0' },
@@ -166,6 +179,17 @@ export default function ArcadeLobbyScreen() {
           <InlineBannerAd />
         </View>
       )}
+
+      {/* KYC gate — lobby requires a verified account; closing sends the user back */}
+      <KycGateModal
+        visible={showKycGate}
+        feature="multiplayer"
+        onClose={() => {
+          setShowKycGate(false);
+          if (router.canGoBack()) router.back();
+          else router.replace('/(tabs)' as any);
+        }}
+      />
     </View>
   );
 }

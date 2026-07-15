@@ -29,7 +29,7 @@ interface WalletContextValue {
   isLoading: boolean;
   spendPowerTokens: (amount: number) => Promise<boolean>;
   addPowerTokens: (amount: number, type?: string) => Promise<void>;
-  createWithdrawal: (method: string, addressOrEmail: string, amount: number, netAmount: number) => Promise<{ success: boolean; error?: string }>;
+  createWithdrawal: (method: string, amount: number) => Promise<{ success: boolean; error?: string }>;
   redeem: (tickets: number) => Promise<{ success: boolean; shib?: number; error?: string }>;
   refetch: () => Promise<void>;
 }
@@ -225,25 +225,45 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // KYC-locked withdrawal: client sends method + gross amount only; the
+  // destination is ALWAYS resolved server-side (or from the user's verified
+  // kyc_* fields in the PB fallback). Fee/net are recomputed here too.
   async function createWithdrawal(
     method: string,
-    addressOrEmail: string,
     amount: number,
-    netAmount: number,
   ): Promise<{ success: boolean; error?: string }> {
     if (!pbId) return { success: false, error: 'Not authenticated' };
     if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: 'Invalid withdrawal amount' };
     try {
-      await api.createWithdrawal({ pbId, method, addressOrEmail, amount, netAmount });
+      await api.createWithdrawal({ pbId, method, amount });
       await refreshBalance();
       await fetchWalletData();
       return { success: true };
-    } catch {
-      // PB SDK fallback — write directly to PocketBase
+    } catch (expressErr: any) {
+      // Express returned a real validation error (4xx) — surface it, don't fall back.
+      const status = Number(expressErr?.status);
+      if (status >= 400 && status < 500) {
+        return { success: false, error: expressErr?.data?.error || expressErr?.message || 'Withdrawal rejected' };
+      }
+      // PB SDK fallback — write directly to PocketBase, destination from verified KYC record
       try {
         const userRec = await pb.collection('users').getOne(pbId, {
-          fields: 'id,shib_balance,vip_level',
+          fields: 'id,shib_balance,vip_level,kyc_status,kyc_country,kyc_bep20_address,kyc_binance_email',
         });
+
+        if (userRec.kyc_status !== 'verified') {
+          return { success: false, error: 'Account not verified. Complete verification to withdraw.' };
+        }
+        const destination = method === 'Binance Email'
+          ? (userRec.kyc_binance_email || '')
+          : (userRec.kyc_bep20_address || '');
+        if (method === 'Binance Email' && (userRec.kyc_country !== 'India' || !destination)) {
+          return { success: false, error: 'Binance Email withdrawals are not available for your account.' };
+        }
+        if (!destination) {
+          return { success: false, error: 'No verified withdrawal destination on file. Contact support.' };
+        }
+
         const currentBalance = userRec.shib_balance || 0;
 
         if (currentBalance < amount) {
@@ -271,17 +291,24 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           return { success: false, error: `Minimum withdrawal is ${minAmount} SHIB` };
         }
 
+        // Net after fee — BEP-20 carries the fixed network fee; Binance Email is free.
+        const BEP20_FEE = 3680;
+        const netAmount = method === 'BEP-20' ? Math.max(0, amount - BEP20_FEE) : amount;
+        if (netAmount < minAmount) {
+          return { success: false, error: `Minimum withdrawal is ${minAmount} SHIB after fees` };
+        }
+
         // Deduct balance first
         await pb.collection('users').update(pbId, {
           shib_balance: currentBalance - amount,
         });
 
-        // Create withdrawal record — store net amount (after fees)
+        // Create withdrawal record — store net amount (after fees), destination from KYC
         try {
           await pb.collection('withdrawals').create({
             user: pbId,
             method,
-            address_or_email: addressOrEmail,
+            address_or_email: destination,
             amount: netAmount,
             status: 'pending',
           });

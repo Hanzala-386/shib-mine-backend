@@ -6,10 +6,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useWallet, type WithdrawalRecord } from '@/context/WalletContext';
 import { useAuth } from '@/context/AuthContext';
 import { useAds } from '@/context/AdContext';
+import KycGateModal, { useKycGate } from '@/components/KycGate';
 import Colors from '@/constants/colors';
 import SpinningCoin from '@/components/SpinningCoin';
 import { InlineBannerAd } from '@/components/StickyBannerAd';
@@ -112,12 +113,25 @@ export default function WalletScreen() {
   const { shibBalance, lockedShibBalance, availableShibBalance, powerTokens, hitTickets, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
   const { pbUser } = useAuth();
   const { showMiningInterstitial } = useAds();
+  const { isKycVerified } = useKycGate();
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [binanceVerified, setBinanceVerified] = useState(false);
-  const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>('Binance Email');
+  const [showKycGate, setShowKycGate] = useState(false);
   const [miningHistory, setMiningHistory] = useState<MiningHistoryRecord[]>([]);
+
+  /* ── KYC destination routing — Binance Email only for verified India users ── */
+  const canUseBinance = pbUser?.kycCountry === 'India' && !!pbUser?.kycBinanceEmail;
+  const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>(canUseBinance ? 'Binance Email' : 'BEP-20');
+
+  // Whole-tab KYC gate: popup every time a non-verified user lands on Wallet
+  useFocusEffect(
+    useCallback(() => {
+      setShowKycGate(!isKycVerified);
+      return () => setShowKycGate(false);
+    }, [isKycVerified]),
+  );
 
   const fetchMiningHistory = useCallback(async (pbId: string) => {
     try {
@@ -143,37 +157,27 @@ export default function WalletScreen() {
       fetchMiningHistory(pbUser.pbId);
     }
   }, [pbUser, fetchMiningHistory]);
-  const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const addressLabel = method === 'BEP-20' ? 'BEP-20 Wallet Address' : 'Binance Email';
-  const addressPlaceholder = method === 'BEP-20' ? 'Enter your BEP-20 address (0x...)' : 'Enter your Binance email';
+  /* ── BEP-20 balance lock — requires 50,000+ SHIB. Only applies when the user
+     has a Binance Email alternative (India); BEP-20-only users are never locked
+     out of their sole withdrawal method. ── */
+  const isBep20Locked = canUseBinance && shibBalance < BEP20_MIN_BALANCE;
 
-  /* ── BEP-20 balance lock — requires 50,000+ SHIB ── */
-  const isBep20Locked = shibBalance < BEP20_MIN_BALANCE;
-
-  // Auto-switch away from BEP-20 if balance drops below the threshold
+  // Keep method consistent with the verified destination options
   useEffect(() => {
-    if (isBep20Locked && method === 'BEP-20') {
-      setMethod('Binance Email');
-      setAddress('');
-    }
-  }, [isBep20Locked]);
+    if (!canUseBinance && method === 'Binance Email') setMethod('BEP-20');
+    if (isBep20Locked && method === 'BEP-20') setMethod('Binance Email');
+  }, [canUseBinance, isBep20Locked, method]);
+
+  /* ── Verified destination (read-only — server resolves the actual payout target) ── */
+  const destination = method === 'BEP-20'
+    ? (pbUser?.kycBep20Address || '')
+    : (pbUser?.kycBinanceEmail || '');
 
   /* ── Pending withdrawal lock ── */
   const hasPendingWithdrawal = withdrawals.some(w => w.status === 'pending');
-
-  /* ── Address / Email validation ── */
-  const trimmedAddr = address.trim();
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-  const isValidEmail   = method === 'BEP-20' || emailRegex.test(trimmedAddr);
-  const isValidAddress = method === 'Binance Email' || trimmedAddr.length >= 30;
-  const addressError =
-    trimmedAddr.length === 0 ? ''
-    : method === 'Binance Email' && !isValidEmail ? 'Invalid Email Format'
-    : method === 'BEP-20' && !isValidAddress ? 'Invalid Address'
-    : '';
 
   /* ── Fee calculations ── */
   const grossAmt = parseFloat(amount) || 0;
@@ -183,7 +187,7 @@ export default function WalletScreen() {
   const hasEnoughBalance    = grossAmt > 0 && grossAmt <= availableShibBalance;
   const netMeetsMinimum     = netAmt >= minWithdrawalAmount;
   const showInsufficientMsg = grossAmt > 0 && fee > 0 && !netMeetsMinimum;
-  const canSubmit           = !hasPendingWithdrawal && grossAmt > 0 && hasEnoughBalance && netMeetsMinimum && !!trimmedAddr && isValidEmail && isValidAddress && !submitting;
+  const canSubmit           = !hasPendingWithdrawal && grossAmt > 0 && hasEnoughBalance && netMeetsMinimum && !!destination && !submitting;
 
   function handleSubmitPress() {
     if (hasPendingWithdrawal) {
@@ -210,16 +214,8 @@ export default function WalletScreen() {
       );
       return;
     }
-    if (!trimmedAddr) {
-      Alert.alert('Missing Address', 'Please enter your wallet address or email.');
-      return;
-    }
-    if (method === 'Binance Email' && !isValidEmail) {
-      Alert.alert('Invalid Email Format', 'Please enter a valid email address (e.g. user@example.com).');
-      return;
-    }
-    if (method === 'BEP-20' && !isValidAddress) {
-      Alert.alert('Invalid Wallet Address', 'Aapka wallet address galat hai (Minimum 30 characters required).');
+    if (!destination) {
+      Alert.alert('No Verified Destination', 'Your verified withdrawal destination is missing. Please contact support.');
       return;
     }
     // All validation passed — show the warning popup before processing
@@ -233,12 +229,11 @@ export default function WalletScreen() {
     await new Promise<void>((resolve) => {
       showMiningInterstitial(() => resolve());
     });
-    const res = await createWithdrawal(method, address.trim(), grossAmt, netAmt);
+    const res = await createWithdrawal(method, grossAmt);
     setSubmitting(false);
     if (res.success) {
       setShowWithdraw(false);
       setAmount('');
-      setAddress('');
       Alert.alert('Submitted!', 'Your withdrawal request has been submitted for review.');
     } else {
       Alert.alert('Failed', res.error || 'Could not submit withdrawal.');
@@ -247,7 +242,6 @@ export default function WalletScreen() {
 
   function handleMethodChange(m: 'BEP-20' | 'Binance Email') {
     setMethod(m);
-    setAddress('');
     setBinanceVerified(false);
   }
 
@@ -329,7 +323,9 @@ export default function WalletScreen() {
             <Pressable
               style={({ pressed }) => [styles.withdrawBtn, { opacity: pressed ? 0.85 : 1 }]}
               onPress={() => {
-                if (hasPendingWithdrawal) {
+                if (!isKycVerified) {
+                  setShowKycGate(true);
+                } else if (hasPendingWithdrawal) {
                   Alert.alert('Withdrawal Pending', 'Your previous request is currently under review. Please wait for it to be processed before initiating a new one.');
                 } else {
                   setShowWithdraw(true);
@@ -461,10 +457,11 @@ export default function WalletScreen() {
               </Text>
             )}
 
-            {/* ── Method selector ── */}
+            {/* ── Method selector — options limited to the user's verified
+                 destinations (Binance Email only for verified India users) ── */}
             <Text style={styles.fieldLabel}>Withdrawal Method</Text>
             <View style={styles.methodRow}>
-              {(['Binance Email', 'BEP-20'] as const).map(m => {
+              {(canUseBinance ? (['Binance Email', 'BEP-20'] as const) : (['BEP-20'] as const)).map(m => {
                 const isActive  = method === m;
                 const isFree    = m === 'Binance Email';
                 const isLocked  = m === 'BEP-20' && isBep20Locked;
@@ -516,23 +513,20 @@ export default function WalletScreen() {
               </View>
             )}
 
-            {/* ── Address / email input ── */}
-            <Text style={styles.fieldLabel}>{addressLabel}</Text>
-            <TextInput
-              style={[styles.input, addressError ? styles.inputError : null]}
-              value={address}
-              onChangeText={setAddress}
-              placeholder={addressPlaceholder}
-              placeholderTextColor={Colors.textMuted}
-              autoCapitalize="none"
-              keyboardType={method === 'Binance Email' ? 'email-address' : 'default'}
-            />
-            {addressError ? (
-              <View style={styles.fieldError}>
-                <Ionicons name="alert-circle-outline" size={13} color="#ff5252" />
-                <Text style={styles.fieldErrorText}>{addressError}</Text>
-              </View>
-            ) : null}
+            {/* ── Verified destination — read-only, locked to KYC record ── */}
+            <Text style={styles.fieldLabel}>
+              {method === 'BEP-20' ? 'BEP-20 Wallet Address' : 'Binance Email'} (Verified)
+            </Text>
+            <View style={styles.destBox}>
+              <Ionicons name="shield-checkmark" size={15} color={Colors.success} />
+              <Text style={styles.destBoxText} numberOfLines={1}>
+                {destination || 'No verified destination on file'}
+              </Text>
+              <Ionicons name="lock-closed" size={13} color={Colors.textMuted} />
+            </View>
+            <Text style={styles.destHint}>
+              Funds are sent to your verified {method === 'BEP-20' ? 'wallet address' : 'Binance email'}. To change it, contact support.
+            </Text>
 
             {/* ── Amount input ── */}
             <Text style={styles.fieldLabel}>Gross Amount (SHIB)</Text>
@@ -620,8 +614,8 @@ export default function WalletScreen() {
                   Please also confirm the email address below is correct before proceeding.
                 </Text>
                 <View style={styles.warnAddrBox}>
-                  <Text style={styles.warnAddrLabel}>Binance Email</Text>
-                  <Text style={styles.warnAddrValue} numberOfLines={2}>{address.trim()}</Text>
+                  <Text style={styles.warnAddrLabel}>Binance Email (Verified)</Text>
+                  <Text style={styles.warnAddrValue} numberOfLines={2}>{destination}</Text>
                 </View>
                 {/* Verification checkbox */}
                 <Pressable
@@ -650,8 +644,8 @@ export default function WalletScreen() {
                   <Text style={styles.warnBold}>permanently lost</Text> and cannot be recovered.
                 </Text>
                 <View style={styles.warnAddrBox}>
-                  <Text style={styles.warnAddrLabel}>Wallet Address</Text>
-                  <Text style={styles.warnAddrValue} numberOfLines={2}>{address.trim()}</Text>
+                  <Text style={styles.warnAddrLabel}>Wallet Address (Verified)</Text>
+                  <Text style={styles.warnAddrValue} numberOfLines={2}>{destination}</Text>
                 </View>
                 <Pressable style={styles.warnConfirmBtn} onPress={handleConfirmedWithdraw}>
                   <Text style={styles.warnConfirmText}>I Understand — Confirm</Text>
@@ -715,6 +709,16 @@ export default function WalletScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* ══ KYC GATE — blocks non-verified users from the Wallet ═════════════ */}
+      <KycGateModal
+        visible={showKycGate}
+        feature="wallet"
+        onClose={() => {
+          setShowKycGate(false);
+          router.replace('/(tabs)');
+        }}
+      />
     </View>
   );
 }
@@ -737,6 +741,13 @@ const styles = StyleSheet.create({
   lockChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(0,0,0,0.28)', borderRadius: 10, paddingVertical: 5, paddingHorizontal: 9 },
   lockChipText: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: Colors.gold },
   modalLockNote: { fontFamily: 'Inter_500Medium', fontSize: 12, color: Colors.gold, marginTop: 6 },
+  destBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: 'rgba(0,230,118,0.06)', borderWidth: 1, borderColor: 'rgba(0,230,118,0.25)',
+    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 12,
+  },
+  destBoxText: { flex: 1, fontFamily: 'Inter_600SemiBold', fontSize: 13, color: Colors.textPrimary },
+  destHint: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted, marginTop: 5, lineHeight: 15 },
 
   tierCard: { backgroundColor: Colors.darkCard, borderRadius: 14, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: Colors.darkBorder },
   tierRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },

@@ -30,6 +30,7 @@ import { useWallet } from '@/context/WalletContext';
 import { useAds } from '@/context/AdContext';
 import { useAuth } from '@/context/AuthContext';
 import TicketIcon from '@/components/TicketIcon';
+import KycGateModal, { useKycGate } from '@/components/KycGate';
 import { InlineBannerAd } from '@/components/StickyBannerAd';
 import { ArcadeSocket } from '@/lib/arcadeClient';
 import {
@@ -419,9 +420,21 @@ export default function ArcadeMatchScreen() {
     }
   }, [maybeStartGame, sendToGame, refetch, armAfk, clearAfk]);
 
-  /* ── connect on mount (online only) ───────────────────────────────────── */
+  /* ── KYC gate (online only) — match is deep-linkable, so the socket must
+   * not open (and PT must not be staked) until the user is verified. kycOk
+   * LATCHES true so a transient pbUser re-hydration can never close a live
+   * match socket mid-game. Practice stays ungated (offline, no stakes). */
+  const { isKycVerified } = useKycGate();
+  const [kycOk, setKycOk] = useState(isKycVerified);
+  useEffect(() => {
+    if (isKycVerified) setKycOk(true);
+  }, [isKycVerified]);
+  const showKycGate = !isPracticeParam && !kycOk;
+
+  /* ── connect once KYC-cleared (online only) ───────────────────────────── */
   useEffect(() => {
     if (isPracticeParam) return; // practice never touches the network
+    if (!kycOk) return; // gate: wait for KYC before joining the paid queue
     const token = pb.authStore.token;
     const pbId = pb.authStore.record?.id || (pb.authStore as any).model?.id;
     const sock = new ArcadeSocket({
@@ -452,8 +465,10 @@ export default function ArcadeMatchScreen() {
       if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
       if (afkTimerRef.current) clearTimeout(afkTimerRef.current);
     };
+    // kycOk latches false→true exactly once, so this runs at most one connect;
+    // the pre-latch run returns before creating a socket (no cleanup to fire).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [kycOk]);
 
   // Practice: as soon as the game reports ready, flip it into 3-life offline play
   // by simply NOT injecting ARCADE_MATCH_START (the SDK stays offline by default).
@@ -824,6 +839,16 @@ export default function ArcadeMatchScreen() {
       )}
 
       {Platform.OS === 'web' && <View style={{ height: webBottom }} />}
+
+      {/* KYC gate — online match is deep-linkable; block until verified */}
+      <KycGateModal
+        visible={showKycGate}
+        feature="multiplayer"
+        onClose={() => {
+          if (router.canGoBack()) router.back();
+          else router.replace('/(tabs)' as any);
+        }}
+      />
     </View>
   );
 }

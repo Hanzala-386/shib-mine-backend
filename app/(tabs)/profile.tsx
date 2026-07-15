@@ -614,6 +614,31 @@ export default function ProfileScreen() {
               <Text style={styles.adminBadgeText}>Admin</Text>
             </View>
           )}
+          {/* KYC verification badge / CTA */}
+          {pbUser?.kycStatus === 'verified' ? (
+            <View style={styles.kycBadgeVerified} testID="profile-kyc-verified">
+              <Ionicons name="shield-checkmark" size={12} color="#00E676" />
+              <Text style={styles.kycBadgeVerifiedText}>Verified Account</Text>
+            </View>
+          ) : (
+            <Pressable
+              style={styles.kycBadgePending}
+              onPress={() => router.push('/verify-account' as any)}
+              testID="profile-kyc-cta"
+            >
+              <Ionicons
+                name={pbUser?.kycStatus === 'under_review' ? 'time-outline' : 'alert-circle-outline'}
+                size={12}
+                color={Colors.gold}
+              />
+              <Text style={styles.kycBadgePendingText}>
+                {pbUser?.kycStatus === 'under_review' ? 'Verification Under Review' : 'Verify Account'}
+              </Text>
+              {pbUser?.kycStatus !== 'under_review' && (
+                <Ionicons name="chevron-forward" size={12} color={Colors.gold} />
+              )}
+            </Pressable>
+          )}
         </Animated.View>
 
         {/* ── Stats grid: Sessions / Referrals / SHIB ── */}
@@ -1204,6 +1229,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 4, marginTop: 4,
   },
   adminBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: '#000', textTransform: 'uppercase' },
+  kycBadgeVerified: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: 'rgba(0,230,118,0.10)', borderWidth: 1, borderColor: 'rgba(0,230,118,0.35)',
+    borderRadius: 20, paddingVertical: 5, paddingHorizontal: 12, marginTop: 8,
+  },
+  kycBadgeVerifiedText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: '#00E676' },
+  kycBadgePending: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: 'rgba(244,196,48,0.10)', borderWidth: 1, borderColor: 'rgba(244,196,48,0.35)',
+    borderRadius: 20, paddingVertical: 5, paddingHorizontal: 12, marginTop: 8,
+  },
+  kycBadgePendingText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: Colors.gold },
 
   /* ── Stats grid ── */
   statsGrid: {

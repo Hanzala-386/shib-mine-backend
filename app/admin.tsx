@@ -15,6 +15,8 @@ import { useAuth } from '@/context/AuthContext';
 import { api, type AdminTask, type AdminTaskSubmission, type SupportTicketRecord, type PBUser } from '@/lib/api';
 import { pb } from '@/lib/pocketbase';
 import { MAX_VIP_LEVEL } from '@shared/vip';
+import { KYC_REJECT_REASONS } from '@shared/kyc';
+import type { VerificationRequestRecord } from '@/lib/api';
 import Colors from '@/constants/colors';
 
 // Mint a unique cycle identifier for a freshly-launched tournament. Mirrors
@@ -69,6 +71,93 @@ export default function AdminScreen() {
     } finally {
       setVipSavingId(null);
     }
+  };
+
+  // ── KYC verification requests state ──
+  const [verifications, setVerifications]   = useState<VerificationRequestRecord[]>([]);
+  const [verifLoading, setVerifLoading]     = useState(false);
+  const [verifActingId, setVerifActingId]   = useState<string | null>(null);
+  const [rejectTarget, setRejectTarget]     = useState<VerificationRequestRecord | null>(null);
+  const [rejectReason, setRejectReason]     = useState<string>(KYC_REJECT_REASONS[0]);
+  const [unverifyingId, setUnverifyingId]   = useState<string | null>(null);
+
+  const fetchVerifications = useCallback(async () => {
+    setVerifLoading(true);
+    try {
+      const res = await api.adminGetVerifications('under_review');
+      setVerifications(res.items);
+    } catch {
+      setVerifications([]);
+    } finally {
+      setVerifLoading(false);
+    }
+  }, []);
+
+  const handleApproveVerification = (req: VerificationRequestRecord) => {
+    Alert.alert(
+      'Approve Verification',
+      `Approve ${req.fullName} (${req.userEmail || req.userId})? Their withdrawal destination will be locked to these details.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Approve',
+          onPress: async () => {
+            setVerifActingId(req.id);
+            try {
+              await api.adminApproveVerification(req.id);
+              setVerifications((prev) => prev.filter((r) => r.id !== req.id));
+              if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            } catch (e: any) {
+              Alert.alert('Error', e?.message || 'Failed to approve');
+            } finally {
+              setVerifActingId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleRejectVerification = async () => {
+    if (!rejectTarget) return;
+    const req = rejectTarget;
+    setVerifActingId(req.id);
+    setRejectTarget(null);
+    try {
+      await api.adminRejectVerification(req.id, rejectReason);
+      setVerifications((prev) => prev.filter((r) => r.id !== req.id));
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to reject');
+    } finally {
+      setVerifActingId(null);
+    }
+  };
+
+  const handleUnverify = (u: PBUser) => {
+    Alert.alert(
+      'Unverify User',
+      `Remove verification from ${u.email || u.displayName}? They will be blocked from Wallet & Multiplayer until they verify again.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Unverify',
+          style: 'destructive',
+          onPress: async () => {
+            setUnverifyingId(u.pbId);
+            try {
+              await api.adminUnverifyUser(u.pbId);
+              setVipResults((prev) => prev.map((x) => (x.pbId === u.pbId ? { ...x, kycStatus: 'none' } : x)));
+              if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            } catch (e: any) {
+              Alert.alert('Error', e?.message || 'Failed to unverify');
+            } finally {
+              setUnverifyingId(null);
+            }
+          },
+        },
+      ],
+    );
   };
 
   // ── Task management state ──
@@ -190,6 +279,7 @@ export default function AdminScreen() {
       fetchTasks();
       fetchSubmissions();
       fetchSupportTickets();
+      fetchVerifications();
       // Load tournament config
       pb.collection('tournament_config').getList(1, 1, { sort: '-created' })
         .then(res => {
@@ -798,6 +888,23 @@ export default function AdminScreen() {
                   </View>
                   {vipSavingId === u.pbId && <ActivityIndicator color={Colors.gold} size="small" />}
                 </View>
+                {u.kycStatus === 'verified' && (
+                  <Pressable
+                    style={styles.unverifyBtn}
+                    disabled={unverifyingId === u.pbId}
+                    onPress={() => handleUnverify(u)}
+                    testID={`admin-unverify-${u.pbId}`}
+                  >
+                    {unverifyingId === u.pbId
+                      ? <ActivityIndicator color={Colors.error} size="small" />
+                      : (
+                        <>
+                          <Ionicons name="shield-outline" size={13} color={Colors.error} />
+                          <Text style={styles.unverifyBtnText}>Unverify Account</Text>
+                        </>
+                      )}
+                  </Pressable>
+                )}
                 <View style={styles.vipLevelRow}>
                   {Array.from({ length: MAX_VIP_LEVEL + 1 }, (_, lvl) => (
                     <Pressable
@@ -811,6 +918,70 @@ export default function AdminScreen() {
                       </Text>
                     </Pressable>
                   ))}
+                </View>
+              </View>
+            ))}
+          </AdminSection>
+
+          {/* ── Verification Requests (KYC) ─────────────────────────────── */}
+          <AdminSection title="Verification Requests" icon="shield-account">
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={styles.fieldLabel}>
+                {verifLoading ? 'Loading…' : `${verifications.length} pending`}
+              </Text>
+              <Pressable onPress={fetchVerifications} style={styles.refreshBtn} disabled={verifLoading}>
+                <Ionicons name="refresh" size={16} color={Colors.gold} />
+              </Pressable>
+            </View>
+
+            {!verifLoading && verifications.length === 0 && (
+              <Text style={[styles.fieldLabel, { marginTop: 12 }]}>
+                No pending verification requests.
+              </Text>
+            )}
+
+            {verifications.map((req) => (
+              <View key={req.id} style={styles.vipUserCard} testID={`verif-card-${req.id}`}>
+                <Text style={styles.vipUserEmail} numberOfLines={1}>{req.fullName}</Text>
+                <Text style={styles.vipUserMeta} numberOfLines={1}>
+                  {req.userEmail || req.userId || '—'}
+                </Text>
+                <View style={{ marginTop: 8, gap: 3 }}>
+                  <Text style={styles.verifDetail}>Country: <Text style={styles.verifDetailVal}>{req.country} ({req.countryCode})</Text></Text>
+                  <Text style={styles.verifDetail}>Phone: <Text style={styles.verifDetailVal}>{req.countryCode} {req.phone}</Text></Text>
+                  {!!req.binanceEmail && (
+                    <Text style={styles.verifDetail}>Binance Email: <Text style={styles.verifDetailVal}>{req.binanceEmail}</Text></Text>
+                  )}
+                  <Text style={styles.verifDetail}>BEP-20: <Text style={styles.verifDetailVal} numberOfLines={1}>{req.bep20Address}</Text></Text>
+                  {!!req.created && (
+                    <Text style={styles.verifDetail}>Submitted: <Text style={styles.verifDetailVal}>{req.created.slice(0, 16).replace('T', ' ')}</Text></Text>
+                  )}
+                </View>
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                  <Pressable
+                    style={[styles.verifApproveBtn, verifActingId === req.id && { opacity: 0.5 }]}
+                    disabled={verifActingId === req.id}
+                    onPress={() => handleApproveVerification(req)}
+                    testID={`verif-approve-${req.id}`}
+                  >
+                    {verifActingId === req.id
+                      ? <ActivityIndicator color="#0A0A0F" size="small" />
+                      : (
+                        <>
+                          <Ionicons name="checkmark-circle" size={15} color="#0A0A0F" />
+                          <Text style={styles.verifApproveText}>Approve</Text>
+                        </>
+                      )}
+                  </Pressable>
+                  <Pressable
+                    style={[styles.verifRejectBtn, verifActingId === req.id && { opacity: 0.5 }]}
+                    disabled={verifActingId === req.id}
+                    onPress={() => { setRejectReason(KYC_REJECT_REASONS[0]); setRejectTarget(req); }}
+                    testID={`verif-reject-${req.id}`}
+                  >
+                    <Ionicons name="close-circle" size={15} color={Colors.error} />
+                    <Text style={styles.verifRejectText}>Reject</Text>
+                  </Pressable>
                 </View>
               </View>
             ))}
@@ -1228,6 +1399,42 @@ export default function AdminScreen() {
         <Text style={styles.proofClose}>Tap anywhere to close</Text>
       </Pressable>
     </Modal>
+
+    {/* KYC reject-reason picker modal */}
+    <Modal visible={!!rejectTarget} transparent animationType="fade" onRequestClose={() => setRejectTarget(null)}>
+      <View style={styles.rejectOverlay}>
+        <View style={styles.rejectCard}>
+          <Text style={styles.rejectTitle}>Reject Verification</Text>
+          <Text style={styles.rejectSub} numberOfLines={1}>
+            {rejectTarget?.fullName} · {rejectTarget?.userEmail || rejectTarget?.userId || ''}
+          </Text>
+          <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Select a reason (shown to the user):</Text>
+          {KYC_REJECT_REASONS.map((r) => (
+            <Pressable
+              key={r}
+              style={[styles.rejectReasonRow, rejectReason === r && styles.rejectReasonRowActive]}
+              onPress={() => setRejectReason(r)}
+              testID={`reject-reason-${r}`}
+            >
+              <Ionicons
+                name={rejectReason === r ? 'radio-button-on' : 'radio-button-off'}
+                size={17}
+                color={rejectReason === r ? Colors.gold : Colors.textMuted}
+              />
+              <Text style={[styles.rejectReasonText, rejectReason === r && { color: Colors.textPrimary }]}>{r}</Text>
+            </Pressable>
+          ))}
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+            <Pressable style={styles.rejectCancelBtn} onPress={() => setRejectTarget(null)}>
+              <Text style={styles.rejectCancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable style={styles.rejectConfirmBtn} onPress={handleRejectVerification} testID="reject-confirm">
+              <Text style={styles.rejectConfirmText}>Reject</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
     </>
   );
 }
@@ -1268,6 +1475,52 @@ const styles = StyleSheet.create({
   vipUserMeta: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   blacklistBadge: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 4, marginTop: 6, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: Colors.error },
   blacklistBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#fff', letterSpacing: 0.4 },
+
+  /* ── KYC verification ── */
+  unverifyBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 10, paddingVertical: 8, borderRadius: 10,
+    borderWidth: 1, borderColor: Colors.error + '66', backgroundColor: Colors.error + '14',
+  },
+  unverifyBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: Colors.error },
+  verifDetail: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary },
+  verifDetailVal: { fontFamily: 'Inter_500Medium', color: Colors.textPrimary },
+  verifApproveBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 10, borderRadius: 10, backgroundColor: Colors.gold,
+  },
+  verifApproveText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#0A0A0F' },
+  verifRejectBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: Colors.error + '66',
+    backgroundColor: Colors.error + '14',
+  },
+  verifRejectText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: Colors.error },
+  rejectOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', alignItems: 'center', justifyContent: 'center', padding: 24,
+  },
+  rejectCard: {
+    width: '100%', maxWidth: 420, backgroundColor: Colors.darkCard, borderRadius: 18,
+    borderWidth: 1, borderColor: Colors.darkBorder, padding: 18,
+  },
+  rejectTitle: { fontFamily: 'Inter_700Bold', fontSize: 17, color: Colors.textPrimary },
+  rejectSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary, marginTop: 3 },
+  rejectReasonRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9, paddingHorizontal: 10,
+    borderRadius: 10, marginTop: 6, backgroundColor: Colors.darkSurface,
+    borderWidth: 1, borderColor: 'transparent',
+  },
+  rejectReasonRowActive: { borderColor: Colors.gold + '66', backgroundColor: Colors.gold + '12' },
+  rejectReasonText: { fontFamily: 'Inter_500Medium', fontSize: 13, color: Colors.textSecondary, flex: 1 },
+  rejectCancelBtn: {
+    flex: 1, paddingVertical: 11, borderRadius: 10, alignItems: 'center',
+    borderWidth: 1, borderColor: Colors.darkBorder, backgroundColor: Colors.darkSurface,
+  },
+  rejectCancelText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: Colors.textSecondary },
+  rejectConfirmBtn: {
+    flex: 1, paddingVertical: 11, borderRadius: 10, alignItems: 'center', backgroundColor: Colors.error,
+  },
+  rejectConfirmText: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#fff' },
   vipLevelRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   vipLevelChip: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.darkCard, borderWidth: 1, borderColor: Colors.darkBorder },
   vipLevelChipActive: { backgroundColor: Colors.gold, borderColor: Colors.gold },

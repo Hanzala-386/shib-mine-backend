@@ -1,0 +1,229 @@
+USER VERIFICATION & DYNAMIC WITHDRAWAL SYSTEM
+
+Agent, I am detailing the complete User Verification & KYC System for my application. Follow these instructions exactly. Do not skip any logic.
+
+1. Verification Access & UI Logic:
+
+The Lock: Any user with 'Unverified' status cannot access the 'Multiplayer Hub' or 'Wallet' pages.
+
+The Trigger: Attempting to access these pages triggers a pop-up: 'Your account is not verified. Please verify to access this feature.' with a 'Verify Now' button that opens the Verification Form.
+
+UI Indicators: In the 'Profile' section, show 'Unverified' under the user's name. Upon verification, replace it with a green checkmark icon, and show a 'Verified User' badge with a light-green glow on the profile picture.
+
+2. Verification Form & Country-Specific Routing:
+
+Sequence: User enters: (1) Full Name -> (2) Country Selection (Dropdown) -> (3) Country Code (Auto-selected) -> (4) Mobile Number.
+
+Dynamic Routing:
+
+Compare the selected country against the 'Global Binance Supported Countries' list (I will provide this list below).
+
+IF supported: Show BOTH 'Binance Email' and 'BEP20 Wallet Address' fields.
+
+IF NOT supported: Hide 'Binance Email', show ONLY 'BEP20 Wallet Address'.
+
+BLOCK: Any user selecting 'Iran' must be completely blocked from submitting.
+
+Duplicate Prevention: The backend must check if Email, Phone, or BEP20 Address is already used by another account. If yes, show a 'Field already in use' error with a 'Contact Support' button that opens the user's email client with a pre-filled body: 'Subject: Account Verification Dispute | Body: User ID: [ID], Name: [Name], Email: [Email]'.
+
+3. Admin & Approval Logic:
+
+Status: Once submitted, the status becomes 'Under Review'.
+
+Admin : I need to 'Approve' or 'Reject' requests.
+
+Rejection: If I reject a request, I must select a reason (e.g., 'Binance email not linked', 'Data duplicate'). This reason must be shown to the user on their screen.
+
+Manual Control: I must have the power to 'Unverify' any user at any time.
+
+4. Optimized One-Click Withdrawal:
+
+Integration: Once a user is 'Verified', the system already knows their Binance Email and BEP20 Wallet Address.
+
+India Logic: Users from India will have both 'Binance Email' and 'BEP20 Wallet Address' registered and verified.
+
+International Logic: Users from ALL countries other than India will ONLY have 'BEP20 Wallet Address' registered and verified.
+
+Withdrawal UI: Remove email/wallet fields from the Withdrawal page. User ONLY sees 'Amount' and 'Withdraw' button.
+
+Compliance: The system pulls the registered, verified destination (Binance Email/BEP20 for India; BEP20 for all others) automatically. This ensures no funds go to unverified or unauthorized channels, keeping me 100% compliant with AML and money laundering regulations.
+
+5. Performance & Data Integrity:
+
+All verification data must be stored in a new verification_requests collection in PocketBase.
+
+The backend must remain a 'Thin-Layer' gateway, directly interacting with PocketBase without heavy processing.
+
+Countries List (Global Binance Supported):
+Afghanistan
+Albania
+Algeria
+Angola
+Anguilla
+Antigua and Barbuda
+Argentina
+Armenia
+Australia
+Austria
+Azerbaijan
+Bahamas (the)
+Bahrain
+Barbados
+Belarus
+Belgium
+Belize
+Benin
+Bermuda
+Bhutan
+Bolivia (Plurinational State of)
+Bosnia and Herzegovina
+Botswana
+Brazil
+Brunei Darussalam
+Bulgaria
+Burkina Faso
+Cabo Verde
+Cambodia
+Cameroon
+Canada
+Cayman Islands (the)
+Chad
+Chile
+Colombia
+Congo (the Democratic Republic of the)
+Congo (the)
+Costa Rica
+Côte d'Ivoire
+Croatia
+Cyprus
+Czechia
+Denmark
+Dominica
+Dominican Republic (the)
+Ecuador
+Egypt
+El Salvador
+Estonia
+Eswatini
+Fiji
+Finland
+France
+Gabon
+Gambia (the)
+Georgia
+Germany
+Ghana
+Greece
+Grenada
+Guatemala
+Guinea-Bissau
+Guyana
+Honduras
+Hong Kong
+Hungary
+Iceland
+India
+Indonesia
+Iraq
+Ireland
+Israel
+Italy
+Jamaica
+Jordan
+Kazakhstan
+Kenya
+Kosovo
+Kuwait
+Kyrgyzstan
+Lao People's Democratic Republic (the)
+Latvia
+Lebanon
+Liberia
+Libya
+Lithuania
+Luxembourg
+Macao
+Madagascar
+Malawi
+Maldives
+Mali
+Malta
+Mauritania
+Mauritius
+Mexico
+Micronesia (Federated States of)
+Moldova (the Republic of)
+Mongolia
+Montenegro
+Montserrat
+Morocco
+Mozambique
+Myanmar
+Namibia
+Nauru
+Nepal
+New Zealand
+Nicaragua
+Niger (the)
+Nigeria
+Norway
+Oman
+Pakistan
+Palau
+Panama
+Papua New Guinea
+Paraguay
+Peru
+Philippines (the)
+Poland
+Portugal
+Qatar
+Republic of North Macedonia
+Romania
+Russian Federation (the)
+Rwanda
+Saint Kitts and Nevis
+Saint Lucia
+Saint Vincent and the Grenadines
+Sao Tome and Principe
+Saudi Arabia
+Senegal
+Serbia
+Seychelles
+Sierra Leone
+Singapore
+Slovakia
+Slovenia
+Solomon Islands
+South Africa
+South Korea
+Spain
+Sri Lanka
+Suriname
+Sweden
+Switzerland
+Taiwan
+Tajikistan
+Tanzania, United Republic of
+Thailand
+Tonga
+Trinidad and Tobago
+Tunisia
+Turkey
+Turkmenistan
+Turks and Caicos Islands (the)
+Uganda
+Ukraine
+United Arab Emirates (the)
+United Kingdom of Great Britain and Northern Ireland (the)
+Uruguay
+Uzbekistan
+Vanuatu
+Venezuela (Bolivarian Republic of)
+Viet Nam
+Virgin Islands (British)
+Yemen
+Zambia
+Zimbabwe
+
+Start by setting up the database schema for verification_requests and the form routing logic. I expect this to be bug-free and fully integrated with the existing security system.

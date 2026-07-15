@@ -29,6 +29,9 @@ export interface UserProfile {
   vipLevel: number;
   isAdminPromoted: boolean;
   adminPromotedLevel: number;
+  kycStatus: 'none' | 'under_review' | 'verified' | 'rejected';
+  kycRejectReason: string;
+  kycCountry: string;
 }
 
 const ADMIN_EMAIL = 'hanzala386@gmail.com';
@@ -70,6 +73,9 @@ function pbToProfile(u: PBUser, fbUser: FirebaseUser): UserProfile {
     vipLevel: normalizeVipLevel(u.vipLevel),
     isAdminPromoted: !!u.isAdminPromoted,
     adminPromotedLevel: normalizeVipLevel(u.adminPromotedLevel),
+    kycStatus: (u.kycStatus as UserProfile['kycStatus']) || 'none',
+    kycRejectReason: u.kycRejectReason || '',
+    kycCountry: u.kycCountry || '',
   };
 }
 
@@ -104,6 +110,17 @@ function formatRawPbUser(u: any): PBUser {
     vipLevel: normalizeVipLevel(u.vip_level),
     isAdminPromoted: !!u.is_admin_promoted,
     adminPromotedLevel: normalizeVipLevel(u.admin_promoted_level),
+    // KYC verification (server-managed; snake_case → camelCase like formatUser())
+    kycStatus: (['none', 'under_review', 'verified', 'rejected'].includes(u.kyc_status)
+      ? u.kyc_status
+      : 'none') as PBUser['kycStatus'],
+    kycRejectReason: u.kyc_reject_reason || '',
+    kycFullName: u.kyc_full_name || '',
+    kycCountry: u.kyc_country || '',
+    kycCountryCode: u.kyc_country_code || '',
+    kycPhone: u.kyc_phone || '',
+    kycBinanceEmail: u.kyc_binance_email || '',
+    kycBep20Address: u.kyc_bep20_address || '',
   } as PBUser;
 }
 
