@@ -147,7 +147,7 @@ interface WsGameSession {
   committed: boolean;
   blacklisted: boolean; // impossible score detected → match voided, 0 PT
   legacy: boolean;      // old-bridge client (no `v` in GAME_START) → no hard gate
-  logId: string | null; // game_logs record id created at GAME_START
+  logId: string | null; // game_score record id created at GAME_START
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -180,29 +180,41 @@ async function wsCommitSession(sid: string, session: WsGameSession): Promise<voi
     await pbPatch(`/api/collections/users/records/${session.pbId}`, {
       last_session_score: finalPT,
     });
-    // Match lifecycle: the game_logs row was created at GAME_START with
-    // match_status "active". Flip it to "started" (= awaiting claim) here.
-    // /api/app/game/reward flips it to "completed" atomically — that flip is
-    // the primary replay-attack guard. "blacklisted" voids the match entirely.
+    // Match lifecycle: the game_score row was created at GAME_START with
+    // match_status "active". PATCH the SAME row (by id, or by match_id lookup)
+    // to "started" (= awaiting claim) with the server-validated raw_score.
+    // final_tokens mirrors raw_score here (1× default); the claim PATCH sets
+    // the final value: is_double ? raw_score*2 : raw_score. "blacklisted"
+    // voids the match entirely.
     const logBody = {
       raw_score:    finalPT,
       final_tokens: finalPT,
       match_status: status,
     };
     if (session.logId) {
-      pbPatch(`/api/collections/game_logs/records/${session.logId}`, logBody).catch(() => {});
-    } else if (session.legacy) {
-      // LEGACY clients only: the best-effort async row create at GAME_START
-      // never landed — write the row now so the claim path can still
-      // correlate and validate. Strict (v>=2) sessions can never reach this:
-      // the GAME_START hard gate refuses to start without a confirmed row.
-      pbPost("/api/collections/game_logs/records", {
-        user:         session.pbId,
-        is_double:    false,
-        match_id:     sid,
-        start_time:   new Date(session.startMs).toISOString(),
-        ...logBody,
-      }).catch(() => {});
+      pbPatch(`/api/collections/game_score/records/${session.logId}`, logBody).catch(() => {});
+    } else {
+      // Row id unknown (legacy async create still in flight, or it failed).
+      // PATCH-or-INSERT by match_id — NEVER a blind insert: one game = one row.
+      (async () => {
+        const found = await pbGet(
+          `/api/collections/game_score/records?filter=${encodeURIComponent(`match_id="${sid}"`)}&perPage=1`
+        );
+        const row = found?.items?.[0];
+        if (row?.id) {
+          await pbPatch(`/api/collections/game_score/records/${row.id}`, logBody);
+        } else if (session.legacy) {
+          // LEGACY clients only: the best-effort create at GAME_START never
+          // landed — write the one row now so the claim path can validate.
+          // (A stray late GAME_START insert is deleted by its own race guard.)
+          await pbPost("/api/collections/game_score/records", {
+            user:      session.pbId,
+            is_double: false,
+            match_id:  sid,
+            ...logBody,
+          });
+        }
+      })().catch(() => {});
     }
   } catch (e: any) {
     console.error(`[ws/game] commit error (${session.pbId}):`, e.message);
@@ -259,7 +271,6 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
             is_double:    false,
             final_tokens: 0,
             match_id:     sid,
-            start_time:   new Date(session.startMs).toISOString(),
             match_status: "active",
           };
           if (strictClient) {
@@ -269,7 +280,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
             // a retry screen.
             let matchRow: any = null;
             try {
-              matchRow = await pbPost("/api/collections/game_logs/records", rowBody);
+              matchRow = await pbPost("/api/collections/game_score/records", rowBody);
             } catch {}
             if (!matchRow || matchRow.code || !matchRow.id) {
               console.error(`[ws/game] match row create FAILED for ${pbId} — game start BLOCKED`);
@@ -283,7 +294,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
             // delayed/blocked SESSION_READY as "Connection failed". The row is
             // created async best-effort; wsCommitSession has a legacy-only
             // fallback INSERT if this write never lands.
-            pbPost("/api/collections/game_logs/records", rowBody)
+            pbPost("/api/collections/game_score/records", rowBody)
               .then((r: any) => {
                 if (!r || !r.id || r.code) return;
                 if (session.committed) {
@@ -292,7 +303,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
                   // commit path handled the outcome (legacy fallback INSERT
                   // wrote the final row / zero-score wrote nothing) — this
                   // late row is a stray duplicate, remove it.
-                  pbDelete(`/api/collections/game_logs/records/${r.id}`).catch(() => {});
+                  pbDelete(`/api/collections/game_score/records/${r.id}`).catch(() => {});
                   return;
                 }
                 session.logId = r.id;
@@ -416,7 +427,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
         if (session.timer) clearTimeout(session.timer);
         session.committed = true;
         if (session.logId) {
-          pbPatch(`/api/collections/game_logs/records/${session.logId}`, {
+          pbPatch(`/api/collections/game_score/records/${session.logId}`, {
             match_status: "expired",
           }).catch(() => {});
         }
@@ -894,61 +905,53 @@ async function ensureSessionLogsCollection() {
   }
 }
 
-// ─── Ensure game_logs collection exists in PocketBase ─────────────────────
-// One record per game completed (knife-hit game).
-// Fields: user (pbId), raw_score, is_double (bool), final_tokens (PT credited).
-async function ensureGameLogsCollection() {
+// ─── game_score: ONE row per game (total-reset pipeline) ───────────────────
+// Lifecycle (STRICT — no other code path may INSERT into this collection):
+//   1. GAME_START  → INSERT one row  {raw_score:0, final_tokens:0,
+//                    is_double:false, match_status:"active"}
+//   2. Game over   → PATCH that row  {raw_score:<server score>,
+//                    final_tokens:<raw_score>, match_status:"started"}
+//   3. Claim       → PATCH that row  {is_double, final_tokens, "completed"}
+//                    where final_tokens = is_double ? raw_score*2 : raw_score
+// "blacklisted" voids the match; the sweeper marks stale rows "expired".
+async function ensureGameScoreCollection() {
   try {
     const token = await getAdminToken();
-    const check = await pbGet("/api/collections/game_logs");
+    const check = await pbGet("/api/collections/game_score");
     if (!check.code) {
-      console.log("[game_logs] Collection already exists ✓");
+      console.log("[game_score] Collection already exists ✓");
+      return;
+    }
+    // `user` is a true RELATION to the users collection (needs its id)
+    const usersColl = await pbGet("/api/collections/users");
+    if (usersColl.code || !usersColl.id) {
+      console.warn("[game_score] users collection lookup failed — cannot create");
       return;
     }
     const created = await pbHttp("POST", "/api/collections", {
-      name: "game_logs",
+      name: "game_score",
       type: "base",
       schema: [
-        { name: "user",         type: "text",   required: true  },
+        { name: "user",         type: "relation", required: true,
+          options: { collectionId: usersColl.id, maxSelect: 1, cascadeDelete: false } },
+        { name: "match_id",     type: "text",   required: false },
         { name: "raw_score",    type: "number", required: false },
-        { name: "is_double",    type: "bool",   required: false },
         { name: "final_tokens", type: "number", required: false },
+        { name: "is_double",    type: "bool",   required: false },
+        { name: "match_status", type: "text",   required: false },
       ],
     }, token);
     if (created.code) {
-      console.warn("[game_logs] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      console.warn("[game_score] Could not create collection:", JSON.stringify(created).slice(0, 200));
       return;
     }
+    // Server-only collection: ALL client API rules locked (admin token only)
     await pbHttp("PATCH", `/api/collections/${created.id}`, {
       listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null,
     }, token);
-    console.log("[game_logs] Collection created ✓");
+    console.log("[game_score] Collection created ✓");
   } catch (e: any) {
-    console.warn("[game_logs] Setup failed:", e.message);
-  }
-}
-
-// ─── Migrate existing game_logs: add match_id / start_time / match_status ──
-async function ensureGameLogsFields() {
-  try {
-    const token = await getAdminToken();
-    const coll  = await pbGet("/api/collections/game_logs");
-    if (coll.code) return; // Collection doesn't exist yet
-    const existingNames: string[] = (coll.schema || coll.fields || []).map((f: any) => f.name);
-    if (existingNames.includes("match_id")) {
-      console.log("[game_logs] match_id / start_time / match_status already present ✓");
-      return;
-    }
-    const updatedSchema = [
-      ...(coll.schema || coll.fields || []),
-      { name: "match_id",     type: "text",   required: false },
-      { name: "start_time",   type: "text",   required: false },
-      { name: "match_status", type: "text",   required: false },
-    ];
-    await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: updatedSchema }, token);
-    console.log("[game_logs] match_id / start_time / match_status fields added ✓");
-  } catch (e: any) {
-    console.warn("[game_logs] Field migration failed:", e.message);
+    console.warn("[game_score] Setup failed:", e.message);
   }
 }
 
@@ -958,7 +961,8 @@ async function ensureGameLogsFields() {
 // PB write bumps `updated`). The sweeper marks stale rows "expired" so the
 // reward endpoints reject them. Window is aligned with the 10-minute ad-token
 // TTL so a slow rewarded ad can never outlive its match. Runs on both the dev
-// and Railway servers against the shared PB — the patch is idempotent.
+// and Railway servers against the shared PB — the patch is idempotent and
+// AGE-GATED via `updated` (never touches fresh rows).
 const MATCH_CLAIM_WINDOW_MS = 10 * 60_000;
 function startMatchExpirySweeper() {
   setInterval(async () => {
@@ -969,41 +973,14 @@ function startMatchExpirySweeper() {
       const filter = encodeURIComponent(
         `(match_status="active" || match_status="started") && updated < "${cutoff}"`
       );
-      const page = await pbGet(`/api/collections/game_logs/records?filter=${filter}&perPage=50&fields=id`);
+      const page = await pbGet(`/api/collections/game_score/records?filter=${filter}&perPage=50&fields=id`);
       const ids: string[] = (page?.items || []).map((r: any) => r.id);
       for (const id of ids) {
-        await pbPatch(`/api/collections/game_logs/records/${id}`, { match_status: "expired" }).catch(() => {});
+        await pbPatch(`/api/collections/game_score/records/${id}`, { match_status: "expired" }).catch(() => {});
       }
-      if (ids.length) console.log(`[game_logs] sweeper: expired ${ids.length} stale match(es)`);
+      if (ids.length) console.log(`[game_score] sweeper: expired ${ids.length} stale match(es)`);
     } catch { /* transient PB errors — next tick retries */ }
   }, 60_000).unref();
-}
-
-// ─── One-time archival of legacy game_logs rows with blank match_id ────────
-// Marks pre-matchId rows match_status="archived" so admin views and the
-// sweeper can distinguish them from live matches. Read-ids-first: collect ALL
-// ids BEFORE mutating (never paginate a result set while patching rows out of
-// it). Capped per boot; a huge backlog drains over several restarts.
-async function archiveBlankGameLogs() {
-  try {
-    const filter = encodeURIComponent(`match_id="" && match_status!="archived"`);
-    const ids: string[] = [];
-    let page = 1;
-    for (;;) {
-      const res = await pbGet(`/api/collections/game_logs/records?filter=${filter}&perPage=200&page=${page}&fields=id&sort=created`);
-      const items: any[] = res?.items || [];
-      for (const r of items) ids.push(r.id);
-      if (items.length < 200 || ids.length >= 2000) break;
-      page++;
-    }
-    for (const id of ids) {
-      await pbPatch(`/api/collections/game_logs/records/${id}`, { match_status: "archived" }).catch(() => {});
-    }
-    if (ids.length) console.log(`[game_logs] archived ${ids.length} legacy record(s) with blank match_id ✓`);
-    else console.log("[game_logs] no blank legacy records to archive ✓");
-  } catch (e: any) {
-    console.warn("[game_logs] blank-record archival failed:", e.message);
-  }
 }
 
 // ─── Migrate users: add referral anti-cheat blacklist tiers ───────────────────
@@ -1899,9 +1876,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureWithdrawalRedeemMethod())
     .then(() => ensureNotificationsCollection())
     .then(() => ensureSessionLogsCollection())
-    .then(() => ensureGameLogsCollection())
-    .then(() => ensureGameLogsFields())
-    .then(() => { startMatchExpirySweeper(); return archiveBlankGameLogs(); })
+    .then(() => ensureGameScoreCollection())
+    .then(() => { startMatchExpirySweeper(); })
     .then(() => ensureBlacklistFields())
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
@@ -3938,7 +3914,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // game committed; the client cannot swap in a different matchId later.
       const boundMatchId = typeof matchId === "string" && matchId ? matchId : undefined;
       // ── SERVER-SIDE REWARD BASIS (authoritative, by match_id) ─────────────
-      // The game_logs row for THIS match holds raw_score, written by the
+      // The game_score row for THIS match holds raw_score, written by the
       // server itself (wsCommitSession) at game over. That row is the payout
       // basis: reward = raw_score × 2 exactly. last_session_score is only a
       // fallback for legacy clients with no matchId — it can be overwritten
@@ -3947,7 +3923,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (boundMatchId) {
         try {
           const logRes = await pbGet(
-            `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${boundMatchId}"`)}&perPage=1`
+            `/api/collections/game_score/records?filter=${encodeURIComponent(`match_id="${boundMatchId}"`)}&perPage=1`
           );
           const row = logRes?.items?.[0];
           const committedRaw = Math.max(0, Math.round(Number(row?.raw_score) || 0));
@@ -3955,7 +3931,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             baseScore = committedRaw;
           }
         } catch (rowErr: any) {
-          console.warn("[ad/token] game_logs lookup failed — using last_session_score:", rowErr.message);
+          console.warn("[ad/token] game_score lookup failed — using last_session_score:", rowErr.message);
         }
       }
       const reward = Math.min(baseScore * 2, ABSOLUTE_MAX_SCORE * 2);
@@ -3996,7 +3972,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!matchId) {
         try {
           const openRes = await pbGet(
-            `/api/collections/game_logs/records?filter=${encodeURIComponent(
+            `/api/collections/game_score/records?filter=${encodeURIComponent(
               `user="${pbId}" && (match_status="started" || match_status="active")`
             )}&sort=-created&perPage=1`
           );
@@ -4033,7 +4009,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const logRes = correlatedRecord
             ? { items: [correlatedRecord] }
             : await pbGet(
-                `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
+                `/api/collections/game_score/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
               );
           const logRecord = logRes?.items?.[0];
           if (!logRecord) {
@@ -4061,7 +4037,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         } catch (logErr: any) {
           // PB lookup blip — fail open (the in-memory slot still blocks replays)
-          console.warn("[ad/claim] game_logs lookup failed:", logErr.message);
+          console.warn("[ad/claim] game_score lookup failed:", logErr.message);
         }
       }
 
@@ -4082,13 +4058,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`[ad/claim] pbId=${pbId} claimed ${entry.reward}PT → newPT=${newPT}`);
       // Close the match atomically (durable replay guard) — UPDATE only.
       if (gameLogId) {
-        pbPatch(`/api/collections/game_logs/records/${gameLogId}`, {
+        pbPatch(`/api/collections/game_score/records/${gameLogId}`, {
           match_status: "completed",
           is_double:    true,
           final_tokens: entry.reward,
         }).catch(() => {});
       }
-      // No resolvable match row → NO game_logs write. One game = one row;
+      // No resolvable match row → NO game_score write. One game = one row;
       // the old "legacy" INSERT fallback is deliberately removed.
       res.json({ success: true, newPowerTokens: newPT, reward: entry.reward });
     } catch (e: any) {
@@ -4122,7 +4098,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!matchId) {
         try {
           const openRes = await pbGet(
-            `/api/collections/game_logs/records?filter=${encodeURIComponent(
+            `/api/collections/game_score/records?filter=${encodeURIComponent(
               `user="${pbId}" && (match_status="started" || match_status="active")`
             )}&sort=-created&perPage=1`
           );
@@ -4139,7 +4115,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // ── STRICT MODE (PB settings.strict_match_enforcement, default false) ──
       // Strict: claims with NO resolvable match are rejected outright. Grace
-      // (default) still pays the player but writes NOTHING to game_logs — a
+      // (default) still pays the player but writes NOTHING to game_score — a
       // claim that cannot be tied to a real match leaves no row at all.
       let strictMatch = false;
       try { const s: any = await fetchSettings(); strictMatch = !!s?.strict_match_enforcement; } catch {}
@@ -4178,7 +4154,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // ── LAYER 2: DB-level replay guard + time-to-score check ─────────────
-      // Uses the game_logs record written by wsCommitSession (match_status="started").
+      // Uses the game_score record written by wsCommitSession (match_status="started").
       // If that record is already "completed" → 403 Duplicate Submission.
       let gameLogId: string | null = null;
       let isDoubleClaim = false;
@@ -4187,7 +4163,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const logRes = correlatedRecord
             ? { items: [correlatedRecord] }
             : await pbGet(
-                `/api/collections/game_logs/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
+                `/api/collections/game_score/records?filter=${encodeURIComponent(`match_id="${matchId}"`)}&perPage=1`
               );
           const logRecord = logRes?.items?.[0];
           if (!logRecord) {
@@ -4220,20 +4196,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
             // ── SERVER-AUTHORITATIVE PAYOUT (by match_id) ───────────────────
             // wsCommitSession stored the WS-validated raw score on this row
-            // (raw_score, mirrored into final_tokens) at game over. The client
-            // amount is NOT trusted as a payout basis — it is only a 1× vs 2×
-            // intent signal. The payout snaps to EXACTLY the committed score
-            // (1× Claim) or committed × 2 (2× ad path):
-            //   raw_score 100 → Claim credits 100, 2× credits 200. Never 120.
-            const committedPT = Math.max(
-              0,
-              Math.round(Number(logRecord.raw_score) || Number(logRecord.final_tokens) || 0)
-            );
+            // (game_score.raw_score) at game over. The client amount is NOT
+            // trusted as a payout basis — it is only a 1× vs 2× intent
+            // signal. The payout is strictly:
+            //   final_tokens = is_double ? raw_score * 2 : raw_score
+            //   raw_score 80 → Claim credits 80, 2× credits 160. Never 120.
+            const committedPT = Math.max(0, Math.round(Number(logRecord.raw_score) || 0));
             if (committedPT > 0) {
               if (strictMatch && safeAmount > committedPT * 2) {
                 // Claiming more than 2× the server-validated score is
                 // unambiguous tampering → blacklist the match, deny outright.
-                pbPatch(`/api/collections/game_logs/records/${logRecord.id}`, {
+                pbPatch(`/api/collections/game_score/records/${logRecord.id}`, {
                   match_status: "blacklisted",
                 }).catch(() => {});
                 console.warn(
@@ -4243,7 +4216,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
               }
               // 1× vs 2× intent: anything above 1.5× the committed score is a
               // double claim (the 2× fallback path sends score × 2).
-              isDoubleClaim = safeAmount > Math.round(committedPT * 1.5);
+              // No rounding here — committedPT=1 must still detect amount 2
+              // as a double (2 > 1.5).
+              isDoubleClaim = safeAmount > committedPT * 1.5;
               const paidPT = isDoubleClaim ? committedPT * 2 : committedPT;
               if (safeAmount !== paidPT) {
                 console.warn(
@@ -4251,11 +4226,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 );
               }
               safeAmount = paidPT;
-            } else if (logRecord.start_time) {
+            } else if (logRecord.created) {
               // No WS-committed score on the row (grace-mode "active" rows or
               // genuine 0-score games): fall back to a wall-clock CAP only.
               // Never blacklist on this heuristic — it undercounts legit play.
-              const startMs      = new Date(logRecord.start_time).getTime();
+              // game_score rows carry no start_time field — PB's own `created`
+              // timestamp (set at GAME_START insert) is the game start.
+              const startMs      = new Date(String(logRecord.created).replace(" ", "T")).getTime();
               const durationSec  = (Date.now() - startMs) / 1000;
               const maxPossible  = Math.ceil(durationSec * 5) + 10;
               if (safeAmount > maxPossible) {
@@ -4268,7 +4245,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         } catch (logErr: any) {
           // PB lookup blip — fail open (the in-memory slot still blocks replays)
-          console.warn("[/api/app/game/reward] game_logs lookup failed:", logErr.message);
+          console.warn("[/api/app/game/reward] game_score lookup failed:", logErr.message);
         }
       }
 
@@ -4310,13 +4287,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // or caught here (DB check). Using fire-and-forget since the in-memory guard
       // already blocks races; the DB update is the durable audit trail.
       if (gameLogId) {
-        pbPatch(`/api/collections/game_logs/records/${gameLogId}`, {
+        pbPatch(`/api/collections/game_score/records/${gameLogId}`, {
           match_status: "completed",
           final_tokens: safeAmount,
           is_double:    isDoubleClaim,
         }).catch(() => {});
       }
-      // No resolvable match row → NO game_logs write. One game = one row;
+      // No resolvable match row → NO game_score write. One game = one row;
       // a claim that cannot be tied to a real match must never create rows
       // (the old "legacy" INSERT fallback is deliberately removed).
 
