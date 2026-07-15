@@ -257,6 +257,7 @@ async function wsCommitSession(sid: string, session: WsGameSession): Promise<voi
           // (A stray late GAME_START insert is deleted by its own race guard.)
           await pbPost("/api/collections/game_score/records", {
             user:      session.pbId,
+            user_id:   session.pbId,
             is_double: false,
             match_id:  sid,
             ...logBody,
@@ -315,6 +316,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           // row stuck in active/started for too long.
           const rowBody = {
             user:         pbId,
+            user_id:      pbId,
             raw_score:    0,
             is_double:    false,
             final_tokens: 0,
@@ -972,6 +974,19 @@ async function ensureGameScoreCollection() {
     const check = await pbGet("/api/collections/game_score");
     if (!check.code) {
       console.log("[game_score] Collection already exists ✓");
+      // ADDITIVE migration: plain-text user_id mirror of the player's PB id
+      // (the `user` relation stays untouched — user_id is for direct tracking).
+      const existingNames: string[] = (check.schema || check.fields || []).map((f: any) => f.name);
+      if (!existingNames.includes("user_id")) {
+        const updatedSchema = [
+          ...(check.schema || check.fields || []),
+          { name: "user_id", type: "text", required: false },
+        ];
+        await pbHttp("PATCH", `/api/collections/${check.id}`, { schema: updatedSchema }, token);
+        console.log("[game_score] user_id field added ✓");
+      } else {
+        console.log("[game_score] user_id field already present ✓");
+      }
       return;
     }
     // `user` is a true RELATION to the users collection (needs its id)
@@ -986,6 +1001,7 @@ async function ensureGameScoreCollection() {
       schema: [
         { name: "user",         type: "relation", required: true,
           options: { collectionId: usersColl.id, maxSelect: 1, cascadeDelete: false } },
+        { name: "user_id",      type: "text",   required: false },
         { name: "match_id",     type: "text",   required: false },
         { name: "raw_score",    type: "number", required: false },
         { name: "final_tokens", type: "number", required: false },
@@ -4128,6 +4144,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           match_status: "completed",
           is_double:    true,
           final_tokens: entry.reward,
+          user_id:      pbId,
         }).catch(() => {});
       }
       // No resolvable match row → NO game_score write. One game = one row;
@@ -4378,6 +4395,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           match_status: "completed",
           final_tokens: safeAmount,
           is_double:    isDoubleClaim,
+          user_id:      pbId,
         }).catch(() => {});
       }
       // No resolvable match row → NO game_score write. One game = one row;
