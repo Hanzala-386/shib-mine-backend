@@ -24,6 +24,26 @@ function maybeTriggerNetworkBlock(status: number, data: any) {
   }
 }
 
+// Never call res.json() directly: when a server is mid-deploy or a route is
+// missing, it answers with an HTML error page ("<!DOCTYPE ...") and res.json()
+// crashes with "Unexpected token '<'". Parse text first and convert non-JSON
+// responses into a clean, user-readable error instead.
+async function parseJsonSafe(res: Response): Promise<any> {
+  const raw = await res.text();
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    const err: any = new Error(
+      res.ok
+        ? 'The server sent an unexpected response. Please try again.'
+        : 'The server is being updated. Please try again in a few minutes.',
+    );
+    err.status = res.status;
+    err.nonJson = true;
+    throw err;
+  }
+}
+
 async function request<T = any>(
   method: string,
   path: string,
@@ -40,7 +60,7 @@ async function request<T = any>(
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
-    const data = await res.json();
+    const data = await parseJsonSafe(res);
     if (!res.ok) {
       maybeTriggerNetworkBlock(res.status, data);
       const err: any = new Error(data?.error || `HTTP ${res.status}`);
@@ -90,7 +110,7 @@ async function robustPost<T = any>(
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      const data = await res.json();
+      const data = await parseJsonSafe(res);
       if (!res.ok) {
         maybeTriggerNetworkBlock(res.status, data);
         const err: any = new Error(data?.error || `HTTP ${res.status}`);

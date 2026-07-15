@@ -639,6 +639,14 @@ export default function ProfileScreen() {
               )}
             </Pressable>
           )}
+          {pbUser?.kycStatus === 'rejected' && (
+            <View style={styles.kycRejectNote} testID="profile-kyc-reject-reason">
+              <Ionicons name="close-circle" size={13} color="#FF3D57" />
+              <Text style={styles.kycRejectNoteText} numberOfLines={3}>
+                Verification rejected{pbUser?.kycRejectReason ? `: ${pbUser.kycRejectReason}` : ''}. Tap "Verify Account" to submit again.
+              </Text>
+            </View>
+          )}
         </Animated.View>
 
         {/* ── Stats grid: Sessions / Referrals / SHIB ── */}
@@ -1241,6 +1249,26 @@ const styles = StyleSheet.create({
     borderRadius: 20, paddingVertical: 5, paddingHorizontal: 12, marginTop: 8,
   },
   kycBadgePendingText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: Colors.gold },
+  kycRejectNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,61,87,0.35)',
+    backgroundColor: 'rgba(255,61,87,0.10)',
+    maxWidth: 300,
+  },
+  kycRejectNoteText: {
+    flex: 1,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#FF7A8C',
+  },
 
   /* ── Stats grid ── */
   statsGrid: {

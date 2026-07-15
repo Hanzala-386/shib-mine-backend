@@ -797,7 +797,8 @@ async function ensureCollectionRules() {
           " && @request.data.kyc_phone:isset = false" +
           " && @request.data.kyc_binance_email:isset = false" +
           " && @request.data.kyc_bep20_address:isset = false" +
-          " && @request.data.kyc_reject_reason:isset = false",
+          " && @request.data.kyc_reject_reason:isset = false" +
+          " && @request.data.submission_count:isset = false",
         // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
         deleteRule: "@request.auth.id = id",
       }, token);
@@ -1147,13 +1148,16 @@ async function ensureVerificationSchema() {
         "kyc_country_code", "kyc_phone", "kyc_binance_email", "kyc_bep20_address",
       ];
       const missing = wanted.filter((n) => !existingNames.includes(n));
-      if (missing.length) {
+      // submission_count is a NUMBER field (max 3 verification attempts per user)
+      const needsCount = !existingNames.includes("submission_count");
+      if (missing.length || needsCount) {
         const updatedSchema = [
           ...(coll.schema || coll.fields || []),
           ...missing.map((name) => ({ name, type: "text", required: false })),
+          ...(needsCount ? [{ name: "submission_count", type: "number", required: false }] : []),
         ];
         await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: updatedSchema }, token);
-        console.log(`[users] KYC fields added: ${missing.join(", ")} ✓`);
+        console.log(`[users] KYC fields added: ${[...missing, ...(needsCount ? ["submission_count"] : [])].join(", ")} ✓`);
       } else {
         console.log("[users] KYC fields already present ✓");
       }
@@ -3567,6 +3571,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (currentStatus === "under_review")
         return res.status(400).json({ error: "Your verification is already under review" });
 
+      // ── Submission limit: maximum 3 attempts per account ──
+      const submissionCount = Number(user.submission_count) || 0;
+      if (submissionCount >= 3)
+        return res.status(429).json({
+          error: "You have reached the maximum limit for account verification.",
+          limitReached: true,
+        });
+
       // ── Duplicate check vs OTHER users' active (under_review/approved) rows ──
       const orParts = [
         `bep20_address = "${kycFilterEsc(bep20Address)}"`,
@@ -3608,9 +3620,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         kyc_status: "under_review",
         kyc_reject_reason: "",
+        "submission_count+": 1, // atomic increment (no read-modify-write race)
       });
 
-      res.json({ success: true, status: "under_review", requestId: created.id });
+      res.json({
+        success: true,
+        status: "under_review",
+        requestId: created.id,
+        submissionsUsed: submissionCount + 1,
+        submissionsLimit: 3,
+      });
     } catch (e: any) {
       console.error("[/api/app/verification/submit]", e.message);
       res.status(500).json({ error: "Verification submit failed" });
@@ -3706,6 +3725,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         kyc_binance_email: row.binance_email || "",
         kyc_bep20_address: row.bep20_address,
       });
+      pbPost("/api/collections/notifications/records", {
+        title: "Account Verified ✓",
+        message: "Congratulations! Your account verification has been approved. You now have full access to the Wallet and Multiplayer Hub.",
+        type: "personal",
+        target_user: row.user,
+      }).catch((e: any) => console.warn("[verification/approve] Notification failed:", e.message));
       res.json({ success: true });
     } catch (e: any) {
       console.error("[/api/app/admin/verification/approve]", e.message);
@@ -3732,6 +3757,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         kyc_status: "rejected",
         kyc_reject_reason: reason,
       });
+      pbPost("/api/collections/notifications/records", {
+        title: "Verification Rejected",
+        message: `Your account verification was rejected. Reason: ${reason}. Please review your details and submit again.`,
+        type: "personal",
+        target_user: row.user,
+      }).catch((e: any) => console.warn("[verification/reject] Notification failed:", e.message));
       res.json({ success: true });
     } catch (e: any) {
       console.error("[/api/app/admin/verification/reject]", e.message);

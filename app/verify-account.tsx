@@ -10,7 +10,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, TextInput, Modal, FlatList,
-  ActivityIndicator, Platform, Linking,
+  ActivityIndicator, Platform, Linking, Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -88,9 +88,16 @@ export default function VerifyAccountScreen() {
       await refreshUser().catch(() => {});
       setJustSubmitted(true);
     } catch (e: any) {
-      if (e?.data?.duplicate) {
+      if (e?.data?.limitReached || e?.status === 429) {
+        Alert.alert(
+          'Submission Limit Reached',
+          'You have reached the maximum limit for account verification.',
+        );
+      } else if (e?.data?.duplicate) {
         setDupFields(Array.isArray(e.data.fields) ? e.data.fields : []);
-        setError('Field already in use. If this is your data, contact support.');
+        setError(
+          'Some of your details are already registered with another account. If you believe these details belong to you, please contact our support team.',
+        );
       } else if (e?.data?.countryBlocked) {
         setError('Verification is not available in your country.');
       } else {
@@ -102,8 +109,11 @@ export default function VerifyAccountScreen() {
   }
 
   function contactSupport() {
+    const name = fullName.trim() || pbUser?.kycFullName || pbUser?.displayName || '';
+    const subject = 'Account Verification Dispute';
+    const body = `User ID: ${pbUser?.pbId || ''}, Name: ${name}, Email: ${user?.email || ''}. I believe this account is mine.`;
     Linking.openURL(
-      `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Verification — Field already in use')}&body=${encodeURIComponent(`My account email: ${user?.email || ''}\n\nI got "Field already in use" while verifying my account. Please help.`)}`,
+      `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
     ).catch(() => {});
   }
 
@@ -253,6 +263,11 @@ export default function VerifyAccountScreen() {
             {phone.length > 0 && !phoneOk && (
               <Text style={styles.fieldErr}>Enter 5–15 digits (numbers only)</Text>
             )}
+            {fieldError('phone') && (
+              <Text style={styles.fieldErr} testID="kyc-dup-phone">
+                This Phone Number is already in use.
+              </Text>
+            )}
 
             {/* Destination fields — routed by Binance support */}
             {country && binanceRoute && (
@@ -270,6 +285,11 @@ export default function VerifyAccountScreen() {
                 />
                 {binanceEmail.length > 0 && !validateKycEmail(binanceEmail) && (
                   <Text style={styles.fieldErr}>Invalid email format</Text>
+                )}
+                {fieldError('binanceEmail') && (
+                  <Text style={styles.fieldErr} testID="kyc-dup-binance-email">
+                    This Binance Email is already in use.
+                  </Text>
                 )}
               </>
             )}
@@ -290,6 +310,11 @@ export default function VerifyAccountScreen() {
                 {bep20.length > 0 && !bepOk && (
                   <Text style={styles.fieldErr}>Invalid BEP-20 address (0x + 40 hex characters)</Text>
                 )}
+                {fieldError('bep20Address') && (
+                  <Text style={styles.fieldErr} testID="kyc-dup-bep20">
+                    This BEP-20 Wallet Address is already in use.
+                  </Text>
+                )}
                 {!binanceRoute && (
                   <Text style={styles.hintTxt}>
                     Binance email withdrawals are not supported in {country.name}. Your
@@ -306,8 +331,13 @@ export default function VerifyAccountScreen() {
           <View style={styles.errBox}>
             <Text style={styles.errTxt}>{error}</Text>
             {dupFields.length > 0 && (
-              <Pressable onPress={contactSupport} testID="kyc-contact-support">
-                <Text style={styles.supportLink}>Contact Support</Text>
+              <Pressable
+                onPress={contactSupport}
+                testID="kyc-contact-support"
+                style={({ pressed }) => [styles.supportBtn, { opacity: pressed ? 0.8 : 1 }]}
+              >
+                <Ionicons name="mail" size={16} color={Colors.gold} />
+                <Text style={styles.supportBtnTxt}>Contact Support</Text>
               </Pressable>
             )}
           </View>
@@ -511,13 +541,19 @@ const styles = StyleSheet.create({
     marginTop: 18,
   },
   errTxt: { fontSize: 13, color: Colors.error, fontWeight: '600', lineHeight: 18 },
-  supportLink: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: Colors.gold,
-    marginTop: 8,
-    textDecorationLine: 'underline',
+  supportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    marginTop: 12,
+    paddingVertical: 11,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.45)',
+    backgroundColor: 'rgba(244,196,48,0.08)',
   },
+  supportBtnTxt: { fontSize: 14, fontWeight: '800', color: Colors.gold },
   submitBtn: {
     flexDirection: 'row',
     alignItems: 'center',
