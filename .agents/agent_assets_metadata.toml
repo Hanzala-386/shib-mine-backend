@@ -77,3 +77,9 @@ id = "Z8u0K7lBNnx8vG6jtFLYD"
 uri = "file://dist/shib-backend-vps.zip"
 type = "unspecified"
 title = "VPS Backend Package (server + deploy guide)"
+
+[[outputs]]
+id = "BLFiXJSDD2mpdcq_Hyebx"
+uri = "file://screenshots/game_score_verification.jpg"
+type = "image"
+title = "game_score table — live validation results"

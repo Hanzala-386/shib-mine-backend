@@ -23,8 +23,12 @@ description: Prod APK hits Express /api/app/* via https://backend.webcod.in. Bac
 # TWO Express copies — they have diverged
 
 - **`server/`** (repo root) = Replit DEV backend (`Start Backend` workflow, port 5000).
-- **`shib-mine-backend/`** = PROD backend source (nested git repo; used to auto-deploy via GitHub→Railway, now the source for the VPS bundle).
+- **`shib-mine-backend/`** = PROD backend source (now the source for the VPS bundle). It is **NOT a nested git repo** — the whole workspace is ONE repo whose `github` remote points at `Hanzala-386/shib-mine-backend.git`; `git push github main` pushes everything (PAT is embedded in the remote URL — never print it unmasked).
 - **Rule:** any backend route/logic change must be applied to **BOTH** `server/routes.ts` and `shib-mine-backend/server/routes.ts` (line numbers differ — they drifted). Verify game/hub sections with `diff -q` and both esbuilds exit 0.
+
+# PB admin auth endpoint on this PocketBase
+
+`api.webcod.in` admin login = `POST /api/admins/auth-with-password` (pre-v0.23 API). The newer `/api/collections/_superusers/auth-with-password` path FAILS on this instance — scripts using env `PB_ADMIN_EMAIL`/`PB_ADMIN_PASSWORD` must hit `/api/admins`.
 
 # Referral commission policy (this app)
 - 10% referral commission is paid **only** on a referee's **mining** claim (`/api/app/mine/claim`, base `serverReward * 0.1`). Gameplay / power-token earnings must **never** credit referral.
