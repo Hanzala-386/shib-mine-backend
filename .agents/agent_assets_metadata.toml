@@ -83,3 +83,9 @@ id = "BLFiXJSDD2mpdcq_Hyebx"
 uri = "file://screenshots/game_score_verification.jpg"
 type = "image"
 title = "game_score table — live validation results"
+
+[[outputs]]
+id = "Q3PiyWSHPguOtRZXEasrc"
+uri = "file://screenshots/user_id_verification.jpg"
+type = "image"
+title = "user_id populated in game_score (production, live)"

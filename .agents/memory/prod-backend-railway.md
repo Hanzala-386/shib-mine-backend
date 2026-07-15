@@ -1,12 +1,13 @@
 ---
-name: Prod backend = user's VPS single-file bundle (was Railway); TWO Express copies
-description: Prod APK hits Express /api/app/* via https://backend.webcod.in. Backend migrated off Railway to the user's VPS as a self-contained esbuild bundle. Two diverged Express copies must both be patched.
+name: Prod backend = Railway (git push deploys); VPS bundle prepared; TWO Express copies
+description: Prod APK hits Express /api/app/* via https://backend.webcod.in — still Railway; git push github main auto-deploys it. VPS single-file bundle prepared but not cut over. Two diverged Express copies must both be patched.
 ---
 
-# The real backend topology (updated Jul 2026 — Railway dropped)
+# The real backend topology (updated Jul 15 2026 — Railway still live)
 
 - The shipped APK's API base = `getApiUrl()` → resolves to **`https://backend.webcod.in`** (older builds baked the railway.app host, which the filter in `lib/query-client.ts` redirects to the same domain). In PRODUCTION the APK **does** hit the Express `/api/app/*` routes — client-side PocketBase-SDK paths are fallbacks only.
-- **Railway is being retired.** Its build broke on firewall lockfile URLs (see `replit-firewall-lockfile-deploy.md`) and the user moved the backend to their own VPS (same box area as PocketBase api.webcod.in). Cutover = repoint `backend.webcod.in` DNS (was CNAME→Railway) to the VPS; existing APKs need no rebuild.
+- **Railway is STILL live prod (verified Jul 15 2026):** `curl -I https://backend.webcod.in` returns `server: railway-hikari` — the planned VPS cutover has NOT happened (no VPS SSH creds exist in this workspace). **`git push github main` DOES auto-deploy Railway** (~2-4 min build): pushing a commit changed live `/api/ws/game` behavior with no other action. The earlier "push no longer deploys" note was wrong. Deploy-verify trick: WS-play a tiny full game (GAME_START→GAME_OVER, no claim) against prod and poll the created game_score row for the new behavior.
+- VPS single-file bundle (below) is PREPARED but not serving traffic until the DNS flip.
 
 # VPS deploy model — single-file bundle, no package install
 
