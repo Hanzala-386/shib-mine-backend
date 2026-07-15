@@ -388,7 +388,7 @@ export const api = {
     // PocketBase admin on the server side, so no field can collapse to 0 or null.
     const RAILWAY_URL =
       process.env.EXPO_PUBLIC_RAILWAY_URL ||
-      'https://shib-mine-backend-production.up.railway.app';
+      'https://backend.webcod.in';
     const RAILWAY_ENDPOINT = `${RAILWAY_URL}/api/app/tasks/submit`;
     const PB_ENDPOINT = 'https://api.webcod.in/api/collections/task_submissions/records';
 

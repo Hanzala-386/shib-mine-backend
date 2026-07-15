@@ -71,3 +71,9 @@ id = "VE3YejJOp6O8FpTedkv3g"
 uri = "file://dist/bridge-upload.zip"
 type = "unspecified"
 title = "bridge.js (zipped) — unzip and upload to webcod.in, folder /arcade/, replacing the old bridge.js"
+
+[[outputs]]
+id = "Z8u0K7lBNnx8vG6jtFLYD"
+uri = "file://dist/shib-backend-vps.zip"
+type = "unspecified"
+title = "VPS Backend Package (server + deploy guide)"

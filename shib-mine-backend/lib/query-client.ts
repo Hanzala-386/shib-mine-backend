@@ -13,7 +13,10 @@ export function getApiUrl(): string {
     return PRODUCTION_URL;
   }
 
-  return new URL(`https://${host}`).href;
+  // .origin never carries a trailing slash — string-concat consumers
+  // (hubClient, arcadeClient, KnifeShop asset BASE) would otherwise build
+  // "//api/..." paths that the server never matches.
+  return new URL(`https://${host}`).origin;
 }
 
 async function throwIfResNotOk(res: Response) {
