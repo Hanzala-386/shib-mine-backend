@@ -168,6 +168,54 @@ function appVersionAtLeast(v: unknown, min: string): boolean {
   return true;
 }
 
+// ─── Cryptographically signed match ids ─────────────────────────────────────
+// matchId format: "<uuid>.<hmac16>" — the HMAC-SHA256 signature is embedded in
+// the id itself, so every client/bridge passes it through untouched (opaque
+// string; NO client or bridge.js change needed). Claims presenting a matchId
+// whose signature does not verify are rejected outright before any DB work.
+// Unsigned ids (no ".") are legacy sessions created before this deploy — they
+// fall through to the existing DB row validation.
+const MATCH_SIG_SECRET = process.env.SESSION_SECRET || "shib-match-sig-v1";
+if (!process.env.SESSION_SECRET) {
+  console.warn("[anti-cheat] SESSION_SECRET is NOT set — match signatures use the built-in fallback key. Set SESSION_SECRET in this environment for production-grade signing.");
+}
+// The signature binds BOTH the match uuid AND the owning pbId — a matchId
+// issued to account A fails verification when presented by account B.
+function signMatchId(pbId: string): string {
+  const id = crypto.randomUUID();
+  const sig = crypto.createHmac("sha256", MATCH_SIG_SECRET).update(`${id}:${pbId}`).digest("hex").slice(0, 16);
+  return `${id}.${sig}`;
+}
+function matchSigState(matchId: string, pbId: string): "valid" | "invalid" | "unsigned" {
+  const dot = matchId.lastIndexOf(".");
+  if (dot < 0) return "unsigned";
+  const id  = matchId.slice(0, dot);
+  const sig = matchId.slice(dot + 1);
+  const expected = crypto.createHmac("sha256", MATCH_SIG_SECRET).update(`${id}:${pbId}`).digest("hex").slice(0, 16);
+  try {
+    return sig.length === expected.length &&
+      crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
+      ? "valid" : "invalid";
+  } catch { return "invalid"; }
+}
+
+// ─── Account-level anti-cheat flag ───────────────────────────────────────────
+// Impossible score / claim tampering → flag the ACCOUNT (not just the match):
+// first offense sets is_blacklist_1, repeat offense escalates to is_blacklist_2
+// (same soft-tier convention as the referral anti-cheat, surfaced in the admin
+// panel). Fire-and-forget — never blocks or fails the request flow.
+async function flagUserBlacklist(pbId: string, reason: string): Promise<void> {
+  try {
+    const u = await pbGet(`/api/collections/users/records/${pbId}?fields=id,is_blacklist_1,is_blacklist_2`);
+    if (!u || u.code) return;
+    const body = u.is_blacklist_1 ? { is_blacklist_2: true } : { is_blacklist_1: true };
+    await pbPatch(`/api/collections/users/records/${pbId}`, body);
+    console.warn(`[anti-cheat] ACCOUNT FLAGGED ${Object.keys(body)[0]} (${pbId}): ${reason}`);
+  } catch (e: any) {
+    console.warn(`[anti-cheat] account flag failed (${pbId}):`, e.message);
+  }
+}
+
 async function wsCommitSession(sid: string, session: WsGameSession): Promise<void> {
   if (session.committed) return;
   session.committed = true;
@@ -254,7 +302,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
             const old = wsSessions.get(sid);
             if (old && !old.committed) { old.committed = true; if (old.timer) clearTimeout(old.timer); wsSessions.delete(sid); }
           }
-          sid = crypto.randomUUID();
+          sid = signMatchId(pbId); // HMAC-signed match id (bound to this user) — forged ids fail the claim gate
           const session: WsGameSession = {
             pbId, hits: 0, serverPT: 0, startMs: Date.now(),
             lastHitMs: 0, hitLog: [], rejectLog: [],
@@ -396,6 +444,10 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
               session.blacklisted = true;
               session.serverPT = 0;
               console.warn(`[ws/game] BLACKLIST ${sid.slice(0, 8)}: impossible score ${rawScore} in ${Math.round(elapsedMs/1000)}s (max ${maxForTime}) (${session.pbId})`);
+              // Account-level flag: an impossible score for the elapsed time
+              // is unambiguous tampering — blacklist the ACCOUNT, not just
+              // the match (tier 1 → tier 2 on repeat).
+              flagUserBlacklist(session.pbId, `impossible score ${rawScore} in ${Math.round(elapsedMs / 1000)}s (max ${maxForTime})`).catch(() => {});
             } else {
               // Never pay LESS than the honest displayed score; never MORE
               // than the rate/hard caps. Per-hit tally stays as fraud telemetry.
@@ -3913,6 +3965,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Bind matchId at issue time — the claim step closes the SAME match the
       // game committed; the client cannot swap in a different matchId later.
       const boundMatchId = typeof matchId === "string" && matchId ? matchId : undefined;
+      // HARD GATE 0: forged/tampered match signature → no token issued.
+      if (boundMatchId && matchSigState(boundMatchId, pbId) === "invalid") {
+        console.warn(`[ad/token] BAD MATCH SIGNATURE (${pbId}): ${boundMatchId.slice(0, 24)}…`);
+        return res.status(403).json({ error: "Session verification failed — please play a new game." });
+      }
       // ── SERVER-SIDE REWARD BASIS (authoritative, by match_id) ─────────────
       // The game_score row for THIS match holds raw_score, written by the
       // server itself (wsCommitSession) at game over. That row is the payout
@@ -4021,6 +4078,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.warn(`[ad/claim] unknown matchId ${matchId} (${pbId}) — grace mode, continuing`);
           } else {
             gameLogId = logRecord.id;
+            // Row-owner check (layer 2): the match row must belong to the
+            // claimant — releases the in-memory slot so the TRUE owner can
+            // still claim, then flags the caller's account.
+            if (logRecord.user && String(logRecord.user) !== pbId) {
+              claimedMatchIds.delete(matchId);
+              console.warn(`[ad/claim] OWNER MISMATCH ${matchId}: row-owner=${logRecord.user} claimant=${pbId}`);
+              flagUserBlacklist(pbId, `cross-account claim on match ${String(matchId).slice(0, 8)}`).catch(() => {});
+              return res.status(403).json({ error: "Session verification failed — please play a new game." });
+            }
             const st = String(logRecord.match_status || "");
             if (st === "completed") {
               console.warn(`[ad/claim] REPLAY BLOCKED (db): ${matchId} (${pbId})`);
@@ -4094,6 +4160,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // ever UPDATEs the existing match row; it never INSERTs a second one.
       let matchId: string | null =
         typeof req.body.matchId === "string" && req.body.matchId ? req.body.matchId : null;
+      // ── HARD GATE 0: cryptographic match signature ───────────────────────
+      // Every server-issued matchId is HMAC-signed ("uuid.sig"). A signed id
+      // that fails verification is forged/tampered → reject before ANY other
+      // work. Unsigned ids (pre-signature sessions) fall through to the DB
+      // row validation below.
+      if (matchId && matchSigState(matchId, pbId) === "invalid") {
+        console.warn(`[/api/app/game/reward] BAD MATCH SIGNATURE (${pbId}): ${matchId.slice(0, 24)}…`);
+        return res.status(403).json({ error: "Session verification failed — please play a new game." });
+      }
       let correlatedRecord: any = null;
       if (!matchId) {
         try {
@@ -4175,6 +4250,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.warn(`[/api/app/game/reward] unknown matchId ${matchId} (${pbId}) — grace mode, continuing`);
           } else {
             gameLogId = logRecord.id;
+            // Row-owner check (layer 2): the match row must belong to the
+            // claimant — releases the in-memory slot so the TRUE owner can
+            // still claim, then flags the caller's account.
+            if (logRecord.user && String(logRecord.user) !== pbId) {
+              claimedMatchIds.delete(matchId);
+              console.warn(`[/api/app/game/reward] OWNER MISMATCH ${matchId}: row-owner=${logRecord.user} claimant=${pbId}`);
+              flagUserBlacklist(pbId, `cross-account claim on match ${String(matchId).slice(0, 8)}`).catch(() => {});
+              return res.status(403).json({ error: "Session verification failed — please play a new game." });
+            }
             const st = String(logRecord.match_status || "");
             if (st === "completed") {
               console.warn(`[/api/app/game/reward] REPLAY BLOCKED (db): ${matchId} (${pbId})`);
@@ -4212,6 +4296,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 console.warn(
                   `[/api/app/game/reward] BLACKLIST ${matchId}: claim ${safeAmount}PT > 2× committed ${committedPT}PT (${pbId})`
                 );
+                // Account-level flag: claiming more than 2× the server-
+                // validated score is unambiguous tampering.
+                flagUserBlacklist(pbId, `claim ${safeAmount}PT > 2× committed ${committedPT}PT`).catch(() => {});
                 return res.status(403).json({ error: "Score could not be verified — reward denied." });
               }
               // 1× vs 2× intent: anything above 1.5× the committed score is a
