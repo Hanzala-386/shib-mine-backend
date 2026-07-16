@@ -89,7 +89,7 @@ export default function InviteScreen() {
   const steps = [
     { icon: 'share-social', title: 'Share Your Code', desc: 'Send your referral code to friends via WhatsApp, Telegram, or any app.' },
     { icon: 'person-add', title: 'Friend Signs Up', desc: 'Your friend creates an account and enters your referral code. You get 30 PT instantly.' },
-    { icon: 'flash', title: 'Earn Commission', desc: 'You automatically earn 10% bonus on every SHIB claim and game reward your friend makes.' },
+    { icon: 'flash', title: 'Earn Commission', desc: 'You automatically earn 10% commission on every SHIB mining claim your friend makes. Game rewards are not included.' },
   ];
 
   return (

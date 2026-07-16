@@ -237,17 +237,30 @@ async function pbClaimMining(
   // This is secure, requires no permissive updateRule, and works from the APK.
   if (user.referred_by && reward > 0) {
     try {
-      const referrer = await pb.collection('users').getFirstListItem(
-        `referral_code="${user.referred_by}"`,
-      );
-      const commission = reward * 0.1;
-      // Write to the log — the referrer's client will process and credit their own balance
-      await pb.collection('referral_earnings_log').create({
-        referrer_id: referrer.id,
-        claimer_id:  pbId,
-        amount:      commission,
-        processed:   false,
-      }).catch(() => {});
+      // referred_by may hold EITHER the referrer's PB record ID (newer signups)
+      // OR their referral_code (older signups). The old code-only lookup silently
+      // failed for ID-linked referees, so their referrers never received a single
+      // commission. NOTE: users.viewRule is "@request.auth.id = id" so getOne()
+      // on another user is FORBIDDEN — must resolve via a filtered LIST query
+      // (listRule allows any authenticated user).
+      let referrerId: string | null = null;
+      try {
+        const ref = await pb.collection('users').getFirstListItem(
+          `id="${user.referred_by}" || referral_code="${user.referred_by}"`,
+          { fields: 'id' },
+        );
+        referrerId = ref?.id || null;
+      } catch { /* referrer not found — skip */ }
+      if (referrerId) {
+        const commission = reward * 0.1;
+        // Write to the log — the referrer's client will process and credit their own balance
+        await pb.collection('referral_earnings_log').create({
+          referrer_id: referrerId,
+          claimer_id:  pbId,
+          amount:      commission,
+          processed:   false,
+        }).catch(() => {});
+      }
     } catch { /* non-critical — claim itself already succeeded */ }
   }
 
