@@ -9,7 +9,7 @@
 - [Yodo1 MAS migration](yodo1-migration.md) — SUPERSEDED: Yodo1/Unity fully removed (Jul 2026); app is AdMob-only on Google TEST IDs; RNGMA expo plugin writes the manifest App ID.
 - [AdMob mediation config plugin](admob-mediation-plugin.md) — SUPERSEDED twice (mediation → Yodo1 → AdMob-only); keep only for Expo-54 gradle ground-truth + verify-without-CLI technique.
 - [PB admin-token route auth](pb-admin-token-routes.md) — admin-token /api/app/* routes bypass PB rules; money routes MUST verify caller token==pbId + TOCTOU-guard atomic debits; redeem tops up shib_balance, no withdrawal row.
-- [PB schema-vs-fields key](pb-schema-key-gotcha.md) — shared PB exposes collection fields under `col.schema` not `col.fields`; helpers reading only `fields` silently no-op (select values nested in `options.values`).
+- [PB schema quirks](pb-schema-key-gotcha.md) — fields live under `col.schema` not `col.fields`; field TYPE change is forbidden (400) — convert via temp-field copy + delete-and-rename swap.
 - [Pool/Game-Hub money invariants](pool-hub-money-invariants.md) — atomic PB modifiers; checked pbHttp wrapper; settle-latch before first await; RESUME MATCH_FOUND must carry ballInHand.
 - [Replit firewall URLs break Railway npm ci](replit-firewall-lockfile-deploy.md) — package-lock resolved URLs can be package-firewall.replit.local so external hosts get ENOTFOUND; host-rewrite to registry.npmjs.org (integrity stays valid); Railway installs from the ROOT lockfile.
 - [Arcade PvP game bridge](arcade-pvp-bridge.md) — games (Flappy, Fruit Cut) hosted on webcod.in; repo public/* edits need manual re-upload; bridge protocol, in-match gotchas, client-AFK-must-undercut-server rule inside.

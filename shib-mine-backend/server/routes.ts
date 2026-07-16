@@ -1103,6 +1103,21 @@ async function ensureBlacklistFields() {
 
 // ─── KYC verification: users fields + verification_requests collection ─────
 // users.kyc_status: '' | 'none' | 'under_review' | 'verified' | 'rejected'
+// verification_requests.status is a PB SELECT field with EXACTLY these three
+// options (human-readable — editable as a dropdown in the PocketBase admin UI):
+const KYC_STATUS_UNDER_REVIEW = "Under Review";
+const KYC_STATUS_VERIFIED     = "Verified";
+const KYC_STATUS_REJECTED     = "Rejected";
+const KYC_STATUS_OPTIONS = [KYC_STATUS_UNDER_REVIEW, KYC_STATUS_VERIFIED, KYC_STATUS_REJECTED];
+// Map any legacy/alias value ('under_review' | 'approved' | 'unverified' | …)
+// onto the canonical SELECT label. Unknown values pass through unchanged.
+function toDbKycStatus(v: unknown): string {
+  const k = String(v ?? "").trim().toLowerCase().replace(/[\s_]+/g, "_");
+  if (k === "under_review" || k === "pending") return KYC_STATUS_UNDER_REVIEW;
+  if (k === "verified" || k === "approved") return KYC_STATUS_VERIFIED;
+  if (k === "rejected" || k === "unverified") return KYC_STATUS_REJECTED;
+  return String(v ?? "");
+}
 // On APPROVAL the verified destination is COPIED onto the users record
 // (kyc_country / kyc_binance_email / kyc_bep20_address / …) so the withdrawal
 // route reads it with zero extra PB calls; request rows stay as audit trail.
@@ -1138,6 +1153,7 @@ async function ensureVerificationSchema() {
     const check = await pbGet("/api/collections/verification_requests");
     if (!check.code) {
       console.log("[verification_requests] Collection already exists ✓");
+      await ensureKycStatusSelectField(check, token);
       return;
     }
     const usersColl = await pbGet("/api/collections/users");
@@ -1157,8 +1173,9 @@ async function ensureVerificationSchema() {
         { name: "phone",          type: "text", required: false },
         { name: "binance_email",  type: "text", required: false },
         { name: "bep20_address",  type: "text", required: false },
-        // 'under_review' | 'approved' | 'rejected' | 'unverified'
-        { name: "status",         type: "text", required: false },
+        // PB SELECT — 'Under Review' | 'Verified' | 'Rejected'
+        { name: "status",         type: "select", required: false,
+          options: { maxSelect: 1, values: KYC_STATUS_OPTIONS } },
         { name: "reject_reason",  type: "text", required: false },
       ],
     }, token);
@@ -1176,6 +1193,100 @@ async function ensureVerificationSchema() {
     console.log("[verification_requests] Collection created ✓");
   } catch (e: any) {
     console.warn("[verification_requests] Setup failed:", e.message);
+  }
+}
+
+// Convert verification_requests.status from the legacy TEXT field into a PB
+// SELECT field with exactly ['Under Review','Verified','Rejected']. Existing
+// row values are migrated FIRST — a select field silently drops any stored
+// value that is not in its options list, so the order here matters.
+async function ensureKycStatusSelectField(coll: any, token: string) {
+  try {
+    const fields: any[] = coll.schema || coll.fields || [];
+    const statusField = fields.find((f: any) => f.name === "status");
+    if (!statusField) {
+      console.warn("[verification_requests] no status field found — skipping SELECT conversion");
+      return;
+    }
+    const values: string[] = statusField?.options?.values || statusField?.values || [];
+    const alreadyCorrect =
+      statusField.type === "select" &&
+      values.length === KYC_STATUS_OPTIONS.length &&
+      KYC_STATUS_OPTIONS.every((v) => values.includes(v));
+    if (alreadyCorrect) {
+      console.log("[verification_requests] status SELECT field OK ✓");
+      return;
+    }
+    // PB refuses in-place field type changes ("Field type cannot be changed"),
+    // so the conversion is a 3-phase swap:
+    //   A) add a temp SELECT field `status_select`
+    //   B) copy every row's (alias-mapped) status value into it
+    //   C) drop the old TEXT field and rename the temp field → `status`
+    // Idempotent — a partial run resumes from whichever phase is incomplete.
+    const TMP = "status_select";
+
+    // A) temp select field
+    if (!fields.find((f: any) => f.name === TMP)) {
+      const addUpd = await pbHttp("PATCH", `/api/collections/${coll.id}`, {
+        schema: [
+          ...fields,
+          { name: TMP, type: "select", required: false,
+            options: { maxSelect: 1, values: KYC_STATUS_OPTIONS } },
+        ],
+      }, token);
+      if (addUpd.code) {
+        console.warn("[verification_requests] temp SELECT field add FAILED:", JSON.stringify(addUpd).slice(0, 200));
+        return;
+      }
+    }
+
+    // B) copy row values (collect ALL ids first, then patch — never paginate
+    //    while mutating).
+    const rows: Array<{ id: string; status: string; [k: string]: any }> = [];
+    let page = 1;
+    for (;;) {
+      const r = await pbGet(
+        `/api/collections/verification_requests/records?page=${page}&perPage=200&fields=id,status,${TMP}`,
+      );
+      rows.push(...((r?.items || []) as Array<{ id: string; status: string }>));
+      if (!r || page >= (r.totalPages || 1)) break;
+      page++;
+    }
+    let migrated = 0;
+    for (const row of rows) {
+      const mapped = toDbKycStatus(row.status);
+      if (!KYC_STATUS_OPTIONS.includes(mapped)) continue; // empty/unknown → leave blank
+      if (row[TMP] === mapped) continue; // already copied (resume path)
+      const p = await pbHttp(
+        "PATCH",
+        `/api/collections/verification_requests/records/${row.id}`,
+        { [TMP]: mapped },
+        token,
+      );
+      if (!p.code) migrated++;
+      else console.warn(`[verification_requests] row ${row.id} status copy failed:`, JSON.stringify(p).slice(0, 150));
+    }
+
+    // C) swap — drop the old text `status` field, rename temp → `status`
+    //    (rename keeps the temp field's id, which PB allows; the missing old
+    //    field id deletes the text column).
+    const fresh = await pbGet("/api/collections/verification_requests");
+    const curFields: any[] = fresh.schema || fresh.fields || [];
+    if (!curFields.length) {
+      console.warn("[verification_requests] re-fetch for swap returned no fields — aborting");
+      return;
+    }
+    const swapped = curFields
+      .filter((f: any) => !(f.name === "status" && f.type !== "select"))
+      .map((f: any) => (f.name === TMP ? { ...f, name: "status" } : f));
+    const upd = await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: swapped }, token);
+    if (upd.code) {
+      console.warn("[verification_requests] status → SELECT swap FAILED:", JSON.stringify(upd).slice(0, 200));
+    } else {
+      console.log(`[verification_requests] status → SELECT ['Under Review','Verified','Rejected'] ✓ (migrated ${migrated} row value${migrated === 1 ? "" : "s"})`);
+    }
+  } catch (e: any) {
+    console.warn("[verification_requests] status SELECT setup failed:", e.message);
   }
 }
 
@@ -3525,7 +3636,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       ];
       if (binanceEmail) orParts.push(`binance_email = "${kycFilterEsc(binanceEmail)}"`);
       const dupFilter = encodeURIComponent(
-        `user != "${kycFilterEsc(pbId)}" && (status = "under_review" || status = "approved") && (${orParts.join(" || ")})`,
+        `user != "${kycFilterEsc(pbId)}" && (status = "${KYC_STATUS_UNDER_REVIEW}" || status = "${KYC_STATUS_VERIFIED}") && (${orParts.join(" || ")})`,
       );
       const dup = await pbGet(
         `/api/collections/verification_requests/records?filter=${dupFilter}&perPage=10&fields=binance_email,bep20_address,phone,country_code`,
@@ -3550,7 +3661,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         phone,
         binance_email: binanceEmail,
         bep20_address: bep20Address,
-        status: "under_review",
+        status: KYC_STATUS_UNDER_REVIEW, // PB SELECT label
         reject_reason: "",
       });
       if (created.code)
@@ -3612,7 +3723,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ── Admin: list verification requests ─────────────────────────────────────
   app.get("/api/app/admin/verification", async (req: Request, res: Response) => {
     try {
-      const status = String(req.query.status || "under_review");
+      // Accept both legacy machine values ('under_review') and SELECT labels
+      const q = String(req.query.status || "under_review");
+      const status = q === "all" ? "all" : toDbKycStatus(q);
       const filter = status === "all" ? "" : `filter=${encodeURIComponent(`status = "${kycFilterEsc(status)}"`)}&`;
       const r = await pbGet(
         `/api/collections/verification_requests/records?${filter}sort=-created&perPage=100&expand=user`,
@@ -3647,11 +3760,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const row = await pbGet(`/api/collections/verification_requests/records/${id}`);
       if (row.code) return res.status(404).json({ error: "Request not found" });
-      if (row.status !== "under_review")
+      if (toDbKycStatus(row.status) !== KYC_STATUS_UNDER_REVIEW)
         return res.status(400).json({ error: `Request is already ${row.status}` });
 
       await pbPatch(`/api/collections/verification_requests/records/${id}`, {
-        status: "approved",
+        status: KYC_STATUS_VERIFIED,
         reject_reason: "",
       });
       await pbPatch(`/api/collections/users/records/${row.user}`, {
@@ -3685,11 +3798,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!reason) return res.status(400).json({ error: "A rejection reason is required" });
       const row = await pbGet(`/api/collections/verification_requests/records/${id}`);
       if (row.code) return res.status(404).json({ error: "Request not found" });
-      if (row.status !== "under_review")
+      if (toDbKycStatus(row.status) !== KYC_STATUS_UNDER_REVIEW)
         return res.status(400).json({ error: `Request is already ${row.status}` });
 
       await pbPatch(`/api/collections/verification_requests/records/${id}`, {
-        status: "rejected",
+        status: KYC_STATUS_REJECTED,
         reject_reason: reason,
       });
       await pbPatch(`/api/collections/users/records/${row.user}`, {
@@ -3720,10 +3833,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Mark this user's active rows 'unverified' so the duplicate check no
       // longer reserves their email/phone/address
       const active = await pbGet(
-        `/api/collections/verification_requests/records?filter=${encodeURIComponent(`user = "${kycFilterEsc(pbId)}" && (status = "approved" || status = "under_review")`)}&perPage=50&fields=id`,
+        `/api/collections/verification_requests/records?filter=${encodeURIComponent(`user = "${kycFilterEsc(pbId)}" && (status = "${KYC_STATUS_VERIFIED}" || status = "${KYC_STATUS_UNDER_REVIEW}")`)}&perPage=50&fields=id`,
       );
       for (const r of active?.items || []) {
-        await pbPatch(`/api/collections/verification_requests/records/${r.id}`, { status: "unverified" }).catch(() => {});
+        // 'unverified' is not a SELECT option — mark Rejected with an audit note
+        await pbPatch(`/api/collections/verification_requests/records/${r.id}`, { status: KYC_STATUS_REJECTED, reject_reason: "Released by admin (unverified)" }).catch(() => {});
       }
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         kyc_status: "none",

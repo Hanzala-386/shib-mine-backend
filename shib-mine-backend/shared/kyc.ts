@@ -224,7 +224,14 @@ export const BINANCE_WITHDRAW_COUNTRY = "India";
 export type KycStatus = "none" | "under_review" | "verified" | "rejected";
 
 export function normalizeKycStatus(v: unknown): KycStatus {
-  return v === "under_review" || v === "verified" || v === "rejected" ? v : "none";
+  if (v === "under_review" || v === "verified" || v === "rejected") return v;
+  // Also accept the PocketBase SELECT labels used by verification_requests.status
+  // ('Under Review' | 'Verified' | 'Rejected') plus legacy synonyms.
+  const k = String(v ?? "").trim().toLowerCase().replace(/[\s_]+/g, "_");
+  if (k === "under_review" || k === "pending") return "under_review";
+  if (k === "verified" || k === "approved") return "verified";
+  if (k === "rejected" || k === "unverified") return "rejected";
+  return "none";
 }
 
 // Admin rejection reasons (spec: admin must pick one; it is shown to the user)

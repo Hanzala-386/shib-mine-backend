@@ -1,0 +1,17 @@
+Agent, the server is stuck on 'The server is being updated. Please try again in a few minutes.' and users cannot submit the verification form. This is a critical production-blocking error. Fix the server connectivity and the form submission logic immediately.
+​Your Action Plan (No Mistakes):
+​Fix Server Connectivity: The app is stuck in an 'Updating' loop. Investigate the backend logs, restart the service, and ensure it accepts form submissions.
+​Database Field Requirement: I need you to create a 'Select' field in the verification_requests collection named status. This field must have three predefined options: 'Under Review', 'Verified', and 'Rejected'.
+​Live Testing (Use these accounts): Use the following accounts to test the entire flow (Submit -> Admin Panel Status Change -> App Access):
+​Account 1: sakibsoni27@gmail.com | Password: 12345678 (Set status to 'Verified' in Admin Panel).
+​Account 2: abukapadi@gmail.com | Password: Hanzu@123 (Set status to 'Rejected' + add a Rejection Reason).
+​Account 3: poolshaikh88@gmail.com | Password: 12345678 (Submit form and leave status 'Under Review').
+​Verification Logic:
+​Submission Limit: Maximum 3 submissions per user. If reached, show popup: 'You have reached the maximum limit of your account verification submissions.'
+​Duplicate Check: If Phone, Email, or Wallet is already in use, show an error under the field: 'This [Field Name] is already in use.' + 'Contact Support' button (pre-filled email).
+​Access Lock: Verified users get a green badge in the profile and unlock the Wallet/Multiplayer hub. Unverified users see the 'Verify Now' popup.
+​Withdrawal Logic:
+​India users: Register/Verify both Binance Email + BEP20.
+​Non-India users: Register/Verify ONLY BEP20.
+​Withdrawal UI: Remove all fields except 'Amount' and 'Withdraw'. It must automatically pull the verified data from the user profile.
+​Final Directive: I need 100% stable results. Play the game/submit the form on these test accounts yourself, verify the Admin 'Select' field updates the user access in real-time, and confirm to me once the 'Server updating' error is gone and the flow works perfectly.
