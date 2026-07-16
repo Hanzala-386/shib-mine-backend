@@ -2059,8 +2059,33 @@ async function ensureBrevoKeyInSettings(): Promise<void> {
     } else {
       console.log(`[${settingsCol.name}] strict_match_enforcement field already present ✓`);
     }
+    // bep20_fees — dynamic BEP-20 network fee (SHIB) deducted from every BEP-20
+    // withdrawal payout. 0/unset means "use the 3680 built-in default" wherever
+    // it is read, so an unseeded record can never make withdrawals free.
+    let bep20FeesAdded = false;
+    if (!schema.find((f: any) => f.name === "bep20_fees")) {
+      schema.push({ name: "bep20_fees", type: "number", required: false });
+      changed = true;
+      bep20FeesAdded = true;
+      console.log(`[${settingsCol.name}] bep20_fees field added ✓`);
+    } else {
+      console.log(`[${settingsCol.name}] bep20_fees field already present ✓`);
+    }
     if (changed) {
       await pbHttp("PATCH", `/api/collections/${settingsCol.id}`, { schema }, token);
+    }
+    // Seed the current fixed fee so the dashboard shows the live value immediately
+    if (bep20FeesAdded) {
+      try {
+        const rec = await pbHttp("GET", `/api/collections/${settingsCol.name}/records?perPage=1`, null, token);
+        const row = rec.items?.[0];
+        if (row && !(Number(row.bep20_fees) > 0)) {
+          await pbHttp("PATCH", `/api/collections/${settingsCol.name}/records/${row.id}`, { bep20_fees: 3680 }, token);
+          console.log(`[${settingsCol.name}] bep20_fees seeded to 3680 ✓`);
+        }
+      } catch (e: any) {
+        console.warn("[settings] bep20_fees seed skipped:", e.message);
+      }
     }
   } catch (e: any) {
     console.warn("[settings] brevo_api_key patch skipped:", e.message);
@@ -2425,6 +2450,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         minWithdrawal1: s.min_withdrawal_1,
         minWithdrawal2: s.min_withdrawal_2,
         minWithdrawal3: s.min_withdrawal_3,
+        bep20Fees: Number(s.bep20_fees) > 0 ? Number(s.bep20_fees) : 3680,
         showAds: s.show_ads,
         activeAdNetwork: s.active_ad_network,
         admobUnitId: s.admob_unit_id,
@@ -4024,9 +4050,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (amount < minAmount)
         return res.status(400).json({ error: `Minimum withdrawal is ${minAmount} SHIB` });
 
-      // Net amount recomputed SERVER-SIDE: BEP-20 carries the fixed network fee
-      // (mirrors the client's BEP20_FEE constant); Binance Email is free.
-      const bep20Fee = Number(settings?.bep20_fee) > 0 ? Number(settings.bep20_fee) : 3680;
+      // Net amount recomputed SERVER-SIDE: BEP-20 carries the dynamic network fee
+      // from settings.bep20_fees (legacy bep20_fee honored, 3680 built-in default);
+      // Binance Email is free.
+      const bep20Fee =
+        Number(settings?.bep20_fees) > 0
+          ? Number(settings.bep20_fees)
+          : Number(settings?.bep20_fee) > 0
+            ? Number(settings.bep20_fee)
+            : 3680;
       const resolvedNet = resolvedMethod === "BEP-20" ? grossAmount - bep20Fee : grossAmount;
       if (resolvedNet <= 0)
         return res.status(400).json({ error: `Amount must exceed the ${bep20Fee} SHIB network fee` });
@@ -4385,6 +4417,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           pbUpdate.min_withdrawal_2 = body.minWithdrawal2;
         if (body.minWithdrawal3 !== undefined)
           pbUpdate.min_withdrawal_3 = body.minWithdrawal3;
+        if (body.bep20Fees !== undefined)
+          pbUpdate.bep20_fees = Math.max(0, Number(body.bep20Fees) || 0);
         if (body.showAds !== undefined) pbUpdate.show_ads = body.showAds;
         if (body.forceUnityOnly !== undefined)
           pbUpdate.force_unity_only = !!body.forceUnityOnly;

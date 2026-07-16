@@ -952,6 +952,8 @@ export interface AppSettings {
   minWithdrawal1: number;
   minWithdrawal2: number;
   minWithdrawal3: number;
+  /* Dynamic BEP-20 network fee (SHIB) deducted from BEP-20 withdrawal payouts (settings.bep20_fees; 3680 default) */
+  bep20Fees: number;
   showAds: boolean;
   /* Master ad-network override — when true, bypass AdMob and serve Unity Ads only */
   forceUnityOnly: boolean;

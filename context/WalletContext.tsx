@@ -291,9 +291,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           return { success: false, error: `Minimum withdrawal is ${minAmount} SHIB` };
         }
 
-        // Net after fee — BEP-20 carries the fixed network fee; Binance Email is free.
-        const BEP20_FEE = 3680;
-        const netAmount = method === 'BEP-20' ? Math.max(0, amount - BEP20_FEE) : amount;
+        // Net after fee — BEP-20 carries the dynamic network fee from
+        // settings.bep20_fees (3680 default); Binance Email is free.
+        let bep20Fee = 3680;
+        try {
+          const sRec = await pb.collection('settings').getFirstListItem('');
+          if (Number(sRec.bep20_fees) > 0) bep20Fee = Number(sRec.bep20_fees);
+        } catch {}
+        const netAmount = method === 'BEP-20' ? Math.max(0, amount - bep20Fee) : amount;
         if (netAmount < minAmount) {
           return { success: false, error: `Minimum withdrawal is ${minAmount} SHIB after fees` };
         }

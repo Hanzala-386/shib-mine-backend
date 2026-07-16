@@ -139,7 +139,8 @@ export default function VerifyAccountScreen() {
             : 'BEP-20 address'}.
         </Text>
         <View style={styles.destCard}>
-          {!!pbUser?.kycBinanceEmail && (
+          {/* Binance Email destination is an India-only channel — hidden for all other countries */}
+          {pbUser?.kycCountry === 'India' && !!pbUser?.kycBinanceEmail && (
             <DestRow icon="mail" label="Binance Email" value={pbUser.kycBinanceEmail} />
           )}
           {!!pbUser?.kycBep20Address && (

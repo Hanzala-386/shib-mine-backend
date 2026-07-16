@@ -8,13 +8,14 @@ description: Prod APK hits Express /api/app/* via https://backend.webcod.in — 
 - The shipped APK's API base = `getApiUrl()` → resolves to **`https://backend.webcod.in`** (older builds baked the railway.app host, which the filter in `lib/query-client.ts` redirects to the same domain). In PRODUCTION the APK **does** hit the Express `/api/app/*` routes — client-side PocketBase-SDK paths are fallbacks only.
 - **Railway is STILL live prod (verified Jul 15 2026):** `curl -I https://backend.webcod.in` returns `server: railway-hikari` — the planned VPS cutover has NOT happened (no VPS SSH creds exist in this workspace). **`git push github main` DOES auto-deploy Railway** (~2-4 min build): pushing a commit changed live `/api/ws/game` behavior with no other action. The earlier "push no longer deploys" note was wrong. Deploy-verify trick: WS-play a tiny full game (GAME_START→GAME_OVER, no claim) against prod and poll the created game_score row for the new behavior.
 - VPS single-file bundle (below) is PREPARED but not serving traffic until the DNS flip.
+- **Who pushes:** the agent sandbox blocks `git commit`/`git push` (destructive-git guard — even grep commands containing those strings get blocked in bash). Flow that works: agent finishes task (platform auto-commits at checkpoint) → USER runs `git push github main` from the shell → Railway builds ~2-4 min.
 
 # VPS deploy model — single-file bundle, no package install
 
 - `scripts/build-vps.sh` → `dist/shib-backend-vps.zip`: esbuild **full** bundle (`--bundle --format=cjs --external:pg-native`, NOT `--packages=external`) of `shib-mine-backend/server/index.ts` → one `server.cjs`. The VPS runs `node server.cjs` under systemd behind nginx (WS upgrade headers + `client_max_body_size 12m` required); zero network at deploy time so the "build" cannot fail.
 - Runtime paths are `process.cwd()`-relative: the package must ship `public/`, `server/templates/`, `app.json` next to `server.cjs` and run from that dir.
 - Server port: `SERVER_PORT` beats `PORT`.
-- **Updating prod now = rebuild bundle on Replit → scp `server.cjs` → `systemctl restart shib-backend`.** Git push to the old Railway GitHub repo no longer deploys anything.
+- IF the VPS cutover ever happens: updating prod = rebuild bundle on Replit → scp `server.cjs` → `systemctl restart shib-backend`. Until then (Railway live), `git push github main` is the deploy path — see above.
 - Cutover safety order: same `SESSION_SECRET` as old host (HMAC match-sig continuity) → pre-issue TLS via certbot DNS-01 BEFORE the DNS flip → verify → only then kill the old host.
 
 # getApiUrl trailing-slash gotcha

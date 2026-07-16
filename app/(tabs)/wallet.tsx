@@ -8,6 +8,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { router, useFocusEffect } from 'expo-router';
 import { useWallet, type WithdrawalRecord } from '@/context/WalletContext';
+import { useAdmin } from '@/context/AdminContext';
 import { useAuth } from '@/context/AuthContext';
 import { useAds } from '@/context/AdContext';
 import KycGateModal, { useKycGate } from '@/components/KycGate';
@@ -20,7 +21,7 @@ import type { MiningHistoryRecord } from '@/lib/api';
 const SHIBA_TICKET = require('@/assets/images/shiba_ticket_diamond.png');
 const REDEEM_BG = require('@/assets/images/redeem_bg.png');
 
-const BEP20_FEE         = 3680;   // fixed SHIB fee for BEP-20 network withdrawals
+const DEFAULT_BEP20_FEE = 3680;   // fallback SHIB fee when settings.bep20Fees is unavailable
 const BEP20_MIN_BALANCE = 50_000; // balance required to unlock BEP-20 withdrawals
 
 const WITHDRAWAL_RULES: { title: string; body: string }[] = [
@@ -114,6 +115,9 @@ export default function WalletScreen() {
   const { pbUser } = useAuth();
   const { showMiningInterstitial } = useAds();
   const { isKycVerified } = useKycGate();
+  const { settings } = useAdmin();
+  /* Dynamic BEP-20 network fee — admin-set in settings.bep20_fees (0/unset → default) */
+  const bep20Fee = settings && settings.bep20Fees > 0 ? settings.bep20Fees : DEFAULT_BEP20_FEE;
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
   const [showRules, setShowRules] = useState(false);
@@ -179,9 +183,9 @@ export default function WalletScreen() {
   /* ── Pending withdrawal lock ── */
   const hasPendingWithdrawal = withdrawals.some(w => w.status === 'pending');
 
-  /* ── Fee calculations ── */
+  /* ── Fee calculations — BEP-20 fee is dynamic from settings.bep20Fees ── */
   const grossAmt = parseFloat(amount) || 0;
-  const fee      = method === 'BEP-20' ? BEP20_FEE : 0;
+  const fee      = method === 'BEP-20' ? bep20Fee : 0;
   const netAmt   = Math.max(0, grossAmt - fee);
 
   const hasEnoughBalance    = grossAmt > 0 && grossAmt <= availableShibBalance;
@@ -495,7 +499,7 @@ export default function WalletScreen() {
                     </View>
                     <View style={[styles.feeBadge, isFree ? styles.feeBadgeFree : styles.feeBadgePaid]}>
                       <Text style={[styles.feeBadgeText, isFree ? styles.feeBadgeTextFree : styles.feeBadgeTextPaid]}>
-                        {isFree ? 'FREE' : `${formatShib(BEP20_FEE)} SHIB`}
+                        {isFree ? 'FREE' : `${formatShib(bep20Fee)} SHIB`}
                       </Text>
                     </View>
                   </Pressable>

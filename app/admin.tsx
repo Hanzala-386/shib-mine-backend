@@ -796,6 +796,7 @@ export default function AdminScreen() {
             <AdminField label="Tier 1 Min (1st withdrawal)" value={String(local.minWithdrawal1)} onChangeText={(v) => setField('minWithdrawal1', Number(v) || 0)} keyboardType="numeric" />
             <AdminField label="Tier 2 Min (2nd withdrawal)" value={String(local.minWithdrawal2)} onChangeText={(v) => setField('minWithdrawal2', Number(v) || 0)} keyboardType="numeric" />
             <AdminField label="Tier 3 Min (3rd+ withdrawal)" value={String(local.minWithdrawal3)} onChangeText={(v) => setField('minWithdrawal3', Number(v) || 0)} keyboardType="numeric" />
+            <AdminField label="BEP-20 Network Fee (0 = default 3680)" value={String(local.bep20Fees ?? 3680)} onChangeText={(v) => setField('bep20Fees', Number(v) || 0)} keyboardType="numeric" />
           </AdminSection>
 
           <AdminSection title="Ad Settings" icon="megaphone">
