@@ -3757,9 +3757,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
         `/api/collections/verification_requests/records?filter=${encodeURIComponent(`user = "${kycFilterEsc(pbId)}"`)}&sort=-created&perPage=1`,
       );
       const row = (latest?.items || [])[0];
+      // ── Self-heal: the verification_requests row is the source of truth. ──
+      // If an admin edits row.status directly in the PB dashboard, mirror it
+      // onto the users record exactly like the approve/reject routes would,
+      // so the app UI reflects the change on the next status fetch.
+      let kycStatus = normalizeKycStatus(user.kyc_status);
+      let rejectReason = user.kyc_reject_reason || "";
+      if (row) {
+        const derived = normalizeKycStatus(row.status);
+        // Skip the heal when this row was rejected by the admin "unverify"
+        // flow — unverify intentionally resets the user to a clean 'none'
+        // state, and its internal audit note must not surface to the user
+        // as a rejection banner.
+        const isUnverifyAudit =
+          derived === "rejected" &&
+          (row.reject_reason || "") === "Released by admin (unverified)" &&
+          kycStatus === "none";
+        if (derived !== "none" && derived !== kycStatus && !isUnverifyAudit) {
+          const patch: Record<string, unknown> =
+            derived === "verified"
+              ? {
+                  kyc_status: "verified",
+                  kyc_reject_reason: "",
+                  kyc_full_name: row.full_name,
+                  kyc_country: row.country,
+                  kyc_country_code: row.country_code,
+                  kyc_phone: row.phone,
+                  kyc_binance_email: row.binance_email || "",
+                  kyc_bep20_address: row.bep20_address,
+                }
+              : derived === "rejected"
+                ? { kyc_status: "rejected", kyc_reject_reason: row.reject_reason || "" }
+                : { kyc_status: "under_review", kyc_reject_reason: "" };
+          const healed = await pbPatch(`/api/collections/users/records/${pbId}`, patch);
+          if (!healed.code) {
+            kycStatus = derived;
+            rejectReason = String(patch.kyc_reject_reason ?? "");
+            console.log(`[verification/status] self-heal: user ${pbId} kyc_status → ${derived} (from request row ${row.id})`);
+          } else {
+            console.warn("[verification/status] self-heal patch failed:", JSON.stringify(healed).slice(0, 150));
+          }
+        }
+      }
       res.json({
-        kycStatus: normalizeKycStatus(user.kyc_status),
-        rejectReason: user.kyc_reject_reason || "",
+        kycStatus,
+        rejectReason,
         request: row
           ? {
               id: row.id,

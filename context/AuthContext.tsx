@@ -15,6 +15,7 @@ import {
 import { api, type PBUser } from '@/lib/api';
 import { pb, POCKETBASE_URL, processPendingReferralEarnings } from '@/lib/pocketbase';
 import { normalizeVipLevel } from '@shared/vip';
+import { normalizeKycStatus } from '@shared/kyc';
 
 export interface UserProfile {
   uid: string;
@@ -50,6 +51,7 @@ interface AuthContextValue {
   forgotPassword: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
   refreshBalance: () => Promise<void>;
+  refreshKycStatus: () => Promise<void>;
   optimisticUpdatePt: (newPt: number) => void;
 }
 
@@ -640,6 +642,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // ── KYC status sync ──────────────────────────────────────────────────────
+  // The verification_requests row is the source of truth (an admin may edit
+  // its status directly in the PB dashboard). The Express status endpoint
+  // self-heals users.kyc_status from that row; the PB-direct read is the APK
+  // fallback when Express is unreachable (display-only — users updateRule
+  // blocks kyc_* self-writes).
+  async function refreshKycStatus() {
+    const pbId = pbUser?.pbId;
+    if (!pbId) return;
+    let status: 'none' | 'under_review' | 'verified' | 'rejected' | null = null;
+    let reason = '';
+    try {
+      const r = await api.getVerificationStatus(pbId);
+      status = r.kycStatus;
+      reason = r.rejectReason || '';
+    } catch {
+      try {
+        const rows = await pb.collection('verification_requests').getList(1, 1, {
+          filter: `user = "${pbId}"`,
+          sort: '-created',
+        });
+        const row: any = rows.items[0];
+        if (!row) return;
+        status = normalizeKycStatus(row.status);
+        reason = String(row.reject_reason || '');
+      } catch {
+        return;
+      }
+    }
+    if (!status || status === 'none') return;
+    const s = status;
+    setPbUser((prev) => {
+      if (!prev || (prev.kycStatus === s && (prev.kycRejectReason || '') === reason)) return prev;
+      return { ...prev, kycStatus: s, kycRejectReason: reason };
+    });
+    setUser((prev) => {
+      if (!prev || (prev.kycStatus === s && (prev.kycRejectReason || '') === reason)) return prev;
+      return { ...prev, kycStatus: s, kycRejectReason: reason };
+    });
+  }
+
   // ── Background referral commission poll (every 60 s while logged in) ────────
   // Ensures the home-screen SHIB balance reflects new commissions without re-login.
   useEffect(() => {
@@ -675,6 +718,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     forgotPassword,
     refreshUser,
     refreshBalance,
+    refreshKycStatus,
     optimisticUpdatePt,
   }), [user, firebaseUser, isLoading, isAdmin, pbUser]);
 

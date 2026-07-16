@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, Alert, Switch, Platform,
   Modal, TextInput, Image, ActivityIndicator, Animated as RNAnimated,
@@ -11,7 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   EmailAuthProvider,
@@ -99,7 +99,16 @@ function MenuItem({ icon, iconLib = 'ionicons', label, labelColor, value, danger
 /* ══════════════════════════════════════════════════════════════════════════ */
 export default function ProfileScreen() {
   const insets  = useSafeAreaInsets();
-  const { user, pbUser, firebaseUser, signOut, isAdmin, refreshBalance } = useAuth();
+  const { user, pbUser, firebaseUser, signOut, isAdmin, refreshBalance, refreshKycStatus } = useAuth();
+
+  /* Re-check verification status from the DB every time this screen gains focus —
+   * an admin may have changed it since the app loaded */
+  useFocusEffect(
+    useCallback(() => {
+      refreshKycStatus().catch(() => {});
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pbUser?.pbId]),
+  );
   const { shibBalance, powerTokens } = useWallet();
 
   const queryClient = useQueryClient();

@@ -7,7 +7,7 @@
  * Duplicate check is server-side → 409 {duplicate:true, fields:[...]} shows
  * "Field already in use" + Contact Support mailto. */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, TextInput, Modal, FlatList,
   ActivityIndicator, Platform, Linking, Alert,
@@ -30,7 +30,14 @@ const SUPPORT_EMAIL = 'support@shibahit.com';
 
 export default function VerifyAccountScreen() {
   const insets = useSafeAreaInsets();
-  const { user, pbUser, refreshUser } = useAuth();
+  const { user, pbUser, refreshUser, refreshKycStatus } = useAuth();
+
+  /* Fresh status from the DB on every open — admin may have approved/rejected
+   * since the app loaded */
+  useEffect(() => {
+    refreshKycStatus().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const webTop = Platform.OS === 'web' ? 67 : 0;
   const webBottom = Platform.OS === 'web' ? 34 : 0;
 
