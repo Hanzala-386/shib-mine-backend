@@ -525,7 +525,32 @@ function tick(event) {
 		_stepAccum -= STEP_MS;
 		steps++;
 	}
+	// Render pass: rebuild the road display list ONCE per rendered frame
+	// (it used to run inside every catch-up step above via updateWorld()).
+	if (steps > 0 && typeof renderWorld === 'function') { renderWorld(); }
+	_fpsSample();
 	stage.update(event);
+}
+
+// --- Lightweight FPS meter (diagnostics; DOM overlay, zero canvas cost) ---
+var _fpsEl = null, _fpsFrames = 0, _fpsWindowStart = 0;
+function _fpsSample(){
+	var now = (window.performance && performance.now) ? performance.now() : Date.now();
+	_fpsFrames++;
+	if (!_fpsWindowStart) { _fpsWindowStart = now; return; }
+	var span = now - _fpsWindowStart;
+	if (span < 500) { return; }
+	var fps = Math.round(_fpsFrames * 1000 / span);
+	_fpsFrames = 0;
+	_fpsWindowStart = now;
+	if (!_fpsEl) {
+		_fpsEl = document.createElement('div');
+		_fpsEl.id = 'fpsMeter';
+		_fpsEl.style.cssText = 'position:fixed;top:4px;left:4px;z-index:9999;padding:1px 5px;font:bold 11px monospace;background:rgba(0,0,0,.45);border-radius:4px;pointer-events:none;';
+		document.body.appendChild(_fpsEl);
+	}
+	_fpsEl.style.color = fps >= 50 ? '#5f5' : (fps >= 30 ? '#fc0' : '#f55');
+	_fpsEl.textContent = fps + ' FPS';
 }
 
 /*!

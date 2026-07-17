@@ -1156,7 +1156,10 @@ function getLastY() {
  */
 function updateWorld(){
 	updateSprites();
-	renderWorld();
+	// renderWorld() moved out of the fixed-step loop: it is now called ONCE per
+	// rendered frame from canvas.js tick(). It rebuilds the entire road display
+	// list (~150 segments x new Shape/clone each) so running it inside catch-up
+	// steps did up to 4 full rebuilds per frame on a lagging device.
 }
 
 function updateSprites() {

@@ -34,6 +34,7 @@ function playSound(soundName, vol){
 			if(removeSoundIndex != -1){
 				soundPushArr.splice(removeSoundIndex, 1);
 			}
+			delete $.sound[thisSoundID]; // free the instance - was retained forever (memory leak)
 		});
 	}
 }

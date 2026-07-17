@@ -564,6 +564,7 @@ export default function SoloPlayScreen() {
         onMessage={onNativeMessage}
         javaScriptEnabled domStorageEnabled allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false} mixedContentMode="always"
+        androidLayerType="hardware" overScrollMode="never"
         originWhitelist={['*']} startInLoadingState
         renderLoading={() => (
           <View style={S.loader}>
