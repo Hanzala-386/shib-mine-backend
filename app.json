@@ -70,7 +70,8 @@
             "targetSdkVersion": 35,
             "buildToolsVersion": "35.0.0",
             "minSdkVersion": 24,
-            "enableMultiDex": true
+            "enableMultiDex": true,
+            "kotlinVersion": "2.2.20"
           }
         }
       ]
