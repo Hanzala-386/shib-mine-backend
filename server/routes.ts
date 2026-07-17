@@ -1165,6 +1165,9 @@ const KYC_STATUS_UNDER_REVIEW = "Under Review";
 const KYC_STATUS_VERIFIED     = "Verified";
 const KYC_STATUS_REJECTED     = "Rejected";
 const KYC_STATUS_OPTIONS = [KYC_STATUS_UNDER_REVIEW, KYC_STATUS_VERIFIED, KYC_STATUS_REJECTED];
+// MSG91 WhatsApp-OTP widget — server-side access-token verification key.
+// Env override wins so the key can be rotated without a code deploy.
+const MSG91_AUTHKEY = process.env.MSG91_AUTHKEY || "551552A2j257QU6a5a8beeP1";
 // Map any legacy/alias value ('under_review' | 'approved' | 'unverified' | …)
 // onto the canonical SELECT label. Unknown values pass through unchanged.
 function toDbKycStatus(v: unknown): string {
@@ -1188,6 +1191,8 @@ async function ensureVerificationSchema() {
       const wanted = [
         "kyc_status", "kyc_reject_reason", "kyc_full_name", "kyc_country",
         "kyc_country_code", "kyc_phone", "kyc_binance_email", "kyc_bep20_address",
+        // WhatsApp-OTP (MSG91): number the user proved ownership of + when
+        "wa_verified_phone", "wa_verified_at",
       ];
       const missing = wanted.filter((n) => !existingNames.includes(n));
       // submission_count is a NUMBER field (max 3 verification attempts per user)
@@ -1210,6 +1215,7 @@ async function ensureVerificationSchema() {
     if (!check.code) {
       console.log("[verification_requests] Collection already exists ✓");
       await ensureKycStatusSelectField(check, token);
+      await ensureRequestPhoneVerifiedField(token);
       return;
     }
     const usersColl = await pbGet("/api/collections/users");
@@ -1229,6 +1235,8 @@ async function ensureVerificationSchema() {
         { name: "phone",          type: "text", required: false },
         { name: "binance_email",  type: "text", required: false },
         { name: "bep20_address",  type: "text", required: false },
+        // true when the submitted number matched the user's WhatsApp-OTP-verified number
+        { name: "phone_verified", type: "bool", required: false },
         // PB SELECT — 'Under Review' | 'Verified' | 'Rejected'
         { name: "status",         type: "select", required: false,
           options: { maxSelect: 1, values: KYC_STATUS_OPTIONS } },
@@ -1249,6 +1257,28 @@ async function ensureVerificationSchema() {
     console.log("[verification_requests] Collection created ✓");
   } catch (e: any) {
     console.warn("[verification_requests] Setup failed:", e.message);
+  }
+}
+
+// Additive: verification_requests.phone_verified (bool) — stamped at submit
+// time when the submitted number matches the user's WhatsApp-OTP-verified one.
+async function ensureRequestPhoneVerifiedField(token: string) {
+  try {
+    // Refetch — ensureKycStatusSelectField may have just patched the schema;
+    // a stale copy here would silently revert its SELECT conversion.
+    const coll = await pbGet("/api/collections/verification_requests");
+    if (coll.code) return;
+    const fields: any[] = coll.schema || coll.fields || [];
+    if (fields.some((f: any) => f.name === "phone_verified")) {
+      console.log("[verification_requests] phone_verified field present ✓");
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${coll.id}`, {
+      schema: [...fields, { name: "phone_verified", type: "bool", required: false }],
+    }, token);
+    console.log("[verification_requests] phone_verified field added ✓");
+  } catch (e: any) {
+    console.warn("[verification_requests] phone_verified ensure failed:", e.message);
   }
 }
 
@@ -3766,6 +3796,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(409).json({ error: "Field already in use", duplicate: true, fields });
       }
 
+      // WhatsApp-OTP stamp — wa_verified_phone was written by /verify-otp.
+      // SOFT check (older app builds have no OTP flow): absence or mismatch
+      // just leaves phone_verified=false for the admin badge, never blocks.
+      const expectedDigits = `${countryCode}${phone}`.replace(/\D/g, "");
+      const waPhone = String(user.wa_verified_phone || "").replace(/\D/g, "");
+      const phoneVerified = !!waPhone && waPhone === expectedDigits;
+
       // Supersede any previous rejected rows by this user (keeps audit trail,
       // but only ONE active row per user at a time)
       const created = await pbPost("/api/collections/verification_requests/records", {
@@ -3776,6 +3813,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         phone,
         binance_email: binanceEmail,
         bep20_address: bep20Address,
+        phone_verified: phoneVerified,
         status: KYC_STATUS_UNDER_REVIEW, // PB SELECT label
         reject_reason: "",
       });
@@ -3798,6 +3836,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error("[/api/app/verification/submit]", e.message);
       res.status(500).json({ error: "Verification submit failed" });
+    }
+  });
+
+  // ── WhatsApp OTP (MSG91 widget) — verify access-token server-side ─────────
+  // The app shows the MSG91 DefaultWidget; on success the widget returns a
+  // one-time access-token which is verified with MSG91 HERE, server-side, and
+  // the proven number is remembered on the users record. The KYC submit route
+  // then stamps phone_verified on the request row when numbers match — admin
+  // still approves/rejects manually. NOTE: the widget's tokenAuth (client)
+  // and this authkey are the same MSG91 key by design of their widget flow,
+  // but only the SERVER decides what number counts as verified.
+  app.post("/api/app/verification/verify-otp", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.body;
+      const accessToken = String(req.body.accessToken || "").trim();
+      const clientIdentifier = String(req.body.identifier || "").replace(/\D/g, "");
+      if (!pbId || !accessToken)
+        return res.status(400).json({ error: "Missing access token" });
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}`);
+      if (user.code) return res.status(404).json({ error: "User not found" });
+
+      let mr: any;
+      try {
+        const resp = await fetch("https://control.msg91.com/api/v5/widget/verifyAccessToken", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ authkey: MSG91_AUTHKEY, "access-token": accessToken }),
+        });
+        mr = await resp.json();
+      } catch (err: any) {
+        console.error("[verify-otp] MSG91 request failed:", err.message);
+        return res.status(502).json({ error: "Could not reach the OTP service. Try again." });
+      }
+      if (!mr || String(mr.type).toLowerCase() !== "success") {
+        console.warn("[verify-otp] MSG91 rejected token:", JSON.stringify(mr).slice(0, 200));
+        return res.status(400).json({ error: "OTP verification failed. Please try again.", otpFailed: true });
+      }
+
+      // Resolve the verified number from MSG91's own data ONLY — the verify
+      // response or the access-token JWT payload. The client-sent identifier
+      // is NEVER trusted (a modified client could otherwise pair its own
+      // valid token with someone else's number); it is logged for cross-check
+      // diagnostics only.
+      let identifier = String(mr.identifier || mr.mobile || mr.phone || mr.data?.identifier || "").replace(/\D/g, "");
+      if (!identifier) {
+        try {
+          const seg = accessToken.split(".")[1];
+          if (seg) {
+            const payload = JSON.parse(Buffer.from(seg.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+            identifier = String(payload.identifier || payload.mobile || payload.phone || "").replace(/\D/g, "");
+            if (!identifier)
+              console.warn("[verify-otp] JWT payload had no identifier — keys:", Object.keys(payload).join(","));
+          }
+        } catch { /* non-JWT token — rejected below */ }
+      }
+      if (!identifier) {
+        console.warn(`[verify-otp] could not resolve identifier from MSG91 data (response keys: ${Object.keys(mr).join(",")}); client hint was ****${clientIdentifier.slice(-4)}`);
+        return res.status(400).json({ error: "Could not confirm the verified number. Please try again." });
+      }
+      if (clientIdentifier && clientIdentifier !== identifier)
+        console.warn(`[verify-otp] client-hint mismatch: token=****${identifier.slice(-4)} hint=****${clientIdentifier.slice(-4)}`);
+
+      await pbPatch(`/api/collections/users/records/${pbId}`, {
+        wa_verified_phone: identifier,
+        wa_verified_at: new Date().toISOString(),
+      });
+      console.log(`[verify-otp] user ${pbId} verified WhatsApp number ****${identifier.slice(-4)}`);
+      res.json({ success: true, identifier });
+    } catch (e: any) {
+      console.error("[/api/app/verification/verify-otp]", e.message);
+      res.status(500).json({ error: "OTP verification failed" });
     }
   });
 
@@ -3865,6 +3975,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               phone: row.phone,
               binanceEmail: row.binance_email,
               bep20Address: row.bep20_address,
+              phoneVerified: !!row.phone_verified,
               status: row.status,
               rejectReason: row.reject_reason || "",
               created: row.created,
@@ -3899,6 +4010,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           phone: v.phone,
           binanceEmail: v.binance_email,
           bep20Address: v.bep20_address,
+          phoneVerified: !!v.phone_verified,
           status: v.status,
           rejectReason: v.reject_reason || "",
           created: v.created,

@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { DefaultWidget } from '@msg91comm/sendotp-react-native';
 import Colors from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
@@ -27,6 +28,12 @@ import {
 } from '@shared/kyc';
 
 const SUPPORT_EMAIL = 'support@shibahit.com';
+
+/* MSG91 WhatsApp-OTP widget credentials. These identify the widget config in
+ * the MSG91 panel — the security-critical step (access-token verification)
+ * happens SERVER-side via /api/app/verification/verify-otp. */
+const MSG91_WIDGET_ID = '36677172566d313730373937';
+const MSG91_TOKEN_AUTH = '551552A2j257QU6a5a8beeP1';
 
 export default function VerifyAccountScreen() {
   const insets = useSafeAreaInsets();
@@ -59,6 +66,16 @@ export default function VerifyAccountScreen() {
   const [dupFields, setDupFields] = useState<string[]>([]);
   const [justSubmitted, setJustSubmitted] = useState(false);
 
+  /* WhatsApp OTP (MSG91) — the widget returns a one-time access-token which
+   * the SERVER verifies; waIdentifier is the digits-only number that was
+   * proven (e.g. "918888888888"). Verified state is DERIVED by comparing it
+   * to the current dial-code+phone, so editing the phone naturally revokes
+   * the green check until the new number is verified. */
+  const [otpWidgetOpen, setOtpWidgetOpen] = useState(false);
+  const [otpChecking, setOtpChecking] = useState(false);
+  const [waIdentifier, setWaIdentifier] = useState('');
+  const [otpError, setOtpError] = useState('');
+
   const binanceRoute = !!country && isBinanceSupported(country.name);
   const countryBlocked = !!country && isKycCountryBlocked(country.name);
 
@@ -73,10 +90,39 @@ export default function VerifyAccountScreen() {
   const phoneOk = validateKycPhone(phone);
   const bepOk = validateBep20Address(bep20);
   const emailOk = !binanceRoute || validateKycEmail(binanceEmail);
+  const expectedWaDigits = country ? `${country.dial}${phone}`.replace(/\D/g, '') : '';
+  const waVerified = !!waIdentifier && waIdentifier === expectedWaDigits;
+  const waMismatch = !!waIdentifier && !!country && phoneOk && !waVerified;
   const canSubmit =
-    !!country && !countryBlocked && nameOk && phoneOk && bepOk && emailOk && !submitting;
+    !!country && !countryBlocked && nameOk && phoneOk && waVerified &&
+    bepOk && emailOk && !submitting;
 
   const fieldError = (field: string) => dupFields.includes(field);
+
+  /* Widget completion → send the one-time access-token to the server, which
+   * verifies it with MSG91 and remembers the proven number on the account. */
+  async function handleOtpCompletion(result: { success: boolean; identifier?: string; message?: string }) {
+    setOtpWidgetOpen(false);
+    if (!result?.success || !result.message) {
+      if (result?.message) setOtpError(result.message);
+      return;
+    }
+    if (!pbUser?.pbId) return;
+    setOtpChecking(true);
+    setOtpError('');
+    try {
+      const r = await api.verifyWhatsAppOtp({
+        pbId: pbUser.pbId,
+        accessToken: result.message,
+        identifier: (result.identifier || '').replace(/\D/g, ''),
+      });
+      setWaIdentifier((r.identifier || result.identifier || '').replace(/\D/g, ''));
+    } catch (e: any) {
+      setOtpError(e?.message || 'OTP verification failed. Please try again.');
+    } finally {
+      setOtpChecking(false);
+    }
+  }
 
   async function handleSubmit() {
     if (!canSubmit || !country || !pbUser?.pbId) return;
@@ -277,6 +323,46 @@ export default function VerifyAccountScreen() {
               </Text>
             )}
 
+            {/* WhatsApp OTP — must verify the entered number before submit */}
+            {waVerified ? (
+              <View style={styles.waVerifiedChip} testID="kyc-wa-verified">
+                <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
+                <Text style={styles.waVerifiedTxt}>WhatsApp number verified</Text>
+              </View>
+            ) : (
+              <>
+                <Pressable
+                  onPress={() => { setOtpError(''); setOtpWidgetOpen(true); }}
+                  disabled={!phoneOk || !country || otpChecking}
+                  testID="kyc-wa-otp-btn"
+                  style={({ pressed }) => [
+                    styles.waBtn,
+                    (!phoneOk || !country) && { opacity: 0.45 },
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  {otpChecking ? (
+                    <ActivityIndicator size="small" color="#25D366" />
+                  ) : (
+                    <Ionicons name="logo-whatsapp" size={18} color="#25D366" />
+                  )}
+                  <Text style={styles.waBtnTxt}>
+                    {otpChecking ? 'Verifying…' : 'Verify on WhatsApp'}
+                  </Text>
+                </Pressable>
+                {waMismatch && (
+                  <Text style={styles.fieldErr} testID="kyc-wa-mismatch">
+                    The number you verified doesn't match the phone above. Verify{' '}
+                    {country?.dial} {phone} to continue.
+                  </Text>
+                )}
+                {!!otpError && <Text style={styles.fieldErr} testID="kyc-wa-error">{otpError}</Text>}
+                <Text style={styles.hintTxt}>
+                  Verify this number on WhatsApp with a one-time code before submitting.
+                </Text>
+              </>
+            )}
+
             {/* Destination fields — routed by Binance support */}
             {country && binanceRoute && (
               <>
@@ -379,6 +465,25 @@ export default function VerifyAccountScreen() {
           </Pressable>
         )}
       </KeyboardAwareScrollView>
+
+      {/* MSG91 WhatsApp-OTP widget (mounted only while open — it fetches its
+          config fresh from the MSG91 panel on every mount) */}
+      {otpWidgetOpen && (
+        <DefaultWidget
+          visible={otpWidgetOpen}
+          onClose={() => setOtpWidgetOpen(false)}
+          onCompletion={handleOtpCompletion}
+          widgetId={MSG91_WIDGET_ID}
+          tokenAuth={MSG91_TOKEN_AUTH}
+          theme="dark"
+          primaryColor={Colors.gold}
+          defaultCountry={
+            country
+              ? { name: country.name, code: '', dial_code: country.dial, flag: '' }
+              : undefined
+          }
+        />
+      )}
 
       {/* Country picker modal */}
       <Modal visible={pickerOpen} transparent animationType="slide" onRequestClose={() => setPickerOpen(false)}>
@@ -540,6 +645,33 @@ const styles = StyleSheet.create({
   phoneInput: { flex: 1, paddingHorizontal: 14, paddingVertical: 13, fontSize: 15, color: Colors.textPrimary },
   fieldErr: { fontSize: 12, color: Colors.error, marginTop: 5 },
   hintTxt: { fontSize: 12, color: Colors.textMuted, marginTop: 7, lineHeight: 17 },
+  waBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 10,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(37,211,102,0.45)',
+    backgroundColor: 'rgba(37,211,102,0.08)',
+  },
+  waBtnTxt: { fontSize: 14, fontWeight: '800', color: '#25D366' },
+  waVerifiedChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    alignSelf: 'flex-start',
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(0,230,118,0.4)',
+    backgroundColor: 'rgba(0,230,118,0.08)',
+  },
+  waVerifiedTxt: { fontSize: 13, fontWeight: '700', color: Colors.success },
   errBox: {
     backgroundColor: 'rgba(255,61,87,0.10)',
     borderWidth: 1,

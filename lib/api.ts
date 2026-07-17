@@ -354,6 +354,15 @@ export const api = {
       request: VerificationRequestRecord | null;
     }>('GET', `/api/app/verification/status/${encodeURIComponent(pbId)}`),
 
+  /** MSG91 WhatsApp-OTP: server-side verification of the widget's one-time
+   * access-token. On success the server remembers the proven number and the
+   * next KYC submit stamps phone_verified on the request row. */
+  verifyWhatsAppOtp: (payload: { pbId: string; accessToken: string; identifier?: string }) =>
+    robustPost<{ success: boolean; identifier: string }>(
+      '/api/app/verification/verify-otp',
+      payload,
+    ),
+
   adminGetVerifications: (status = 'under_review') =>
     request<{ items: VerificationRequestRecord[]; totalItems: number }>(
       'GET',
@@ -937,6 +946,8 @@ export interface VerificationRequestRecord {
   phone: string;
   binanceEmail: string;
   bep20Address: string;
+  /** true when the submitted phone matched the WhatsApp-OTP-verified number */
+  phoneVerified?: boolean;
   status: string;
   rejectReason: string;
   created: string;

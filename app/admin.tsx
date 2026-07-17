@@ -950,6 +950,17 @@ export default function AdminScreen() {
                 <View style={{ marginTop: 8, gap: 3 }}>
                   <Text style={styles.verifDetail}>Country: <Text style={styles.verifDetailVal}>{req.country} ({req.countryCode})</Text></Text>
                   <Text style={styles.verifDetail}>Phone: <Text style={styles.verifDetailVal}>{req.countryCode} {req.phone}</Text></Text>
+                  {/* WhatsApp-OTP stamp — set server-side at submit time */}
+                  <View style={[styles.waBadge, !req.phoneVerified && styles.waBadgeOff]} testID={`verif-wa-${req.id}`}>
+                    <Ionicons
+                      name={req.phoneVerified ? 'logo-whatsapp' : 'alert-circle-outline'}
+                      size={12}
+                      color={req.phoneVerified ? '#25D366' : Colors.textMuted}
+                    />
+                    <Text style={[styles.waBadgeTxt, !req.phoneVerified && { color: Colors.textMuted }]}>
+                      {req.phoneVerified ? 'WhatsApp verified' : 'No WhatsApp OTP'}
+                    </Text>
+                  </View>
                   {!!req.binanceEmail && (
                     <Text style={styles.verifDetail}>Binance Email: <Text style={styles.verifDetailVal}>{req.binanceEmail}</Text></Text>
                   )}
@@ -1486,6 +1497,24 @@ const styles = StyleSheet.create({
   unverifyBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: Colors.error },
   verifDetail: { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.textSecondary },
   verifDetailVal: { fontFamily: 'Inter_500Medium', color: Colors.textPrimary },
+  waBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    alignSelf: 'flex-start',
+    marginTop: 2,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(37,211,102,0.45)',
+    backgroundColor: 'rgba(37,211,102,0.08)',
+  },
+  waBadgeOff: {
+    borderColor: 'rgba(255,255,255,0.14)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  waBadgeTxt: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#25D366' },
   verifApproveBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     paddingVertical: 10, borderRadius: 10, backgroundColor: Colors.gold,
