@@ -1165,9 +1165,11 @@ const KYC_STATUS_UNDER_REVIEW = "Under Review";
 const KYC_STATUS_VERIFIED     = "Verified";
 const KYC_STATUS_REJECTED     = "Rejected";
 const KYC_STATUS_OPTIONS = [KYC_STATUS_UNDER_REVIEW, KYC_STATUS_VERIFIED, KYC_STATUS_REJECTED];
-// MSG91 WhatsApp-OTP widget — server-side access-token verification key.
-// Env override wins so the key can be rotated without a code deploy.
+// MSG91 WhatsApp-OTP widget — server-driven send + verify (widget REST API).
+// Env overrides win so credentials can be rotated without a code deploy.
+// NOTE: with the server-driven flow the key never ships in the client at all.
 const MSG91_AUTHKEY = process.env.MSG91_AUTHKEY || "551552A2j257QU6a5a8beeP1";
+const MSG91_WIDGET_ID = process.env.MSG91_WIDGET_ID || "36677172566d313730373937";
 // Map any legacy/alias value ('under_review' | 'approved' | 'unverified' | …)
 // onto the canonical SELECT label. Unknown values pass through unchanged.
 function toDbKycStatus(v: unknown): string {
@@ -3839,66 +3841,108 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ── WhatsApp OTP (MSG91 widget) — verify access-token server-side ─────────
-  // The app shows the MSG91 DefaultWidget; on success the widget returns a
-  // one-time access-token which is verified with MSG91 HERE, server-side, and
-  // the proven number is remembered on the users record. The KYC submit route
-  // then stamps phone_verified on the request row when numbers match — admin
-  // still approves/rejects manually. NOTE: the widget's tokenAuth (client)
-  // and this authkey are the same MSG91 key by design of their widget flow,
-  // but only the SERVER decides what number counts as verified.
-  app.post("/api/app/verification/verify-otp", async (req: Request, res: Response) => {
+  // ── WhatsApp OTP (MSG91 widget API) — server-driven send + verify ────────
+  // The server fires the OTP to the user's WhatsApp via MSG91's widget REST
+  // API and remembers reqId → identifier in memory; the app shows an inline
+  // OTP box and sends the code back here. Because the SERVER chose the
+  // identifier for each reqId, a modified client can never pair a valid OTP
+  // with someone else's number. On success the proven number is stored on the
+  // users record; the KYC submit route then stamps phone_verified on the
+  // request row when numbers match — admin still approves/rejects manually.
+  const msg91OtpSessions = new Map<string, { identifier: string; pbId: string; expiresAt: number }>();
+  const msg91SendGuard = new Map<string, { count: number; windowStart: number; lastSentAt: number }>();
+  const MSG91_SESSION_TTL_MS = 10 * 60 * 1000;   // OTP entry window
+  const MSG91_MIN_RESEND_MS = 25 * 1000;         // per-user gap between sends
+  const MSG91_MAX_SENDS_PER_HOUR = 6;            // per-user hourly cap
+
+  async function msg91Post(path: string, body: Record<string, unknown>): Promise<any> {
+    const resp = await fetch(`https://control.msg91.com/api/v5/widget/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ widgetId: MSG91_WIDGET_ID, tokenAuth: MSG91_AUTHKEY, ...body }),
+    });
+    return resp.json();
+  }
+
+  app.post("/api/app/verification/send-otp", async (req: Request, res: Response) => {
     try {
       const { pbId } = req.body;
-      const accessToken = String(req.body.accessToken || "").trim();
-      const clientIdentifier = String(req.body.identifier || "").replace(/\D/g, "");
-      if (!pbId || !accessToken)
-        return res.status(400).json({ error: "Missing access token" });
+      const identifier = String(req.body.identifier || "").replace(/\D/g, "");
+      if (!pbId || identifier.length < 8 || identifier.length > 15)
+        return res.status(400).json({ error: "Enter a valid phone number first" });
 
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
+      // Per-user rate limit — WhatsApp OTPs cost MSG91 credits.
+      const now = Date.now();
+      const guard = msg91SendGuard.get(pbId) || { count: 0, windowStart: now, lastSentAt: 0 };
+      if (now - guard.windowStart > 60 * 60 * 1000) { guard.count = 0; guard.windowStart = now; }
+      if (now - guard.lastSentAt < MSG91_MIN_RESEND_MS)
+        return res.status(429).json({ error: "Please wait a moment before requesting another code." });
+      if (guard.count >= MSG91_MAX_SENDS_PER_HOUR)
+        return res.status(429).json({ error: "Too many OTP requests. Try again in an hour." });
+
       let mr: any;
       try {
-        const resp = await fetch("https://control.msg91.com/api/v5/widget/verifyAccessToken", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ authkey: MSG91_AUTHKEY, "access-token": accessToken }),
-        });
-        mr = await resp.json();
+        mr = await msg91Post("sendOtpMobile", { identifier });
+      } catch (err: any) {
+        console.error("[send-otp] MSG91 request failed:", err.message);
+        return res.status(502).json({ error: "Could not reach the OTP service. Try again." });
+      }
+      const reqId = String(mr?.message || "").trim();
+      if (!mr || String(mr.type).toLowerCase() !== "success" || !reqId) {
+        console.warn("[send-otp] MSG91 send failed:", JSON.stringify(mr).slice(0, 300));
+        const msg = String(mr?.message || "");
+        const friendly = /auth/i.test(msg)
+          ? "OTP service is not configured correctly. Please contact support."
+          : msg && msg.length < 120 ? msg : "Could not send the OTP. Please try again.";
+        return res.status(400).json({ error: friendly });
+      }
+
+      guard.count += 1; guard.lastSentAt = now;
+      msg91SendGuard.set(pbId, guard);
+      // Sweep expired sessions so the map cannot grow unbounded.
+      for (const [k, v] of msg91OtpSessions) if (v.expiresAt < now) msg91OtpSessions.delete(k);
+      msg91OtpSessions.set(reqId, { identifier, pbId, expiresAt: now + MSG91_SESSION_TTL_MS });
+      console.log(`[send-otp] user ${pbId} → WhatsApp OTP sent to ****${identifier.slice(-4)} (reqId ${reqId.slice(0, 8)}…)`);
+      res.json({ success: true, reqId });
+    } catch (e: any) {
+      console.error("[/api/app/verification/send-otp]", e.message);
+      res.status(500).json({ error: "Could not send the OTP" });
+    }
+  });
+
+  app.post("/api/app/verification/verify-otp", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.body;
+      const reqId = String(req.body.reqId || "").trim();
+      const otp = String(req.body.otp || "").replace(/\D/g, "");
+      if (!pbId || !reqId || otp.length < 3 || otp.length > 8)
+        return res.status(400).json({ error: "Enter the OTP you received" });
+
+      const session = msg91OtpSessions.get(reqId);
+      if (!session || session.expiresAt < Date.now())
+        return res.status(400).json({ error: "This code has expired. Please request a new one.", otpExpired: true });
+      if (session.pbId !== pbId)
+        return res.status(400).json({ error: "This code belongs to a different session. Request a new one.", otpExpired: true });
+
+      let mr: any;
+      try {
+        mr = await msg91Post("verifyOtp", { reqId, otp });
       } catch (err: any) {
         console.error("[verify-otp] MSG91 request failed:", err.message);
         return res.status(502).json({ error: "Could not reach the OTP service. Try again." });
       }
-      if (!mr || String(mr.type).toLowerCase() !== "success") {
-        console.warn("[verify-otp] MSG91 rejected token:", JSON.stringify(mr).slice(0, 200));
-        return res.status(400).json({ error: "OTP verification failed. Please try again.", otpFailed: true });
+      const already = /already\s*verified/i.test(String(mr?.message || ""));
+      if (!mr || (String(mr.type).toLowerCase() !== "success" && !already)) {
+        console.warn("[verify-otp] MSG91 rejected OTP:", JSON.stringify(mr).slice(0, 200));
+        return res.status(400).json({ error: "Incorrect code. Please check and try again.", otpFailed: true });
       }
 
-      // Resolve the verified number from MSG91's own data ONLY — the verify
-      // response or the access-token JWT payload. The client-sent identifier
-      // is NEVER trusted (a modified client could otherwise pair its own
-      // valid token with someone else's number); it is logged for cross-check
-      // diagnostics only.
-      let identifier = String(mr.identifier || mr.mobile || mr.phone || mr.data?.identifier || "").replace(/\D/g, "");
-      if (!identifier) {
-        try {
-          const seg = accessToken.split(".")[1];
-          if (seg) {
-            const payload = JSON.parse(Buffer.from(seg.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
-            identifier = String(payload.identifier || payload.mobile || payload.phone || "").replace(/\D/g, "");
-            if (!identifier)
-              console.warn("[verify-otp] JWT payload had no identifier — keys:", Object.keys(payload).join(","));
-          }
-        } catch { /* non-JWT token — rejected below */ }
-      }
-      if (!identifier) {
-        console.warn(`[verify-otp] could not resolve identifier from MSG91 data (response keys: ${Object.keys(mr).join(",")}); client hint was ****${clientIdentifier.slice(-4)}`);
-        return res.status(400).json({ error: "Could not confirm the verified number. Please try again." });
-      }
-      if (clientIdentifier && clientIdentifier !== identifier)
-        console.warn(`[verify-otp] client-hint mismatch: token=****${identifier.slice(-4)} hint=****${clientIdentifier.slice(-4)}`);
-
+      // Identifier comes from the server-side session — never from the client.
+      const identifier = session.identifier;
+      msg91OtpSessions.delete(reqId);
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         wa_verified_phone: identifier,
         wa_verified_at: new Date().toISOString(),

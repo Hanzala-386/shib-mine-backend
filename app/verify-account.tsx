@@ -17,7 +17,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
-import { DefaultWidget } from '@msg91comm/sendotp-react-native';
 import Colors from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
@@ -28,12 +27,6 @@ import {
 } from '@shared/kyc';
 
 const SUPPORT_EMAIL = 'support@shibahit.com';
-
-/* MSG91 WhatsApp-OTP widget credentials. These identify the widget config in
- * the MSG91 panel — the security-critical step (access-token verification)
- * happens SERVER-side via /api/app/verification/verify-otp. */
-const MSG91_WIDGET_ID = '36677172566d313730373937';
-const MSG91_TOKEN_AUTH = '551552A2j257QU6a5a8beeP1';
 
 export default function VerifyAccountScreen() {
   const insets = useSafeAreaInsets();
@@ -66,15 +59,28 @@ export default function VerifyAccountScreen() {
   const [dupFields, setDupFields] = useState<string[]>([]);
   const [justSubmitted, setJustSubmitted] = useState(false);
 
-  /* WhatsApp OTP (MSG91) — the widget returns a one-time access-token which
-   * the SERVER verifies; waIdentifier is the digits-only number that was
-   * proven (e.g. "918888888888"). Verified state is DERIVED by comparing it
-   * to the current dial-code+phone, so editing the phone naturally revokes
-   * the green check until the new number is verified. */
-  const [otpWidgetOpen, setOtpWidgetOpen] = useState(false);
+  /* WhatsApp OTP (MSG91, server-driven) — tapping "Verify on WhatsApp" makes
+   * the SERVER fire the OTP to the number instantly; an inline code box opens
+   * below. waIdentifier is the digits-only number that was proven (e.g.
+   * "918888888888"). Verified state is DERIVED by comparing it to the current
+   * dial-code+phone, so editing the phone naturally revokes the green check.
+   * otpSentTo pins the inline box to the number the code was sent to — if the
+   * user edits the phone mid-entry the box disappears (reqId is stale). */
+  const [otpReqId, setOtpReqId] = useState('');
+  const [otpSentTo, setOtpSentTo] = useState('');
+  const [otpInput, setOtpInput] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
   const [otpChecking, setOtpChecking] = useState(false);
+  const [resendIn, setResendIn] = useState(0);
   const [waIdentifier, setWaIdentifier] = useState('');
   const [otpError, setOtpError] = useState('');
+
+  /* Resend cooldown ticker */
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = setInterval(() => setResendIn((s) => (s > 1 ? s - 1 : 0)), 1000);
+    return () => clearInterval(t);
+  }, [resendIn > 0]);
 
   const binanceRoute = !!country && isBinanceSupported(country.name);
   const countryBlocked = !!country && isKycCountryBlocked(country.name);
@@ -99,26 +105,45 @@ export default function VerifyAccountScreen() {
 
   const fieldError = (field: string) => dupFields.includes(field);
 
-  /* Widget completion → send the one-time access-token to the server, which
-   * verifies it with MSG91 and remembers the proven number on the account. */
-  async function handleOtpCompletion(result: { success: boolean; identifier?: string; message?: string }) {
-    setOtpWidgetOpen(false);
-    if (!result?.success || !result.message) {
-      if (result?.message) setOtpError(result.message);
-      return;
+  /* Tap "Verify on WhatsApp" → server sends the OTP immediately → inline
+   * code box opens below the button. */
+  async function handleSendOtp() {
+    if (!pbUser?.pbId || !expectedWaDigits || otpSending) return;
+    setOtpSending(true);
+    setOtpError('');
+    try {
+      const r = await api.sendWhatsAppOtp({ pbId: pbUser.pbId, identifier: expectedWaDigits });
+      setOtpReqId(r.reqId);
+      setOtpSentTo(expectedWaDigits);
+      setOtpInput('');
+      setResendIn(30);
+    } catch (e: any) {
+      setOtpError(e?.message || 'Could not send the OTP. Please try again.');
+    } finally {
+      setOtpSending(false);
     }
-    if (!pbUser?.pbId) return;
+  }
+
+  /* Verify the typed code → server checks it with MSG91 and remembers the
+   * proven number on the account. */
+  async function handleVerifyOtp() {
+    if (!pbUser?.pbId || !otpReqId || otpInput.length < 4 || otpChecking) return;
     setOtpChecking(true);
     setOtpError('');
     try {
-      const r = await api.verifyWhatsAppOtp({
-        pbId: pbUser.pbId,
-        accessToken: result.message,
-        identifier: (result.identifier || '').replace(/\D/g, ''),
-      });
-      setWaIdentifier((r.identifier || result.identifier || '').replace(/\D/g, ''));
+      const r = await api.verifyWhatsAppOtp({ pbId: pbUser.pbId, reqId: otpReqId, otp: otpInput });
+      setWaIdentifier((r.identifier || '').replace(/\D/g, ''));
+      setOtpReqId('');
+      setOtpSentTo('');
+      setOtpInput('');
+      setResendIn(0);
     } catch (e: any) {
-      setOtpError(e?.message || 'OTP verification failed. Please try again.');
+      if (e?.data?.otpExpired) {
+        setOtpReqId('');
+        setOtpSentTo('');
+        setOtpInput('');
+      }
+      setOtpError(e?.message || 'Incorrect code. Please try again.');
     } finally {
       setOtpChecking(false);
     }
@@ -329,11 +354,61 @@ export default function VerifyAccountScreen() {
                 <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
                 <Text style={styles.waVerifiedTxt}>WhatsApp number verified</Text>
               </View>
+            ) : otpReqId && otpSentTo === expectedWaDigits ? (
+              /* Inline OTP entry — code was just sent to this exact number */
+              <View style={styles.otpBox} testID="kyc-wa-otp-box">
+                <View style={styles.otpSentRow}>
+                  <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+                  <Text style={styles.otpSentTxt}>
+                    Code sent on WhatsApp to {country?.dial} {phone}
+                  </Text>
+                </View>
+                <View style={styles.otpRow}>
+                  <TextInput
+                    style={styles.otpInput}
+                    value={otpInput}
+                    onChangeText={(t) => { setOtpInput(t.replace(/[^0-9]/g, '')); setOtpError(''); }}
+                    placeholder="Enter OTP"
+                    placeholderTextColor={Colors.textMuted}
+                    keyboardType="number-pad"
+                    maxLength={6}
+                    autoFocus
+                    testID="kyc-wa-otp-input"
+                  />
+                  <Pressable
+                    onPress={handleVerifyOtp}
+                    disabled={otpInput.length < 4 || otpChecking}
+                    testID="kyc-wa-otp-verify"
+                    style={({ pressed }) => [
+                      styles.otpVerifyBtn,
+                      otpInput.length < 4 && { opacity: 0.45 },
+                      pressed && { opacity: 0.8 },
+                    ]}
+                  >
+                    {otpChecking ? (
+                      <ActivityIndicator size="small" color="#0A0A0F" />
+                    ) : (
+                      <Text style={styles.otpVerifyTxt}>Verify</Text>
+                    )}
+                  </Pressable>
+                </View>
+                {!!otpError && <Text style={styles.fieldErr} testID="kyc-wa-error">{otpError}</Text>}
+                <Pressable
+                  onPress={handleSendOtp}
+                  disabled={resendIn > 0 || otpSending}
+                  testID="kyc-wa-otp-resend"
+                  style={({ pressed }) => pressed && { opacity: 0.7 }}
+                >
+                  <Text style={[styles.otpResendTxt, resendIn > 0 && { color: Colors.textMuted }]}>
+                    {otpSending ? 'Sending…' : resendIn > 0 ? `Resend code in ${resendIn}s` : 'Resend code'}
+                  </Text>
+                </Pressable>
+              </View>
             ) : (
               <>
                 <Pressable
-                  onPress={() => { setOtpError(''); setOtpWidgetOpen(true); }}
-                  disabled={!phoneOk || !country || otpChecking}
+                  onPress={handleSendOtp}
+                  disabled={!phoneOk || !country || otpSending}
                   testID="kyc-wa-otp-btn"
                   style={({ pressed }) => [
                     styles.waBtn,
@@ -341,13 +416,13 @@ export default function VerifyAccountScreen() {
                     pressed && { opacity: 0.8 },
                   ]}
                 >
-                  {otpChecking ? (
+                  {otpSending ? (
                     <ActivityIndicator size="small" color="#25D366" />
                   ) : (
                     <Ionicons name="logo-whatsapp" size={18} color="#25D366" />
                   )}
                   <Text style={styles.waBtnTxt}>
-                    {otpChecking ? 'Verifying…' : 'Verify on WhatsApp'}
+                    {otpSending ? 'Sending code…' : 'Verify on WhatsApp'}
                   </Text>
                 </Pressable>
                 {waMismatch && (
@@ -358,7 +433,7 @@ export default function VerifyAccountScreen() {
                 )}
                 {!!otpError && <Text style={styles.fieldErr} testID="kyc-wa-error">{otpError}</Text>}
                 <Text style={styles.hintTxt}>
-                  Verify this number on WhatsApp with a one-time code before submitting.
+                  Tap to get a one-time code on WhatsApp for this number.
                 </Text>
               </>
             )}
@@ -465,25 +540,6 @@ export default function VerifyAccountScreen() {
           </Pressable>
         )}
       </KeyboardAwareScrollView>
-
-      {/* MSG91 WhatsApp-OTP widget (mounted only while open — it fetches its
-          config fresh from the MSG91 panel on every mount) */}
-      {otpWidgetOpen && (
-        <DefaultWidget
-          visible={otpWidgetOpen}
-          onClose={() => setOtpWidgetOpen(false)}
-          onCompletion={handleOtpCompletion}
-          widgetId={MSG91_WIDGET_ID}
-          tokenAuth={MSG91_TOKEN_AUTH}
-          theme="dark"
-          primaryColor={Colors.gold}
-          defaultCountry={
-            country
-              ? { name: country.name, code: '', dial_code: country.dial, flag: '' }
-              : undefined
-          }
-        />
-      )}
 
       {/* Country picker modal */}
       <Modal visible={pickerOpen} transparent animationType="slide" onRequestClose={() => setPickerOpen(false)}>
@@ -672,6 +728,42 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,230,118,0.08)',
   },
   waVerifiedTxt: { fontSize: 13, fontWeight: '700', color: Colors.success },
+  otpBox: {
+    marginTop: 10,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(37,211,102,0.45)',
+    backgroundColor: 'rgba(37,211,102,0.06)',
+    gap: 10,
+  },
+  otpSentRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  otpSentTxt: { fontSize: 12.5, fontWeight: '600', color: Colors.textSecondary, flex: 1, lineHeight: 17 },
+  otpRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  otpInput: {
+    flex: 1,
+    backgroundColor: Colors.darkSurface,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.25)',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: 6,
+    color: Colors.textPrimary,
+  },
+  otpVerifyBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    backgroundColor: '#25D366',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 82,
+  },
+  otpVerifyTxt: { fontSize: 14, fontWeight: '800', color: '#0A0A0F' },
+  otpResendTxt: { fontSize: 12.5, fontWeight: '700', color: '#25D366', alignSelf: 'flex-start' },
   errBox: {
     backgroundColor: 'rgba(255,61,87,0.10)',
     borderWidth: 1,
