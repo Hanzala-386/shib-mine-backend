@@ -1,0 +1,107 @@
+Agent, I need to integrate WhatsApp OTP verification using @msg91comm/sendotp-react-native. Follow these instructions strictly to complete the setup:
+
+Step 1. Installation:
+
+Run: npm install @msg91comm/sendotp-react-native
+
+Run: cd ios && pod install
+
+Step 2: After successful installation of the package, you can import DefaultWidget in your project. For example
+
+import React, { useEffect } from 'react';
+import { DefaultWidget } from '@msg91comm/sendotp-react-native';
+
+Step 3: Finally integrate the OTP verification using below code.
+
+const widgetId = "36677172566d313730373937";
+const tokenAuth = "{authToken}";
+
+const App = () => {
+    const [showWidget, setShowWidget] = useState(false);
+
+    const handleVerificationComplete = (result) => {
+        console.log('Verification result:', result);
+        if (result.success) {
+            console.log('Access Token:', result.message);
+            console.log('Identifier:', result.identifier);
+            // Handle successful verification
+        } else {
+            console.log('Error:', result.message);
+            // Handle verification failure
+        }
+        setShowWidget(false);
+    };
+
+    return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <Button title="Verify OTP" onPress={() => setShowWidget(true)} />
+            <DefaultWidget
+                visible={showWidget}
+                onClose={() => setShowWidget(false)}
+                onCompletion={handleVerificationComplete}
+                widgetId={widgetId}
+                tokenAuth={tokenAuth}
+            />
+        </View>
+    );
+};
+
+export default App;
+
+Step 4. Frontend Integration (User UI):
+
+Import DefaultWidget from @msg91comm/sendotp-react-native.
+
+Update the 'Verity Account' screen:
+
+Add a button labeled 'Get WhatsApp OTP'.
+
+On button click, set showWidget to true to trigger the MSG91 widget.
+
+Upon successful verification (onCompletion), the widget will return an access-token and identifier.
+
+Immediately send this access-token to our backend via a new API call.
+
+Step 5. Server-Side Integration:
+
+Create a new endpoint POST /verify-otp.
+
+This endpoint must receive the access-token from the frontend.
+
+Use the following JavaScript code to verify the token with MSG91:
+
+JavaScript
+
+  const url = new URL(
+    'https://control.msg91.com/api/v5/widget/verifyAccessToken'
+  );
+  let headers = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+  };
+
+  let body = {
+  "authkey": "551552A2j257QU6a5a8beeP1",
+  "access-token": "{jwt_token_from_otp_widget}"
+}
+  fetch(url, {
+      method: 'POST',
+      headers: headers,
+      body:  JSON.stringify(body)
+  })
+  .then(response => response.json())
+  .then(json => console.log(json));
+
+// Use fetch to POST this data to the URL above.
+
+If the response JSON returns type: "success", then consider the user verified. Update the user's document in the verification_requests collection in PocketBase to verified: true.
+
+ 6. Configuration:
+
+Use widgetId: [36677172566d313730373937]
+
+Use tokenAuth: [551552A2j257QU6a5a8beeP1]
+
+Ensure the widget layout is clean and the verification flow is seamless for the user.
+
+Summary: We are using Server-Side Integration with JavaScript to keep the process secure. We are not using webhooks. Please implement this and verify the flow.
