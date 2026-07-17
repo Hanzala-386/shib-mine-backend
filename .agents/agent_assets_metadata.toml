@@ -89,3 +89,9 @@ id = "Q3PiyWSHPguOtRZXEasrc"
 uri = "file://screenshots/user_id_verification.jpg"
 type = "image"
 title = "user_id populated in game_score (production, live)"
+
+[[outputs]]
+id = "v1bsfphhd1RioUPLLe3y6"
+uri = "file://dist/color-arcade.zip"
+type = "unspecified"
+title = "Color Rush — updated game (upload to webcod.in /color/)"
