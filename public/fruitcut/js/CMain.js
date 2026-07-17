@@ -24,6 +24,8 @@ function CMain(oData){
                 
         s_iPrevTime = new Date().getTime();
 
+        // RAF render pacing (vsync-aligned; smoother than the default setTimeout on mobile WebViews)
+        if (createjs.Ticker.RAF) { createjs.Ticker.timingMode = createjs.Ticker.RAF; }
         createjs.Ticker.addEventListener("tick", this._update);
         createjs.Ticker.framerate = FPS;
                 

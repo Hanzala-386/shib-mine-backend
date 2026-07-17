@@ -1,0 +1,13 @@
+# Cache policy: long-lived media, short revalidating code, always-fresh HTML.
+# Query-string versions (?v=N) remain part of the cache key, so bumps still bust.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(png|jpg|jpeg|webp|gif|svg|woff|woff2|ttf|otf|mp3|ogg|m4a|wav|webm|mp4)$">
+    Header set Cache-Control "public, max-age=2592000"
+  </FilesMatch>
+  <FilesMatch "\.(js|css|json)$">
+    Header set Cache-Control "public, max-age=300, must-revalidate"
+  </FilesMatch>
+  <FilesMatch "\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>

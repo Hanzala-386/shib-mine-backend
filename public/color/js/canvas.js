@@ -20,7 +20,8 @@ function initGameCanvas(w,h){
 	stage = new createjs.Stage("gameCanvas",{ antialias: true });
 	
 	createjs.Touch.enable(stage);
-	stage.enableMouseOver(20);
+	// Hover hit-testing is desktop-only cosmetics; on touch devices it burns 20 display-list scans/sec
+if (!('ontouchstart' in window)) { stage.enableMouseOver(20); }
 	stage.mouseMoveOutside = true;
 	
 	createjs.Ticker.framerate = 60;
