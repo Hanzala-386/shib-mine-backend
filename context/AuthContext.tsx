@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo, ReactNode } from 'react';
-import { Alert } from 'react-native';
+import { Alert, AppState } from 'react-native';
 import storage from '@/lib/storage';
 import { router } from 'expo-router';
 import {
@@ -177,6 +177,49 @@ async function pbGetSelf(): Promise<PBUser | null> {
   }
 }
 
+// ─── Single-session enforcement ─────────────────────────────────────────────
+// A device that logs in claims the session by writing a fresh random token to
+// users.session_token (self-update — allowed by PB rules). Devices that later
+// see a DIFFERENT non-empty token in PB know they were superseded → forced
+// logout. Safety rules:
+//  • the local token is stored ONLY after the PB PATCH succeeds
+//  • never enforce on an empty PB token (pre-migration users) or read errors
+//  • an app restart with a matching token keeps the session; a mismatch signs
+//    the device out — it does NOT steal the session back.
+const sessionTokenKey = (uid: string) => `shib_session_token_${uid}`;
+
+function generateSessionToken(): string {
+  return `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+async function claimOrEnforceSession(pbId: string, uid: string): Promise<'ok' | 'superseded'> {
+  try {
+    const key   = sessionTokenKey(uid);
+    const local = await storage.getItem(key);
+    // authWithPassword just ran in pbDirectLogin, so the auth record is fresh
+    const raw: any = (pb.authStore as any).record ?? pb.authStore.model;
+    const remote = String(raw?.session_token ?? '');
+
+    if (!local) {
+      // Fresh login on this device (or reinstall) → claim the session
+      const token = generateSessionToken();
+      await pb.collection('users').update(pbId, { session_token: token });
+      await storage.setItem(key, token); // persist ONLY after the PATCH succeeded
+      return 'ok';
+    }
+    if (!remote) {
+      // Empty server token (pre-migration) → re-claim with our existing token
+      try { await pb.collection('users').update(pbId, { session_token: local }); } catch {}
+      return 'ok';
+    }
+    return remote === local ? 'ok' : 'superseded';
+  } catch (e: any) {
+    // A network/PB failure must NEVER lock the user out
+    console.warn('[Session] claim/enforce skipped (network?):', e?.message);
+    return 'ok';
+  }
+}
+
 // Module-level flag to block onAuthStateChanged during active sign-in/sign-up
 let isAuthAction = false;
 
@@ -196,6 +239,74 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     return unsub;
   }, []);
+
+  // ── Forced logout when another device claims the session ─────────────────
+  const sessionLogoutInFlight = useRef(false);
+  async function forceSessionLogout() {
+    if (sessionLogoutInFlight.current) return;
+    sessionLogoutInFlight.current = true;
+    try {
+      const uid = auth.currentUser?.uid;
+      if (uid) await storage.removeItem(sessionTokenKey(uid)).catch(() => {});
+      // Only alert in the foreground — a backgrounded device signs out silently
+      if (AppState.currentState === 'active') {
+        Alert.alert(
+          'Signed Out',
+          'Your account was signed in on another device. Only one device can be active at a time.'
+        );
+      }
+      await signOut();
+    } catch (e: any) {
+      console.warn('[Session] forced logout error:', e?.message);
+    } finally {
+      sessionLogoutInFlight.current = false;
+    }
+  }
+
+  // ── Single-session watcher: realtime push + poll + foreground check ──────
+  // Realtime is instant (EventSource polyfilled for native in lib/pocketbase);
+  // the 45s poll and the AppState listener cover silently-dropped SSE
+  // connections. NEVER logs out on read errors or empty server tokens.
+  useEffect(() => {
+    const pbId = pbUser?.pbId;
+    const uid  = firebaseUser?.uid ?? auth.currentUser?.uid;
+    if (!pbId || !uid) return;
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+
+    const check = async (record?: any) => {
+      try {
+        const local = await storage.getItem(sessionTokenKey(uid));
+        if (!local || cancelled) return; // nothing claimed on this device yet
+        let remote = '';
+        if (record) {
+          remote = String(record.session_token ?? '');
+        } else {
+          const fresh: any = await pb.collection('users').getOne(pbId, { fields: 'id,session_token' });
+          remote = String(fresh?.session_token ?? '');
+        }
+        if (!cancelled && remote && remote !== local) await forceSessionLogout();
+      } catch { /* network error — never logout on read failures */ }
+    };
+
+    // 1) Realtime push — instant logout the moment another device claims
+    pb.collection('users').subscribe(pbId, (e) => { void check(e.record); })
+      .then((u) => { if (cancelled) { try { u(); } catch {} } else unsubscribe = u; })
+      .catch((e: any) => console.warn('[Session] realtime unavailable, poll fallback active:', e?.message));
+
+    // 2) Poll fallback (mobile SSE connections can drop silently)
+    const iv = setInterval(() => { void check(); }, 45_000);
+
+    // 3) Immediate re-check when the app returns to the foreground
+    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') void check(); });
+
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+      try { unsubscribe?.(); } catch {}
+      sub.remove();
+    };
+  }, [pbUser?.pbId, firebaseUser?.uid]);
 
   // ── App startup session restore ──────────────────────────────────────────
   async function handleAuthStateChange(fbUser: FirebaseUser | null) {
@@ -355,6 +466,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
         setIsLoading(false);
         try { await firebaseSignOut(auth); } catch {}
+        return;
+      }
+
+      // ── Single-session enforcement: claim the session or get kicked ──────
+      const sessionState = await claimOrEnforceSession(pbRecord.pbId, fbUser.uid);
+      if (sessionState === 'superseded') {
+        setIsLoading(false);
+        await forceSessionLogout();
         return;
       }
 
@@ -527,6 +646,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const fbUser = auth.currentUser;
       if (fbUser?.uid) {
         await storage.removeItem(`shib_profile_${fbUser.uid}`).catch(() => {});
+        // Clear the LOCAL session token only — never the PB field (a newer
+        // device may own the session now; the next login here claims fresh).
+        await storage.removeItem(sessionTokenKey(fbUser.uid)).catch(() => {});
       }
     } catch {}
     // Clear PocketBase SDK auth store

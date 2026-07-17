@@ -59,7 +59,7 @@ const GAME_HOSTS: Record<string, { url: string; v: number; afkMs: number }> = {
   // < this 50s (RN AFK) < 60s server backstop (readyAfkSeconds in @shared/arcade).
   '2048':   { url: 'https://webcod.in/2048/index.html',     v: 1, afkMs: 50000 },
   iceblock: { url: 'https://webcod.in/iceblock/index.html', v: 1, afkMs: 50000 },
-  color:    { url: 'https://webcod.in/color/index.html',    v: 1, afkMs: 50000 },
+  color:    { url: 'https://webcod.in/color/index.html',    v: 2, afkMs: 50000 },
 };
 
 // One shared iframe title for the web host's postMessage channel (per-game lookup

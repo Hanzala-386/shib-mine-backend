@@ -36,7 +36,7 @@ function useBannerVisible(): boolean {
 }
 
 /* ── The actual AdMob banner (official Google TEST unit ID) ─────────────── */
-function AdMobBanner() {
+export function AdMobBanner() {
   const visible = useBannerVisible();
   const [refreshKey, setRefreshKey] = useState(0);
 

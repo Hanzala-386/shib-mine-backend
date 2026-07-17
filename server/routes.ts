@@ -1130,6 +1130,33 @@ async function ensureBlacklistFields() {
   }
 }
 
+// ─── Single-session enforcement: users.session_token ───────────────────────
+// Each device login writes a fresh random token here (self-update via PB SDK).
+// Every client compares its locally stored token against this field (realtime
+// subscribe + poll); a mismatch means another device claimed the session →
+// forced logout on the older device. Client-side claim/enforce logic lives in
+// context/AuthContext.tsx.
+async function ensureSessionTokenField() {
+  try {
+    const token = await getAdminToken();
+    const coll  = await pbGet("/api/collections/users");
+    if (coll.code) return;
+    const existingNames: string[] = (coll.schema || coll.fields || []).map((f: any) => f.name);
+    if (existingNames.includes("session_token")) {
+      console.log("[users] session_token field already present ✓");
+      return;
+    }
+    const updatedSchema = [
+      ...(coll.schema || coll.fields || []),
+      { name: "session_token", type: "text", required: false },
+    ];
+    await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: updatedSchema }, token);
+    console.log("[users] session_token field added ✓ (single-session enforcement)");
+  } catch (e: any) {
+    console.warn("[users] session_token migration failed:", e.message);
+  }
+}
+
 // ─── KYC verification: users fields + verification_requests collection ─────
 // users.kyc_status: '' | 'none' | 'under_review' | 'verified' | 'rejected'
 // verification_requests.status is a PB SELECT field with EXACTLY these three
@@ -2184,6 +2211,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => { startMatchExpirySweeper(); })
     .then(() => ensureIsFlaggedField())
     .then(() => ensureBlacklistFields())
+    .then(() => ensureSessionTokenField())
     .then(() => ensureVerificationSchema())
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())

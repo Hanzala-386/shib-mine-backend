@@ -16,6 +16,7 @@ import Constants from 'expo-constants';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
 import { useSecurity } from '@/context/SecurityContext';
+import { AdMobBanner, BANNERS_AVAILABLE, BANNER_HEIGHT } from '@/components/StickyBannerAd';
 import { TapMonitor } from '@/lib/tapMonitor';
 
 let WebView: any = null;
@@ -617,6 +618,9 @@ export default function SoloPlayScreen() {
 
   return (
     <View style={S.root}>
+      {/* ── Game area: WebView + all gameplay overlays. flex:1 so the banner
+           bar below NEVER overlaps game UI — the WebView shrinks to fit. ── */}
+      <View style={S.gameArea}>
       {renderGame()}
 
       {/* ── Back to Game Arena — shown ONLY when it is safe to leave:
@@ -681,6 +685,19 @@ export default function SoloPlayScreen() {
             {SCORE_LIMIT - liveScore} pts to limit — finish strong!
           </Text>
         </Animated.View>
+      )}
+
+      </View>
+
+      {/* ── Persistent AdMob banner bar (native only). The bar always reserves
+           its height so the game layout never shifts mid-session; the ad itself
+           mounts only during active gameplay — it unmounts while summary/reward
+           modals cover the screen (AdMob viewability policy). The 60s hard
+           refresh lives inside AdMobBanner. ── */}
+      {BANNERS_AVAILABLE && (
+        <View style={[S.bannerBar, { paddingBottom: insets.bottom }]}>
+          {phase === 'game' && !gameError && <AdMobBanner />}
+        </View>
       )}
 
       {/* ══ SUMMARY / GAME OVER SCREEN ══════════════════════════════════ */}
@@ -823,6 +840,8 @@ function StatRow({ label, value, gold }: { label: string; value: number; gold?: 
 /* ─── Styles ──────────────────────────────────────────────────────────────── */
 const S = StyleSheet.create({
   root:      { flex: 1, backgroundColor: '#000' },
+  gameArea:  { flex: 1 },
+  bannerBar: { minHeight: BANNER_HEIGHT, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
   loader:    { ...StyleSheet.absoluteFillObject, backgroundColor: '#0a1f1c', alignItems: 'center', justifyContent: 'center', gap: 12 },
   loaderTxt: { color: Colors.textMuted, fontFamily: 'Inter_500Medium', fontSize: 14 },
 

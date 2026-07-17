@@ -24,6 +24,8 @@ function initGameCanvas(w,h){
 	stage.mouseMoveOutside = true;
 	
 	createjs.Ticker.framerate = 60;
+// RAF render pacing (vsync-aligned, smoother than setTimeout on mobile WebViews)
+if (createjs.Ticker.RAF){ createjs.Ticker.timingMode = createjs.Ticker.RAF; }
 	createjs.Ticker.addEventListener("tick", tick);
 }
 
@@ -504,8 +506,24 @@ function resizeCanvas(){
  * CANVAS LOOP - This is the function that runs for canvas loop
  * 
  */ 
+// Fixed-timestep accumulator (Session 8 pattern): updateGame() always simulates
+// 1/60s per step, so game speed is wall-clock identical on every device. A
+// lagging low-end phone just runs catch-up steps (cap 4); a 120Hz display
+// steps every other frame. Rendering (stage.update) happens once per tick.
+var STEP_MS = 1000 / 60;
+var MAX_STEPS = 4;
+var _stepAccum = 0;
 function tick(event) {
-	updateGame(event);
+	var elapsed = (event && typeof event.delta === 'number') ? event.delta : STEP_MS;
+	if (elapsed < 0) elapsed = 0;
+	if (elapsed > STEP_MS * MAX_STEPS) elapsed = STEP_MS * MAX_STEPS;
+	_stepAccum += elapsed;
+	var steps = 0;
+	while (_stepAccum >= STEP_MS && steps < MAX_STEPS) {
+		updateGame(event);
+		_stepAccum -= STEP_MS;
+		steps++;
+	}
 	stage.update(event);
 }
 

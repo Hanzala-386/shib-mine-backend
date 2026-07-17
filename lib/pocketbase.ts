@@ -1,4 +1,16 @@
 import PocketBase from 'pocketbase';
+import { Platform } from 'react-native';
+
+// ─── EventSource polyfill (native only) ─────────────────────────────────────
+// PocketBase realtime subscriptions use SSE (EventSource), which React Native
+// lacks. react-native-sse is a pure-JS polyfill (no native module — Expo Go
+// safe). This enables INSTANT single-session logout pushes in the APK.
+// Web already has a native EventSource, so it is untouched there.
+if (Platform.OS !== 'web' && typeof (global as any).EventSource === 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const RNEventSource = require('react-native-sse');
+  (global as any).EventSource = RNEventSource.default ?? RNEventSource;
+}
 
 export const POCKETBASE_URL = 'https://api.webcod.in';
 
