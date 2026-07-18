@@ -18,7 +18,6 @@
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.0",
     "@expo/vector-icons": "^15.0.3",
-    "@msg91comm/sendotp-react-native": "^2.1.0",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@shopify/react-native-skia": "^2.2.12",
     "@stardazed/streams-text-encoding": "^1.0.2",

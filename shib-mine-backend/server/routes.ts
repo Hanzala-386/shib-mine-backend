@@ -797,7 +797,9 @@ async function ensureCollectionRules() {
           " && @request.data.kyc_binance_email:isset = false" +
           " && @request.data.kyc_bep20_address:isset = false" +
           " && @request.data.kyc_reject_reason:isset = false" +
-          " && @request.data.submission_count:isset = false",
+          " && @request.data.submission_count:isset = false" +
+          " && @request.data.wa_verified_phone:isset = false" +
+          " && @request.data.wa_verified_at:isset = false",
         // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
         deleteRule: "@request.auth.id = id",
       }, token);
@@ -1136,11 +1138,77 @@ const KYC_STATUS_UNDER_REVIEW = "Under Review";
 const KYC_STATUS_VERIFIED     = "Verified";
 const KYC_STATUS_REJECTED     = "Rejected";
 const KYC_STATUS_OPTIONS = [KYC_STATUS_UNDER_REVIEW, KYC_STATUS_VERIFIED, KYC_STATUS_REJECTED];
-// MSG91 WhatsApp-OTP widget — server-driven send + verify (widget REST API).
-// Env overrides win so credentials can be rotated without a code deploy.
-// NOTE: with the server-driven flow the key never ships in the client at all.
-const MSG91_AUTHKEY = process.env.MSG91_AUTHKEY || "551552A2j257QU6a5a8beeP1";
-const MSG91_WIDGET_ID = process.env.MSG91_WIDGET_ID || "36677172566d313730373937";
+// Telegram bot "Share Contact" verification — replaces the old WhatsApp OTP.
+// Env overrides win so the bot can be rotated without a code deploy. The bot
+// token lives ONLY on the server — the app just opens a t.me deep link.
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || "Shibahit_Bot";
+// Telegram echoes this secret in a header on every webhook call so random
+// POSTs to the public webhook route are ignored. Derived from the bot token
+// so dev + prod (same codebase, same token) always agree on it.
+const TELEGRAM_WEBHOOK_SECRET = crypto.createHash("sha256").update(`shibahit-tg-${TELEGRAM_BOT_TOKEN}`).digest("hex").slice(0, 40);
+async function tgApi(method: string, body: Record<string, unknown>): Promise<any> {
+  const resp = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return resp.json();
+}
+// ─── Telegram verification: sessions collection + webhook registration ─────
+// telegram_verifications rows are short-lived server-side sessions binding a
+// one-time deep-link token to {user, phone}. Stored in PB (NOT memory) so a
+// token minted by one server (Replit dev) can be consumed by whichever server
+// currently owns the bot webhook (VPS prod) — both share the same PocketBase.
+// Admin-only API rules: the app never touches this collection directly.
+async function ensureTelegramVerificationsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/telegram_verifications");
+    if (check.code) {
+      await pbHttp("POST", "/api/collections", {
+        name: "telegram_verifications",
+        type: "base",
+        fields: [
+          { name: "token",      type: "text", required: true },
+          { name: "user",       type: "text", required: true },
+          { name: "phone",      type: "text", required: true },
+          { name: "status",     type: "text", required: false },
+          { name: "chat_id",    type: "text", required: false },
+          { name: "tg_user_id", type: "text", required: false },
+        ],
+        listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null,
+      }, token);
+      console.log("[telegram] telegram_verifications collection created ✓");
+    } else {
+      console.log("[telegram] telegram_verifications ✓");
+    }
+  } catch (e: any) {
+    console.warn("[telegram] Could not ensure telegram_verifications:", e.message);
+  }
+  registerTelegramWebhook().catch((e) => console.warn("[telegram] webhook registration failed:", e.message));
+}
+
+// Points the bot's webhook at THIS server. Dev (Replit) and prod (VPS) share
+// one bot — whichever server booted LAST owns the webhook. After a VPS
+// redeploy/restart the prod server takes it back automatically.
+async function registerTelegramWebhook() {
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.warn("[telegram] TELEGRAM_BOT_TOKEN not set — webhook registration skipped, phone verification disabled");
+    return;
+  }
+  const base =
+    process.env.TELEGRAM_WEBHOOK_BASE ||
+    (process.env.REPLIT_DEV_DOMAIN ? `https://${process.env.REPLIT_DEV_DOMAIN}` : "https://backend.webcod.in");
+  const r = await tgApi("setWebhook", {
+    url: `${base}/api/app/telegram/webhook`,
+    secret_token: TELEGRAM_WEBHOOK_SECRET,
+    allowed_updates: ["message"],
+  });
+  if (r?.ok) console.log(`[telegram] webhook registered → ${base}/api/app/telegram/webhook ✓`);
+  else console.warn("[telegram] setWebhook failed:", JSON.stringify(r).slice(0, 200));
+}
+
 // Map any legacy/alias value ('under_review' | 'approved' | 'unverified' | …)
 // onto the canonical SELECT label. Unknown values pass through unchanged.
 function toDbKycStatus(v: unknown): string {
@@ -1164,7 +1232,7 @@ async function ensureVerificationSchema() {
       const wanted = [
         "kyc_status", "kyc_reject_reason", "kyc_full_name", "kyc_country",
         "kyc_country_code", "kyc_phone", "kyc_binance_email", "kyc_bep20_address",
-        // WhatsApp-OTP (MSG91): number the user proved ownership of + when
+        // Verified phone (Telegram share-contact): proven number + when
         "wa_verified_phone", "wa_verified_at",
       ];
       const missing = wanted.filter((n) => !existingNames.includes(n));
@@ -2245,6 +2313,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureBlacklistFields())
     .then(() => ensureSessionTokenField())
     .then(() => ensureVerificationSchema())
+    .then(() => ensureTelegramVerificationsCollection())
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
@@ -3780,30 +3849,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ── WhatsApp OTP (MSG91 widget API) — server-driven send + verify ────────
-  // The server fires the OTP to the user's WhatsApp via MSG91's widget REST
-  // API and remembers reqId → identifier in memory; the app shows an inline
-  // OTP box and sends the code back here. Because the SERVER chose the
-  // identifier for each reqId, a modified client can never pair a valid OTP
-  // with someone else's number. On success the proven number is stored on the
-  // users record; the KYC submit route then stamps phone_verified on the
-  // request row when numbers match — admin still approves/rejects manually.
-  const msg91OtpSessions = new Map<string, { identifier: string; pbId: string; expiresAt: number }>();
-  const msg91SendGuard = new Map<string, { count: number; windowStart: number; lastSentAt: number }>();
-  const MSG91_SESSION_TTL_MS = 10 * 60 * 1000;   // OTP entry window
-  const MSG91_MIN_RESEND_MS = 25 * 1000;         // per-user gap between sends
-  const MSG91_MAX_SENDS_PER_HOUR = 6;            // per-user hourly cap
+  // ── Telegram "Share Contact" verification ────────────────────────────────
+  // Flow: app calls /telegram/start → server mints a one-time token bound to
+  // {user, phone} in PB → app deep-links to t.me/<bot>?start=<token> → user
+  // taps START in Telegram → bot replies with a request_contact keyboard →
+  // user shares their OWN contact → Telegram posts it to our webhook → server
+  // compares Telegram's registered number with the phone typed in the app →
+  // on an exact match it stamps users.wa_verified_phone (the app's "verified
+  // phone" field). The app polls its own users record and flips the green
+  // chip automatically. Anti-spoof: Telegram itself attests the number — the
+  // contact must belong to the sender (contact.user_id === from.id), and the
+  // compared phone is the one bound server-side at /telegram/start.
+  const TG_SESSION_TTL_MS = 15 * 60 * 1000; // deep-link token lifetime
+  const tgStartGuard = new Map<string, { count: number; windowStart: number; lastSentAt: number }>();
 
-  async function msg91Post(path: string, body: Record<string, unknown>): Promise<any> {
-    const resp = await fetch(`https://control.msg91.com/api/v5/widget/${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ widgetId: MSG91_WIDGET_ID, tokenAuth: MSG91_AUTHKEY, ...body }),
-    });
-    return resp.json();
+  // Latest PENDING, non-expired verification session matching a PB filter.
+  async function tgFindSession(filter: string): Promise<any | null> {
+    const r = await pbGet(
+      `/api/collections/telegram_verifications/records?filter=${encodeURIComponent(`(${filter}) && status = "pending"`)}&sort=-created&perPage=1`,
+    );
+    const row = (r?.items || [])[0];
+    if (!row) return null;
+    if (Date.now() - new Date(row.created).getTime() > TG_SESSION_TTL_MS) return null;
+    return row;
   }
 
-  app.post("/api/app/verification/send-otp", async (req: Request, res: Response) => {
+  app.post("/api/app/verification/telegram/start", async (req: Request, res: Response) => {
     try {
       const { pbId } = req.body;
       const identifier = String(req.body.identifier || "").replace(/\D/g, "");
@@ -3813,84 +3884,126 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
-      // Per-user rate limit — WhatsApp OTPs cost MSG91 credits.
+      // Light per-user rate limit — every start creates a PB session row.
       const now = Date.now();
-      const guard = msg91SendGuard.get(pbId) || { count: 0, windowStart: now, lastSentAt: 0 };
+      const guard = tgStartGuard.get(pbId) || { count: 0, windowStart: now, lastSentAt: 0 };
       if (now - guard.windowStart > 60 * 60 * 1000) { guard.count = 0; guard.windowStart = now; }
-      if (now - guard.lastSentAt < MSG91_MIN_RESEND_MS)
-        return res.status(429).json({ error: "Please wait a moment before requesting another code." });
-      if (guard.count >= MSG91_MAX_SENDS_PER_HOUR)
-        return res.status(429).json({ error: "Too many OTP requests. Try again in an hour." });
-
-      let mr: any;
-      try {
-        mr = await msg91Post("sendOtpMobile", { identifier });
-      } catch (err: any) {
-        console.error("[send-otp] MSG91 request failed:", err.message);
-        return res.status(502).json({ error: "Could not reach the OTP service. Try again." });
-      }
-      const reqId = String(mr?.message || "").trim();
-      if (!mr || String(mr.type).toLowerCase() !== "success" || !reqId) {
-        console.warn("[send-otp] MSG91 send failed:", JSON.stringify(mr).slice(0, 300));
-        const msg = String(mr?.message || "");
-        const friendly = /auth/i.test(msg)
-          ? "OTP service is not configured correctly. Please contact support."
-          : msg && msg.length < 120 ? msg : "Could not send the OTP. Please try again.";
-        return res.status(400).json({ error: friendly });
-      }
-
+      if (now - guard.lastSentAt < 5 * 1000)
+        return res.status(429).json({ error: "Please wait a moment and try again." });
+      if (guard.count >= 12)
+        return res.status(429).json({ error: "Too many attempts. Try again in an hour." });
       guard.count += 1; guard.lastSentAt = now;
-      msg91SendGuard.set(pbId, guard);
-      // Sweep expired sessions so the map cannot grow unbounded.
-      for (const [k, v] of msg91OtpSessions) if (v.expiresAt < now) msg91OtpSessions.delete(k);
-      msg91OtpSessions.set(reqId, { identifier, pbId, expiresAt: now + MSG91_SESSION_TTL_MS });
-      console.log(`[send-otp] user ${pbId} → WhatsApp OTP sent to ****${identifier.slice(-4)} (reqId ${reqId.slice(0, 8)}…)`);
-      res.json({ success: true, reqId });
+      tgStartGuard.set(pbId, guard);
+
+      const token = crypto.randomBytes(16).toString("hex");
+      const created = await pbPost("/api/collections/telegram_verifications/records", {
+        token, user: pbId, phone: identifier, status: "pending",
+      });
+      if (!created?.id) {
+        console.error("[telegram/start] session row create failed:", JSON.stringify(created).slice(0, 200));
+        return res.status(502).json({ error: "Could not start verification. Try again." });
+      }
+      console.log(`[telegram/start] user ${pbId} → token ${token.slice(0, 8)}… for ****${identifier.slice(-4)}`);
+      res.json({
+        success: true,
+        token,
+        botUsername: TELEGRAM_BOT_USERNAME,
+        deepLink: `https://t.me/${TELEGRAM_BOT_USERNAME}?start=${token}`,
+      });
     } catch (e: any) {
-      console.error("[/api/app/verification/send-otp]", e.message);
-      res.status(500).json({ error: "Could not send the OTP" });
+      console.error("[/api/app/verification/telegram/start]", e.message);
+      res.status(500).json({ error: "Could not start Telegram verification" });
     }
   });
 
-  app.post("/api/app/verification/verify-otp", async (req: Request, res: Response) => {
+  // Telegram pushes bot updates here (registered via setWebhook on boot).
+  app.post("/api/app/telegram/webhook", async (req: Request, res: Response) => {
+    // ALWAYS answer 200 fast — Telegram retries non-200s and replays updates.
+    res.json({ ok: true });
     try {
-      const { pbId } = req.body;
-      const reqId = String(req.body.reqId || "").trim();
-      const otp = String(req.body.otp || "").replace(/\D/g, "");
-      if (!pbId || !reqId || otp.length < 3 || otp.length > 8)
-        return res.status(400).json({ error: "Enter the OTP you received" });
-
-      const session = msg91OtpSessions.get(reqId);
-      if (!session || session.expiresAt < Date.now())
-        return res.status(400).json({ error: "This code has expired. Please request a new one.", otpExpired: true });
-      if (session.pbId !== pbId)
-        return res.status(400).json({ error: "This code belongs to a different session. Request a new one.", otpExpired: true });
-
-      let mr: any;
-      try {
-        mr = await msg91Post("verifyOtp", { reqId, otp });
-      } catch (err: any) {
-        console.error("[verify-otp] MSG91 request failed:", err.message);
-        return res.status(502).json({ error: "Could not reach the OTP service. Try again." });
+      if (req.get("x-telegram-bot-api-secret-token") !== TELEGRAM_WEBHOOK_SECRET) {
+        console.warn("[telegram/webhook] bad secret header — update ignored");
+        return;
       }
-      const already = /already\s*verified/i.test(String(mr?.message || ""));
-      if (!mr || (String(mr.type).toLowerCase() !== "success" && !already)) {
-        console.warn("[verify-otp] MSG91 rejected OTP:", JSON.stringify(mr).slice(0, 200));
-        return res.status(400).json({ error: "Incorrect code. Please check and try again.", otpFailed: true });
+      const msg = req.body?.message;
+      if (!msg?.chat?.id || !msg?.from?.id) return;
+      const chatId = msg.chat.id;
+
+      // 1) "/start <token>" — bind this chat to the pending session and ask
+      //    for the contact with a request_contact keyboard.
+      const text = String(msg.text || "");
+      if (text.startsWith("/start")) {
+        const tok = (text.split(/\s+/)[1] || "").replace(/[^a-f0-9]/gi, "");
+        const row = tok ? await tgFindSession(`token = "${tok}"`) : null;
+        if (!row) {
+          await tgApi("sendMessage", {
+            chat_id: chatId,
+            text: "This verification link is invalid or has expired.\n\nGo back to the Shiba Hit app and tap \"Verify via Telegram\" again.",
+          });
+          return;
+        }
+        await pbPatch(`/api/collections/telegram_verifications/records/${row.id}`, {
+          chat_id: String(chatId), tg_user_id: String(msg.from.id),
+        });
+        await tgApi("sendMessage", {
+          chat_id: chatId,
+          text: `Shiba Hit account verification\n\nTap the button below to share your contact and verify the number ending in ****${String(row.phone).slice(-4)}.`,
+          reply_markup: {
+            keyboard: [[{ text: "📱 Share Contact to Verify Account", request_contact: true }]],
+            resize_keyboard: true, one_time_keyboard: true,
+          },
+        });
+        return;
       }
 
-      // Identifier comes from the server-side session — never from the client.
-      const identifier = session.identifier;
-      msg91OtpSessions.delete(reqId);
-      await pbPatch(`/api/collections/users/records/${pbId}`, {
-        wa_verified_phone: identifier,
-        wa_verified_at: new Date().toISOString(),
-      });
-      console.log(`[verify-otp] user ${pbId} verified WhatsApp number ****${identifier.slice(-4)}`);
-      res.json({ success: true, identifier });
+      // 2) Shared contact — Telegram attests the number. Compare with the
+      //    phone bound at /start and stamp the users record on a match.
+      if (msg.contact) {
+        // Must be the sender's OWN contact — a forwarded contact card carries
+        // a different user_id (or none at all).
+        if (!msg.contact.user_id || String(msg.contact.user_id) !== String(msg.from.id)) {
+          await tgApi("sendMessage", {
+            chat_id: chatId,
+            text: "Please use the \"📱 Share Contact\" button to share YOUR OWN contact — forwarded contacts can't be used.",
+          });
+          return;
+        }
+        const row = await tgFindSession(`chat_id = "${chatId}" && tg_user_id = "${msg.from.id}"`);
+        if (!row) {
+          await tgApi("sendMessage", {
+            chat_id: chatId,
+            text: "This verification session has expired. Go back to the app and tap \"Verify via Telegram\" again.",
+            reply_markup: { remove_keyboard: true },
+          });
+          return;
+        }
+        const tgDigits = String(msg.contact.phone_number || "").replace(/\D/g, "");
+        const expected = String(row.phone || "").replace(/\D/g, "");
+        if (tgDigits && tgDigits === expected) {
+          await pbPatch(`/api/collections/users/records/${row.user}`, {
+            wa_verified_phone: expected,
+            wa_verified_at: new Date().toISOString(),
+          });
+          await pbPatch(`/api/collections/telegram_verifications/records/${row.id}`, { status: "verified" });
+          await tgApi("sendMessage", {
+            chat_id: chatId,
+            text: "✅ Phone number verified!\n\nReturn to the Shiba Hit app — your verification will appear there automatically.",
+            reply_markup: { remove_keyboard: true },
+          });
+          console.log(`[telegram/webhook] user ${row.user} verified ****${expected.slice(-4)} via Telegram`);
+        } else {
+          await pbPatch(`/api/collections/telegram_verifications/records/${row.id}`, { status: "mismatch" });
+          await tgApi("sendMessage", {
+            chat_id: chatId,
+            text: `❌ Number mismatch.\n\nThis Telegram account is registered to a number ending in ****${tgDigits.slice(-4)}, but the app form has ****${expected.slice(-4)}. Enter your Telegram number in the app and try again.`,
+            reply_markup: { remove_keyboard: true },
+          });
+          console.log(`[telegram/webhook] user ${row.user} mismatch: tg ****${tgDigits.slice(-4)} vs app ****${expected.slice(-4)}`);
+        }
+        return;
+      }
     } catch (e: any) {
-      console.error("[/api/app/verification/verify-otp]", e.message);
-      res.status(500).json({ error: "OTP verification failed" });
+      console.error("[/api/app/telegram/webhook]", e.message);
     }
   });
 

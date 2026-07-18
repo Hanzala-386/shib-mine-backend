@@ -354,20 +354,14 @@ export const api = {
       request: VerificationRequestRecord | null;
     }>('GET', `/api/app/verification/status/${encodeURIComponent(pbId)}`),
 
-  /** MSG91 WhatsApp-OTP (server-driven): the server fires the OTP to the
-   * number over WhatsApp and returns a reqId for the follow-up verify call. */
-  sendWhatsAppOtp: (payload: { pbId: string; identifier: string }) =>
-    robustPost<{ success: boolean; reqId: string }>(
-      '/api/app/verification/send-otp',
-      payload,
-    ),
-
-  /** MSG91 WhatsApp-OTP: server-side check of the code the user typed.
-   * On success the server remembers the proven number and the next KYC
-   * submit stamps phone_verified on the request row. */
-  verifyWhatsAppOtp: (payload: { pbId: string; reqId: string; otp: string }) =>
-    robustPost<{ success: boolean; identifier: string }>(
-      '/api/app/verification/verify-otp',
+  /** Telegram "Share Contact" verification: the server mints a one-time
+   * deep-link token bound to {user, phone} and returns the t.me link. The
+   * app opens it, the bot asks the user to share their contact, and the
+   * server webhook stamps the proven number on the users record — the app
+   * just polls its own PB record until the number appears. */
+  startTelegramVerification: (payload: { pbId: string; identifier: string }) =>
+    robustPost<{ success: boolean; token: string; botUsername: string; deepLink: string }>(
+      '/api/app/verification/telegram/start',
       payload,
     ),
 

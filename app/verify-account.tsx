@@ -20,6 +20,7 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import Colors from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
+import { pb } from '@/lib/pocketbase';
 import {
   KYC_COUNTRIES, findKycCountry, isBinanceSupported, isKycCountryBlocked,
   validateBep20Address, validateKycEmail, validateKycPhone,
@@ -59,28 +60,19 @@ export default function VerifyAccountScreen() {
   const [dupFields, setDupFields] = useState<string[]>([]);
   const [justSubmitted, setJustSubmitted] = useState(false);
 
-  /* WhatsApp OTP (MSG91, server-driven) — tapping "Verify on WhatsApp" makes
-   * the SERVER fire the OTP to the number instantly; an inline code box opens
-   * below. waIdentifier is the digits-only number that was proven (e.g.
-   * "918888888888"). Verified state is DERIVED by comparing it to the current
-   * dial-code+phone, so editing the phone naturally revokes the green check.
-   * otpSentTo pins the inline box to the number the code was sent to — if the
-   * user edits the phone mid-entry the box disappears (reqId is stale). */
-  const [otpReqId, setOtpReqId] = useState('');
-  const [otpSentTo, setOtpSentTo] = useState('');
-  const [otpInput, setOtpInput] = useState('');
-  const [otpSending, setOtpSending] = useState(false);
-  const [otpChecking, setOtpChecking] = useState(false);
-  const [resendIn, setResendIn] = useState(0);
+  /* Telegram "Share Contact" verification — tapping "Verify via Telegram"
+   * asks the server for a one-time deep-link token, opens the bot chat, and
+   * then polls this user's own PB record until the bot webhook stamps the
+   * proven number. waIdentifier is the digits-only number that was proven
+   * (e.g. "918888888888"). Verified state is DERIVED by comparing it to the
+   * current dial-code+phone, so editing the phone revokes the green check.
+   * tgWaitingFor pins the waiting card to the number the deep link was minted
+   * for — editing the phone mid-wait cancels the stale wait automatically. */
+  const [tgStarting, setTgStarting] = useState(false);
+  const [tgWaitingFor, setTgWaitingFor] = useState('');
+  const [tgDeepLink, setTgDeepLink] = useState('');
+  const [tgError, setTgError] = useState('');
   const [waIdentifier, setWaIdentifier] = useState('');
-  const [otpError, setOtpError] = useState('');
-
-  /* Resend cooldown ticker */
-  useEffect(() => {
-    if (resendIn <= 0) return;
-    const t = setInterval(() => setResendIn((s) => (s > 1 ? s - 1 : 0)), 1000);
-    return () => clearInterval(t);
-  }, [resendIn > 0]);
 
   const binanceRoute = !!country && isBinanceSupported(country.name);
   const countryBlocked = !!country && isKycCountryBlocked(country.name);
@@ -105,49 +97,70 @@ export default function VerifyAccountScreen() {
 
   const fieldError = (field: string) => dupFields.includes(field);
 
-  /* Tap "Verify on WhatsApp" → server sends the OTP immediately → inline
-   * code box opens below the button. */
-  async function handleSendOtp() {
-    if (!pbUser?.pbId || !expectedWaDigits || otpSending) return;
-    setOtpSending(true);
-    setOtpError('');
+  /* Tap "Verify via Telegram" → server mints a one-time token → open the
+   * bot deep link → the polling effect below watches for the webhook stamp. */
+  async function handleTelegramVerify() {
+    if (!pbUser?.pbId || !expectedWaDigits || tgStarting) return;
+    setTgStarting(true);
+    setTgError('');
     try {
-      const r = await api.sendWhatsAppOtp({ pbId: pbUser.pbId, identifier: expectedWaDigits });
-      setOtpReqId(r.reqId);
-      setOtpSentTo(expectedWaDigits);
-      setOtpInput('');
-      setResendIn(30);
+      const r = await api.startTelegramVerification({
+        pbId: pbUser.pbId,
+        identifier: expectedWaDigits,
+      });
+      const link = r.deepLink || `https://t.me/${r.botUsername || 'Shibahit_Bot'}?start=${r.token}`;
+      setTgDeepLink(link);
+      setTgWaitingFor(expectedWaDigits);
+      Linking.openURL(link).catch(() => {
+        setTgWaitingFor('');
+        setTgError('Could not open Telegram. Install Telegram and try again.');
+      });
     } catch (e: any) {
-      setOtpError(e?.message || 'Could not send the OTP. Please try again.');
+      setTgError(e?.message || 'Could not start verification. Please try again.');
     } finally {
-      setOtpSending(false);
+      setTgStarting(false);
     }
   }
 
-  /* Verify the typed code → server checks it with MSG91 and remembers the
-   * proven number on the account. */
-  async function handleVerifyOtp() {
-    if (!pbUser?.pbId || !otpReqId || otpInput.length < 4 || otpChecking) return;
-    setOtpChecking(true);
-    setOtpError('');
-    try {
-      const r = await api.verifyWhatsAppOtp({ pbId: pbUser.pbId, reqId: otpReqId, otp: otpInput });
-      setWaIdentifier((r.identifier || '').replace(/\D/g, ''));
-      setOtpReqId('');
-      setOtpSentTo('');
-      setOtpInput('');
-      setResendIn(0);
-    } catch (e: any) {
-      if (e?.data?.otpExpired) {
-        setOtpReqId('');
-        setOtpSentTo('');
-        setOtpInput('');
-      }
-      setOtpError(e?.message || 'Incorrect code. Please try again.');
-    } finally {
-      setOtpChecking(false);
+  /* While the waiting card is up, poll this user's own PB record every 2 s —
+   * the bot webhook (dev or prod server, whichever owns the bot) writes
+   * wa_verified_phone on a successful contact match. Reading PocketBase
+   * directly keeps this working on the APK even when Express is unreachable.
+   * 5-minute timeout; editing the phone cancels the stale wait. */
+  useEffect(() => {
+    if (!tgWaitingFor || !pbUser?.pbId) return;
+    if (tgWaitingFor !== expectedWaDigits) {
+      setTgWaitingFor('');
+      return;
     }
-  }
+    const pbId = pbUser.pbId;
+    const startedAt = Date.now();
+    let stopped = false;
+    const t = setInterval(async () => {
+      if (stopped) return;
+      if (Date.now() - startedAt > 5 * 60 * 1000) {
+        setTgWaitingFor('');
+        setTgError('Verification timed out. Please try again.');
+        return;
+      }
+      try {
+        const rec: any = await pb.collection('users').getOne(pbId, { requestKey: null });
+        const proven = String(rec?.wa_verified_phone || '').replace(/\D/g, '');
+        if (proven && proven === tgWaitingFor) {
+          setWaIdentifier(proven);
+          setTgWaitingFor('');
+          setTgError('');
+        }
+      } catch {
+        /* transient network error — keep polling until the timeout */
+      }
+    }, 2000);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tgWaitingFor, expectedWaDigits, pbUser?.pbId]);
 
   async function handleSubmit() {
     if (!canSubmit || !country || !pbUser?.pbId) return;
@@ -348,92 +361,70 @@ export default function VerifyAccountScreen() {
               </Text>
             )}
 
-            {/* WhatsApp OTP — must verify the entered number before submit */}
+            {/* Telegram verification — must verify the entered number before submit */}
             {waVerified ? (
-              <View style={styles.waVerifiedChip} testID="kyc-wa-verified">
+              <View style={styles.waVerifiedChip} testID="kyc-tg-verified">
                 <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
-                <Text style={styles.waVerifiedTxt}>WhatsApp number verified</Text>
+                <Text style={styles.waVerifiedTxt}>Phone number verified via Telegram</Text>
               </View>
-            ) : otpReqId && otpSentTo === expectedWaDigits ? (
-              /* Inline OTP entry — code was just sent to this exact number */
-              <View style={styles.otpBox} testID="kyc-wa-otp-box">
-                <View style={styles.otpSentRow}>
-                  <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
-                  <Text style={styles.otpSentTxt}>
-                    Code sent on WhatsApp to {country?.dial} {phone}
+            ) : tgWaitingFor && tgWaitingFor === expectedWaDigits ? (
+              /* Waiting card — deep link opened, polling for the webhook stamp */
+              <View style={styles.tgWaitBox} testID="kyc-tg-waiting">
+                <View style={styles.tgWaitRow}>
+                  <ActivityIndicator size="small" color="#229ED9" />
+                  <Text style={styles.tgWaitTxt}>
+                    Waiting for Telegram… In the bot chat, tap "📱 Share Contact to
+                    Verify Account" to verify {country?.dial} {phone}.
                   </Text>
                 </View>
-                <View style={styles.otpRow}>
-                  <TextInput
-                    style={styles.otpInput}
-                    value={otpInput}
-                    onChangeText={(t) => { setOtpInput(t.replace(/[^0-9]/g, '')); setOtpError(''); }}
-                    placeholder="Enter OTP"
-                    placeholderTextColor={Colors.textMuted}
-                    keyboardType="number-pad"
-                    maxLength={6}
-                    autoFocus
-                    testID="kyc-wa-otp-input"
-                  />
+                <View style={styles.tgWaitActions}>
                   <Pressable
-                    onPress={handleVerifyOtp}
-                    disabled={otpInput.length < 4 || otpChecking}
-                    testID="kyc-wa-otp-verify"
-                    style={({ pressed }) => [
-                      styles.otpVerifyBtn,
-                      otpInput.length < 4 && { opacity: 0.45 },
-                      pressed && { opacity: 0.8 },
-                    ]}
+                    onPress={() => { if (tgDeepLink) Linking.openURL(tgDeepLink).catch(() => {}); }}
+                    testID="kyc-tg-reopen"
+                    style={({ pressed }) => pressed && { opacity: 0.7 }}
                   >
-                    {otpChecking ? (
-                      <ActivityIndicator size="small" color="#0A0A0F" />
-                    ) : (
-                      <Text style={styles.otpVerifyTxt}>Verify</Text>
-                    )}
+                    <Text style={styles.tgLinkTxt}>Open Telegram again</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setTgWaitingFor('')}
+                    testID="kyc-tg-cancel"
+                    style={({ pressed }) => pressed && { opacity: 0.7 }}
+                  >
+                    <Text style={styles.tgCancelTxt}>Cancel</Text>
                   </Pressable>
                 </View>
-                {!!otpError && <Text style={styles.fieldErr} testID="kyc-wa-error">{otpError}</Text>}
-                <Pressable
-                  onPress={handleSendOtp}
-                  disabled={resendIn > 0 || otpSending}
-                  testID="kyc-wa-otp-resend"
-                  style={({ pressed }) => pressed && { opacity: 0.7 }}
-                >
-                  <Text style={[styles.otpResendTxt, resendIn > 0 && { color: Colors.textMuted }]}>
-                    {otpSending ? 'Sending…' : resendIn > 0 ? `Resend code in ${resendIn}s` : 'Resend code'}
-                  </Text>
-                </Pressable>
               </View>
             ) : (
               <>
                 <Pressable
-                  onPress={handleSendOtp}
-                  disabled={!phoneOk || !country || otpSending}
-                  testID="kyc-wa-otp-btn"
+                  onPress={handleTelegramVerify}
+                  disabled={!phoneOk || !country || tgStarting}
+                  testID="kyc-tg-btn"
                   style={({ pressed }) => [
-                    styles.waBtn,
+                    styles.tgBtn,
                     (!phoneOk || !country) && { opacity: 0.45 },
                     pressed && { opacity: 0.8 },
                   ]}
                 >
-                  {otpSending ? (
-                    <ActivityIndicator size="small" color="#25D366" />
+                  {tgStarting ? (
+                    <ActivityIndicator size="small" color="#229ED9" />
                   ) : (
-                    <Ionicons name="logo-whatsapp" size={18} color="#25D366" />
+                    <Ionicons name="paper-plane" size={18} color="#229ED9" />
                   )}
-                  <Text style={styles.waBtnTxt}>
-                    {otpSending ? 'Sending code…' : 'Verify on WhatsApp'}
+                  <Text style={styles.tgBtnTxt}>
+                    {tgStarting ? 'Opening Telegram…' : 'Verify via Telegram'}
                   </Text>
                 </Pressable>
                 {waMismatch && (
-                  <Text style={styles.fieldErr} testID="kyc-wa-mismatch">
+                  <Text style={styles.fieldErr} testID="kyc-tg-mismatch">
                     The number you verified doesn't match the phone above. Verify{' '}
                     {country?.dial} {phone} to continue.
                   </Text>
                 )}
-                {!!otpError && <Text style={styles.fieldErr} testID="kyc-wa-error">{otpError}</Text>}
+                {!!tgError && <Text style={styles.fieldErr} testID="kyc-tg-error">{tgError}</Text>}
                 <Text style={styles.hintTxt}>
-                  Tap to get a one-time code on WhatsApp for this number.
+                  Tap to open our Telegram bot and share your contact — your number is
+                  verified instantly, no code to type.
                 </Text>
               </>
             )}
@@ -701,7 +692,7 @@ const styles = StyleSheet.create({
   phoneInput: { flex: 1, paddingHorizontal: 14, paddingVertical: 13, fontSize: 15, color: Colors.textPrimary },
   fieldErr: { fontSize: 12, color: Colors.error, marginTop: 5 },
   hintTxt: { fontSize: 12, color: Colors.textMuted, marginTop: 7, lineHeight: 17 },
-  waBtn: {
+  tgBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -710,10 +701,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(37,211,102,0.45)',
-    backgroundColor: 'rgba(37,211,102,0.08)',
+    borderColor: 'rgba(34,158,217,0.5)',
+    backgroundColor: 'rgba(34,158,217,0.10)',
   },
-  waBtnTxt: { fontSize: 14, fontWeight: '800', color: '#25D366' },
+  tgBtnTxt: { fontSize: 14, fontWeight: '800', color: '#229ED9' },
   waVerifiedChip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -728,42 +719,20 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,230,118,0.08)',
   },
   waVerifiedTxt: { fontSize: 13, fontWeight: '700', color: Colors.success },
-  otpBox: {
+  tgWaitBox: {
     marginTop: 10,
     padding: 12,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(37,211,102,0.45)',
-    backgroundColor: 'rgba(37,211,102,0.06)',
+    borderColor: 'rgba(34,158,217,0.5)',
+    backgroundColor: 'rgba(34,158,217,0.07)',
     gap: 10,
   },
-  otpSentRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  otpSentTxt: { fontSize: 12.5, fontWeight: '600', color: Colors.textSecondary, flex: 1, lineHeight: 17 },
-  otpRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  otpInput: {
-    flex: 1,
-    backgroundColor: Colors.darkSurface,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(244,196,48,0.25)',
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    fontSize: 18,
-    fontWeight: '800',
-    letterSpacing: 6,
-    color: Colors.textPrimary,
-  },
-  otpVerifyBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    borderRadius: 10,
-    backgroundColor: '#25D366',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 82,
-  },
-  otpVerifyTxt: { fontSize: 14, fontWeight: '800', color: '#0A0A0F' },
-  otpResendTxt: { fontSize: 12.5, fontWeight: '700', color: '#25D366', alignSelf: 'flex-start' },
+  tgWaitRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  tgWaitTxt: { fontSize: 12.5, fontWeight: '600', color: Colors.textSecondary, flex: 1, lineHeight: 17 },
+  tgWaitActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  tgLinkTxt: { fontSize: 12.5, fontWeight: '700', color: '#229ED9' },
+  tgCancelTxt: { fontSize: 12.5, fontWeight: '700', color: Colors.textMuted },
   errBox: {
     backgroundColor: 'rgba(255,61,87,0.10)',
     borderWidth: 1,
