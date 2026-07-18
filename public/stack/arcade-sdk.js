@@ -126,6 +126,18 @@
       postRN({ type: 'ARCADE_STARTED' });
     },
     onFreeze: function (cb) { freezeCb = cb; },
+    // Perf telemetry (FPS + adaptive render scale) — NOT money-related, so it is
+    // NOT gated by inMatch: practice runs on low-end devices matter too. The RN
+    // host attaches device model/OS and writes ONE row per session at game end.
+    onPerf: function (p) {
+      if (!p || typeof p !== 'object') return;
+      postRN({
+        type: 'ARCADE_PERF',
+        avgFps: Math.round(Number(p.avgFps) || 0),
+        minFps: Math.round(Number(p.minFps) || 0),
+        scale: Number(p.scale) || 1,
+      });
+    },
     isMatch: function () { return inMatch; },
     // Effective max lives: PvP uses the server value (sudden-death 1); offline
     // uses the game's own default so practice mode stays 3 lives.

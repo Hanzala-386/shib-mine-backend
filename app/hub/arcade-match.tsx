@@ -24,6 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
+import * as Device from 'expo-device';
 import Colors from '@/constants/colors';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 import { useWallet } from '@/context/WalletContext';
@@ -49,17 +50,17 @@ import {
 // their first score (fruit spawn + slice + report throttle). 40s < 47s keeps
 // the same safety ratio Flappy uses (30s < 45s).
 const GAME_HOSTS: Record<string, { url: string; v: number; afkMs: number }> = {
-  flappy:   { url: 'https://webcod.in/flappy/index.html',   v: 7, afkMs: 30000 },
-  fruitcut: { url: 'https://webcod.in/fruitcut/index.html', v: 3, afkMs: 40000 },
+  flappy:   { url: 'https://webcod.in/flappy/index.html',   v: 8, afkMs: 30000 },
+  fruitcut: { url: 'https://webcod.in/fruitcut/index.html', v: 4, afkMs: 40000 },
   // Stack: TAP-TO-START = the first gameplay tap on the Game layout (adapter
   // signals ARCADE_STARTED there). Ordering invariant: adapter stage-1 forfeit
   // 45s < this 50s < the 60s server backstop (readyAfkSeconds).
-  stack:    { url: 'https://webcod.in/stack/index.html',    v: 3, afkMs: 50000 },
+  stack:    { url: 'https://webcod.in/stack/index.html',    v: 4, afkMs: 50000 },
   // 2048 / Ice Block / Color Rush — same invariant: adapter stage-1 forfeit 45s
   // < this 50s (RN AFK) < 60s server backstop (readyAfkSeconds in @shared/arcade).
-  '2048':   { url: 'https://webcod.in/2048/index.html',     v: 1, afkMs: 50000 },
-  iceblock: { url: 'https://webcod.in/iceblock/index.html', v: 1, afkMs: 50000 },
-  color:    { url: 'https://webcod.in/color/index.html',    v: 3, afkMs: 50000 },
+  '2048':   { url: 'https://webcod.in/2048/index.html',     v: 2, afkMs: 50000 },
+  iceblock: { url: 'https://webcod.in/iceblock/index.html', v: 2, afkMs: 50000 },
+  color:    { url: 'https://webcod.in/color/index.html',    v: 4, afkMs: 50000 },
 };
 
 // One shared iframe title for the web host's postMessage channel (per-game lookup
@@ -179,6 +180,9 @@ export default function ArcadeMatchScreen() {
   const modeRef = useRef<Mode>(mode);
   const livesRef = useRef(1);
   const gameReadyRef = useRef(false);      // game (WebView) finished loading / posted ARCADE_READY
+  // Perf telemetry: latest ARCADE_PERF payload from the game (ref — never re-renders).
+  const perfRef = useRef<{ avgFps: number; minFps: number; scale: number } | null>(null);
+  const perfSentRef = useRef(false);       // one perf_logs row per screen session
   const matchStartedRef = useRef(false);   // server MATCH_START received
   const injectedStartRef = useRef(false);  // ARCADE_MATCH_START inject sequence has begun
   const matchAckedRef = useRef(false);     // game acknowledged match mode (first score/out relayed)
@@ -308,6 +312,16 @@ export default function ArcadeMatchScreen() {
       maybeStartGame();
       return;
     }
+    // Perf telemetry — flows in practice too (NOT match-gated). Kept in a ref
+    // (no re-render); flushed ONCE per session at gameover / screen exit.
+    if (msg.type === 'ARCADE_PERF') {
+      perfRef.current = {
+        avgFps: Math.max(0, Math.round(Number(msg.avgFps) || 0)),
+        minFps: Math.max(0, Math.round(Number(msg.minFps) || 0)),
+        scale: Number(msg.scale) || 1,
+      };
+      return;
+    }
     // Score / out relaying only matters for a live online match.
     if (modeRef.current !== 'playing' || !matchIdRef.current) return;
 
@@ -349,6 +363,32 @@ export default function ArcadeMatchScreen() {
     window.addEventListener('message', h);
     return () => window.removeEventListener('message', h);
   }, [onGameMessage]);
+
+  // Flush ONE perf_logs row per session (gameover or screen exit). PB-direct
+  // (works on the APK — no Express dependency); fire-and-forget, never blocks UX.
+  const flushPerfLog = useCallback(() => {
+    if (perfSentRef.current) return;
+    const p = perfRef.current;
+    if (!p || !pb.authStore.isValid) return;
+    perfSentRef.current = true;
+    const uid = pb.authStore.record?.id || (pb.authStore as any).model?.id || '';
+    if (!uid) return;
+    pb.collection('perf_logs').create({
+      user: uid,
+      game_id: gameId,
+      session_kind: matchIdRef.current ? 'match' : 'practice',
+      device_model: [Device.brand, Device.modelName].filter(Boolean).join(' ') || 'unknown',
+      os: `${Platform.OS} ${String(Platform.Version ?? '')}`.trim(),
+      avg_fps: p.avgFps,
+      min_fps: p.minFps,
+      render_scale: p.scale,
+    }).catch(() => { /* telemetry is best-effort */ });
+  }, [gameId]);
+
+  useEffect(() => {
+    if (mode === 'gameover') flushPerfLog();
+  }, [mode, flushPerfLog]);
+  useEffect(() => () => { flushPerfLog(); }, [flushPerfLog]);
 
   /* ── server → RN ──────────────────────────────────────────────────────── */
   const onServerMsg = useCallback((msg: ArcadeServerMsg) => {
@@ -565,7 +605,12 @@ export default function ArcadeMatchScreen() {
   const showQueue = mode === 'connecting' || mode === 'queued';
   const showVS = showQueue || mode === 'matchfound';
   const showGame = mode === 'playing' || mode === 'practice';
-  const showBanners = showVS || showGame;
+  // HARD PERF RULE: NO banner ads while a game session is active. Each AdMob
+  // banner is a native view with a 60s hard key-remount refresh (StickyBannerAd)
+  // — destroying/recreating native ad views over the hardware-layered WebView
+  // causes visible FPS drops on low-end devices. Banners show ONLY during
+  // matchmaking (showVS); the gameover overlay renders its own banner slot.
+  const showBanners = showVS;
   const matchFound = mode === 'matchfound';
 
   // Keep ONE WebView mounted across queue → matchfound → playing → gameover so it

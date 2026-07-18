@@ -19,7 +19,8 @@
         <link rel="stylesheet" href="style.css">
 
 <!-- Arcade PvP bridge: MUST load first (reads ?arcade=1 at page load). -->
-<script src="arcade-sdk.js?v=1"></script>
+<script src="arcade-sdk.js?v=2"></script>
+<script src="perf-core.js?v=1"></script>
 
 </head>
 
@@ -46,7 +47,7 @@ if (location.protocol.substr(0, 4) === "file")
              exists at evaluation time. register-sw.js is intentionally REMOVED:
              its offline cache serves stale game builds after re-uploads to the
              shared hosting, defeating the ?v=N cache busting the host relies on. -->
-        <script src="2048-arcade.js?v=1" type="module"></script>
+        <script src="2048-arcade.js?v=2" type="module"></script>
 
 </body>
 </html>

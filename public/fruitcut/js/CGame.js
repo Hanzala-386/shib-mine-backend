@@ -148,6 +148,10 @@ function CGame(oData){
         _oInterface.unload();
         
         s_oStage.removeAllChildren();  
+
+        /* PERF: close the telemetry gate (perf-core __perfActive = !!s_oGame) —
+           without this, menu FPS after the first run pollutes the average. */
+        s_oGame = null;
     };
     
     this.exitFromHelp = function(){
@@ -331,8 +335,12 @@ function CGame(oData){
             // set up the first point in the new draw
             _oLastPt = _oFirstPoint = {x:e.stageX/s_iScaleFactor,y:e.stageY/s_iScaleFactor};
         }else{
+            /* PERF: Android backing store is scaled by __renderScale */
+            var _rs = (window.__renderScale||1);
+            _iMouseX /= _rs;
+            _iMouseY /= _rs;
             // set up the first point in the new draw
-            _oLastPt = _oFirstPoint = {x:e.stageX,y:e.stageY};
+            _oLastPt = _oFirstPoint = {x:e.stageX/_rs,y:e.stageY/_rs};
         }
 
         // clear the cache, so the vector data is drawn each tick:
@@ -359,6 +367,10 @@ function CGame(oData){
         if( !(s_bMobile && isIOS() === false)){
             _iMouseX /= s_iScaleFactor;
             _iMouseY /= s_iScaleFactor;
+        }else{
+            /* PERF: Android backing store is scaled by __renderScale */
+            _iMouseX /= (window.__renderScale||1);
+            _iMouseY /= (window.__renderScale||1);
         }
     };
     

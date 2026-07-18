@@ -182,6 +182,8 @@
 
   /* ── Per-tick driver (official C3 tick event) ──────────────────────────── */
   function onTick() {
+    /* PERF: telemetry gate — perf-core only counts FPS while actually playing */
+    window.__c3Active = !!rt && !frozen && layoutName() === 'Game' && !readGameOver();
     if (!rt || frozen) return;
 
     var match = isMatch();

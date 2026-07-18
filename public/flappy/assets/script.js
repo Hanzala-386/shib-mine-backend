@@ -57,8 +57,8 @@
         // crisp on high-DPI phones, while game logic keeps using the
         // fixed W x H (400 x 640) coordinate space via the scale
         // transform below.
-        canvas.width = Math.round(displayW * dpr);
-        canvas.height = Math.round(displayH * dpr);
+        canvas.width = Math.round(displayW * dpr * (window.__renderScale || 1));  // PERF: adaptive resolution
+        canvas.height = Math.round(displayH * dpr * (window.__renderScale || 1)); // PERF
         ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
     }
     resizeCanvas();
@@ -81,6 +81,9 @@
     const MAX_LIVES = 3;
     let lives = MAX_LIVES;
     let invincibleTimer = 0; // frames of grace/flicker after a non-fatal hit
+
+    // PERF: telemetry only counts frames while actually playing.
+    window.__perfActive = function () { return gameState === 'playing'; };
 
     // ─── Arcade PvP adapter (drop-in, no-op offline) ───
     let serverFrozen = false; // set when the server ends the PvP match remotely

@@ -41,7 +41,8 @@
         <link rel="stylesheet" href="css/main.css">
 
         <!-- Arcade PvP bridge: MUST load first (reads ?arcade=1 at page load). -->
-        <script src="arcade-sdk.js?v=1"></script>
+        <script src="arcade-sdk.js?v=2"></script>
+	<script src="perf-core.js?v=1"></script>
     </head>
     <body>
         <!-- PERCENT LOADER START-->
@@ -76,12 +77,12 @@
         <script src="js/plugins.js"></script>
         <script src="js/sound.js?v=2"></script>
         <style>#gameCanvas{will-change:transform;transform:translateZ(0);backface-visibility:hidden;}</style>
-        <script src="js/canvas.js?v=3"></script>
-        <script src="js/game.js?v=2"></script>
+        <script src="js/canvas.js?v=4"></script>
+        <script src="js/game.js?v=3"></script>
         <!-- Arcade adapter: after game.js so its window.__arcadeColor* hooks exist. -->
         <script src="color-arcade.js?v=1"></script>
         <script src="js/mobile.js"></script>
-        <script src="js/main.js"></script>
+        <script src="js/main.js?v=2"></script>
         <script src="js/loader.js"></script>
         <script src="js/init.js"></script>
     </body>

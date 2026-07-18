@@ -208,13 +208,32 @@ function sizeHandler() {
             s_iScaleFactor = iScale*2;
             s_oStage.scaleX = s_oStage.scaleY = s_iScaleFactor;  
         }else if(s_bMobile && isIOS() === false){
+            /* PERF: adaptive resolution — the Android branch used to keep the
+               fixed 960x1260 backing store from the <canvas> attributes. Shrink
+               it by the render scale (stage transform compensates); at scale 1
+               this is byte-for-byte the original geometry. Input: CGame divides
+               stageX/Y by __renderScale in its Android branch to match. */
+            if(window.s_oStage && s_oStage.canvas){
+                var _rs = (window.__renderScale||1);
+                s_oStage.canvas.width  = Math.round(CANVAS_WIDTH * _rs);
+                s_oStage.canvas.height = Math.round(CANVAS_HEIGHT * _rs);
+                s_oStage.scaleX = s_oStage.scaleY = _rs;
+            }
             $("#canvas").css("width",destW+"px");
             $("#canvas").css("height",destH+"px");
         }else{
-            s_oStage.canvas.width = destW;
-            s_oStage.canvas.height = destH;
+            /* PERF: adaptive resolution — backing store shrinks by the render
+               scale; CSS pins the displayed size (at scale 1 this matches the
+               original geometry exactly). EaselJS-NEXT maps pointer coords to
+               backing px, and s_iScaleFactor (used by CGame input) absorbs the
+               extra factor, so input stays logical. */
+            var _rs2 = (window.__renderScale||1);
+            s_oStage.canvas.width = Math.round(destW * _rs2);
+            s_oStage.canvas.height = Math.round(destH * _rs2);
+            $("#canvas").css("width",destW+"px");
+            $("#canvas").css("height",destH+"px");
 
-            s_iScaleFactor = Math.min(destW / CANVAS_WIDTH, destH / CANVAS_HEIGHT);
+            s_iScaleFactor = Math.min(destW / CANVAS_WIDTH, destH / CANVAS_HEIGHT) * _rs2;
             s_oStage.scaleX = s_oStage.scaleY = s_iScaleFactor; 
         }
         

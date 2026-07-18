@@ -23,3 +23,4 @@
 - [Workflow log snapshots](workflow-log-snapshots.md) — /tmp/logs files are per-refresh snapshots, never live tails; loop refresh_all_logs to await boot log lines (PB init chain ~60-90s).
 - [Referral commission pipeline](referral-commission-pipeline.md) — referred_by is usually a record ID not a code; code-only lookups pay nothing; cross-user reads need LIST filter, not getOne.
 - [Telegram webhook ownership](telegram-webhook-ownership.md) — prod must own the bot webhook (dev domain sleeps → 404 → silent bot); host missing bot-token env silently discards updates (secret mismatch); probe via signed fake update + PB row check.
+- [Arcade perf-core adaptive resolution](arcade-perf-core.md) — dpr-cap getter + render-scale ladder per engine; C3 = static cap only; EaselJS-NEXT stageX is backing-px (fold rs into scale factor or divide input).

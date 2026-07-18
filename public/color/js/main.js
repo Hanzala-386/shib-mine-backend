@@ -99,8 +99,8 @@ function resizeGameFunc(){
 		gameCanvas.style.left = (offset.left/2) + "px";
 		gameCanvas.style.top = (offset.top/2) + "px";
 		
-		gameCanvas.width = stageW * dpr;
-		gameCanvas.height = stageH * dpr;
+		gameCanvas.width = stageW * dpr * (window.__renderScale||1);   /* PERF: adaptive resolution */
+		gameCanvas.height = stageH * dpr * (window.__renderScale||1); /* PERF */
 
 		
 		

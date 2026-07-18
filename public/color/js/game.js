@@ -421,7 +421,7 @@ function buildGameButton(){
 	}, false);
 
 	touchScreen.addEventListener("click", function(evt) {
-		if(stage.mouseX / dpr < canvasW/2){
+		if(stage.mouseX / (dpr * (window.__renderScale||1)) < canvasW/2){
 			actionDirection('left');
 		}else{
 			actionDirection('right');

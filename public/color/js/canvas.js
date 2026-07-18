@@ -387,7 +387,7 @@ function changeViewport(isLandscape){
 
 function changeCanvasViewport(){
 	if(canvasContainer!=undefined){
-		stage.scaleX = stage.scaleY = dpr;
+		stage.scaleX = stage.scaleY = dpr * (window.__renderScale||1); /* PERF: adaptive resolution */
 		
 		if(safeZoneGuide){	
 			guideline.graphics.clear().setStrokeStyle(2).beginStroke('red').drawRect((stageW-contentW)/2, (stageH-contentH)/2, contentW, contentH);

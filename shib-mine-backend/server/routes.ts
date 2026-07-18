@@ -984,6 +984,48 @@ async function ensureSessionLogsCollection() {
   }
 }
 
+// ─── perf_logs: per-game-session FPS telemetry (Hard-Performance Override) ──
+// The GAME (WebView) samples FPS + adaptive render scale and posts ARCADE_PERF
+// to the RN host, which attaches device model/OS and writes ONE row per session
+// PB-DIRECT (works on the APK — no Express dependency). Hence createRule is
+// any-authenticated; list/view stay admin-only (telemetry is not user-facing).
+async function ensurePerfLogsCollection() {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/perf_logs");
+    if (!check.code) {
+      console.log("[perf_logs] Collection already exists ✓");
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "perf_logs",
+      type: "base",
+      schema: [
+        { name: "user",         type: "text",   required: true  },
+        { name: "game_id",      type: "text",   required: true  },
+        { name: "session_kind", type: "text",   required: false }, // 'match' | 'practice'
+        { name: "device_model", type: "text",   required: false },
+        { name: "os",           type: "text",   required: false },
+        { name: "avg_fps",      type: "number", required: false },
+        { name: "min_fps",      type: "number", required: false },
+        { name: "render_scale", type: "number", required: false },
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[perf_logs] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, {
+      listRule: null, viewRule: null,
+      createRule: '@request.auth.id != ""',
+      updateRule: null, deleteRule: null,
+    }, token);
+    console.log("[perf_logs] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[perf_logs] Setup failed:", e.message);
+  }
+}
+
 // ─── game_score: ONE row per game (total-reset pipeline) ───────────────────
 // Lifecycle (STRICT — no other code path may INSERT into this collection):
 //   1. GAME_START  → INSERT one row  {raw_score:0, final_tokens:0,
@@ -2323,6 +2365,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureWithdrawalRedeemMethod())
     .then(() => ensureNotificationsCollection())
     .then(() => ensureSessionLogsCollection())
+    .then(() => ensurePerfLogsCollection())
     .then(() => ensureGameScoreCollection())
     .then(() => { startMatchExpirySweeper(); })
     .then(() => ensureBlacklistFields())
