@@ -290,7 +290,9 @@ function setupErrorHandler(app: express.Application) {
       ws: true,
       pathFilter: (pathname) =>
         !pathname.startsWith("/api") &&
-        !pathname.startsWith("/game") &&
+        // Match /game and /game/* only — NOT /game-history (an app route).
+        pathname !== "/game" &&
+        !pathname.startsWith("/game/") &&
         !pathname.startsWith("/arcade") &&
         !pathname.startsWith("/flappy") &&
         !pathname.startsWith("/fruitcut") &&

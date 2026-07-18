@@ -93,14 +93,18 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     path: 'stack',
     // No lives concept — one collapse (or the 5:00 timer) ends the run.
     lives: 1,
-    // A block lands every ~1–2s scoring +1 (occasional perfect-drop bonus), so
-    // a 5:00 run tops out around ~300–400 honest points; 999 is the ceiling.
+    // A block lands every ~1–2s scoring ~+10 (with perfect-drop combo bonuses on
+    // top — live matches show ~7–10 pts/s honest pace), 999 is the ceiling.
     maxScore: 999,
     // Adapter reports the CUMULATIVE score throttled to one message per ~600ms
-    // (same recipe as Fruit Cut). Honest gain is ~1 pt per report (one block per
-    // ~1–2s, occasional perfect-drop bonus), so 5/window keeps generous headroom
-    // while ensuring a silent cheat drip toward the cap still gets clamped+flagged.
-    scoreDelta: { maxIncrement: 5, minIntervalMs: 500 },
+    // (same recipe as Fruit Cut). Real per-block gain is ~10 pts (NOT +1 — the
+    // C3 template multiplies score_to_add), with combo spikes above that.
+    // 60/window (~120 pts/s budget) gives honest play ~10x headroom — the old
+    // 5/window budget sat BELOW the honest rate, so the server-accepted score
+    // (which both the opponent display AND settlement use) crawled behind the
+    // real score and produced wrong on-screen totals / unfair settles. A
+    // scripted teleport is still bounded (maxScore in ~8s) and always flagged.
+    scoreDelta: { maxIncrement: 60, minIntervalMs: 500 },
     // Two-stage client-enforced timing (adapter overlay). Stage 2: a 5-minute
     // active-match countdown armed on the FIRST gameplay tap; at 0:00 the
     // adapter triggers the native game-over and reports PLAYER_OUT — the normal

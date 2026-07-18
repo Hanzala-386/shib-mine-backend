@@ -21,27 +21,30 @@ const termsKey = (uid: string) => `shib_terms_v2_${uid}`;
 
 /* Same compact summary shown at signup */
 const TC_CONTENT = `
-SHIB Mine ("the App") is a gamified engagement and rewards platform — NOT a cryptocurrency mining service. No device hardware is used for mining. Virtual SHIB tokens are earned through in-app engagement sessions, rewarded advertisements, mini-games, and referrals. Virtual rewards have no inherent monetary value until converted through our approved withdrawal model.
+Shiba Hit ("the App") is a free, gamified engagement and rewards platform — NOT a cryptocurrency mining service and NOT a gambling app. No device hardware is used for mining. No real money is ever staked or wagered: all in-game tokens are earned free, mini-game challenges are contests of skill, and we never accept deposits or payments of any kind. Virtual SHIB tokens are earned through in-app engagement sessions, rewarded advertisements, mini-games, and referrals. Virtual rewards have no inherent monetary value until converted through our approved withdrawal model.
 
 1. Eligibility
 You must be at least 13 years old to use this App.
 
-2. Advertising
-The App shows ads from Google AdMob, Unity Ads, and AppLovin MAX. Attempting to block, spoof, or manipulate the ad delivery system is a breach of these Terms and may result in account suspension.
+2. Restricted Territories
+The App is NOT available in Iran, Ukraine, Afghanistan, or North Korea. Connections from these regions — or attempts to hide your location using VPNs or proxies — are automatically denied and may result in a permanent ban.
 
-3. Prohibited Conduct
-No bots, scripts, or automated tools. No multiple accounts to abuse referrals. No reverse-engineering the App. No unlawful use.
+3. Advertising
+The App shows ads from Google AdMob, Unity Ads, and AppLovin MAX. Advertising is our only source of revenue and keeps the App free. Attempting to block, spoof, or manipulate the ad delivery system is a breach of these Terms and may result in account suspension.
 
-4. Withdrawals
+4. Prohibited Conduct
+No bots, scripts, auto-clickers, or automated tools. No multiple accounts or referral abuse. No reverse-engineering the App. No VPNs, proxies, or anonymisation services. No unlawful use.
+
+5. Enforcement
+Multi-accounting, suspicious activity, score manipulation, or fraud results in account suspension or a permanent ban, blacklisting of your email, and forfeiture of all virtual balances and pending withdrawals.
+
+6. Withdrawals
 Withdrawals are subject to a 24-hour manual review. They may be rejected for fraud, insufficient balance, or invalid wallet information. Applicable network fees will be deducted.
 
-5. Account Deletion
-Permanent deletion requires OTP verification sent to your registered email. All data — balance, history, referrals — is irreversibly erased.
+7. Account Deletion
+Permanent deletion requires OTP verification sent to your registered email. All data — balance, history, referrals — is irreversibly erased. Deleted accounts are permanently blacklisted and cannot re-register.
 
-6. Fraud Prevention
-Deleted accounts are permanently blacklisted. Re-registration with a previously deleted email is not permitted. Detected fraud results in immediate ban and forfeiture of all virtual balances.
-
-7. Changes
+8. Changes
 We may update these Terms at any time. Continued use of the App constitutes acceptance of the revised Terms.
 
 By continuing, you confirm you have read and agree to our full Privacy Policy and Terms of Service.
@@ -92,12 +95,39 @@ export function TermsGateModal() {
     setDeclining(false);
   }, [signOut]);
 
-  /* ── Scroll-to-bottom detection ── */
+  /* ── Scroll-to-bottom detection ──
+   * Robust against the three classic "stuck scroll" failure modes:
+   *  1. The final momentum event never firing through the throttled onScroll —
+   *     we ALSO check on drag-end and momentum-end.
+   *  2. Content that changes size (font scaling) — re-checked via
+   *     onContentSizeChange; content shorter than the viewport unlocks instantly.
+   *  3. Sub-pixel rounding on Android making `offset + layout === size - 0.5px`
+   *     unreachable — generous 24px tolerance.
+   */
+  const viewportH = useRef(0);
+  const contentH  = useRef(0);
+
+  const unlockIfAtBottom = useCallback((offsetY: number) => {
+    if (contentH.current <= 0 || viewportH.current <= 0) return;
+    if (viewportH.current + offsetY >= contentH.current - 24) setScrolled(true);
+  }, []);
+
   const handleScroll = useCallback((e: any) => {
     const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
-    if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 40) {
-      setScrolled(true);
-    }
+    viewportH.current = layoutMeasurement.height;
+    contentH.current  = contentSize.height;
+    unlockIfAtBottom(contentOffset.y);
+  }, [unlockIfAtBottom]);
+
+  const handleContentSize = useCallback((_w: number, h: number) => {
+    contentH.current = h;
+    // Whole text already visible (large screens / small fonts) → nothing to scroll.
+    if (viewportH.current > 0 && h <= viewportH.current + 1) setScrolled(true);
+  }, []);
+
+  const handleScrollLayout = useCallback((e: any) => {
+    viewportH.current = e.nativeEvent.layout.height;
+    if (contentH.current > 0 && contentH.current <= viewportH.current + 1) setScrolled(true);
   }, []);
 
   const canAccept = scrolled && checked;
@@ -125,9 +155,18 @@ export function TermsGateModal() {
           {/* Scrollable T&C */}
           <ScrollView
             style={tc.scroll}
+            contentContainerStyle={tc.scrollContent}
             onScroll={handleScroll}
-            scrollEventThrottle={100}
+            onScrollEndDrag={handleScroll}
+            onMomentumScrollEnd={handleScroll}
+            onContentSizeChange={handleContentSize}
+            onLayout={handleScrollLayout}
+            scrollEventThrottle={16}
             showsVerticalScrollIndicator
+            nestedScrollEnabled
+            bounces={false}
+            overScrollMode="never"
+            testID="terms-scroll"
           >
             <Text style={tc.body}>{TC_CONTENT}</Text>
             <View style={tc.scrollHint}>
@@ -218,8 +257,13 @@ const tc = StyleSheet.create({
     maxHeight: 300,
     backgroundColor: '#0d0d1a',
     borderRadius: 10,
-    padding: 12,
     marginBottom: 12,
+  },
+  /* Padding MUST live on the content container, not the ScrollView itself —
+   * style-padding on Android shrinks the scrollable viewport without shrinking
+   * contentSize, which made the bottom threshold unreachable ("stuck" scroll). */
+  scrollContent: {
+    padding: 12,
   },
   body: {
     fontSize: 13,

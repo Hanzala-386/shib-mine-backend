@@ -1090,6 +1090,59 @@ async function ensureGameScoreCollection() {
   }
 }
 
+// ─── game_history: cosmetic per-event history feed (Game History screen) ────
+// One row per finished arcade match / solo claim / ticket redemption. Written
+// CLIENT-SIDE (fire-and-forget) so it works identically in dev and on the APK
+// (direct PB). Rows are display-only: no money logic ever reads this
+// collection. Rules make it append-only per user — users can list/create ONLY
+// their own rows and can never edit or delete them (read-only history).
+async function ensureGameHistoryCollection() {
+  try {
+    const token = await getAdminToken();
+    const rules = {
+      listRule: 'user = @request.auth.id',
+      viewRule: 'user = @request.auth.id',
+      createRule: '@request.auth.id != "" && user = @request.auth.id',
+      updateRule: null,
+      deleteRule: null,
+    };
+    const check = await pbGet("/api/collections/game_history");
+    if (!check.code) {
+      // Re-assert rules on every boot (idempotent, heals manual edits).
+      await pbHttp("PATCH", `/api/collections/${check.id}`, rules, token);
+      console.log("[game_history] Collection already exists ✓ (rules re-asserted)");
+      return;
+    }
+    const usersColl = await pbGet("/api/collections/users");
+    if (usersColl.code || !usersColl.id) {
+      console.warn("[game_history] users collection lookup failed — cannot create");
+      return;
+    }
+    const created = await pbHttp("POST", "/api/collections", {
+      name: "game_history",
+      type: "base",
+      schema: [
+        { name: "user",        type: "relation", required: true,
+          options: { collectionId: usersColl.id, maxSelect: 1, cascadeDelete: false } },
+        { name: "game",        type: "text",   required: false }, // display name e.g. "Tower Stack"
+        { name: "outcome",     type: "text",   required: false }, // win | loss | draw | redeem
+        { name: "tickets_won", type: "number", required: false }, // Hit Tickets credited (win)
+        { name: "tokens_lost", type: "number", required: false }, // PT stake lost (loss) / tickets spent (redeem)
+        { name: "pt_won",      type: "number", required: false }, // Power Tokens earned (solo claim)
+        { name: "shib_won",    type: "number", required: false }, // SHIB credited (redeem)
+      ],
+    }, token);
+    if (created.code) {
+      console.warn("[game_history] Could not create collection:", JSON.stringify(created).slice(0, 200));
+      return;
+    }
+    await pbHttp("PATCH", `/api/collections/${created.id}`, rules, token);
+    console.log("[game_history] Collection created ✓");
+  } catch (e: any) {
+    console.warn("[game_history] Setup failed:", e.message);
+  }
+}
+
 // ─── Auto-expire unclaimed matches ─────────────────────────────────────────
 // A match must be claimed within MATCH_CLAIM_WINDOW_MS of its last transition
 // ("active" set at GAME_START, "started" set at the game-over commit — each
@@ -2367,6 +2420,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureSessionLogsCollection())
     .then(() => ensurePerfLogsCollection())
     .then(() => ensureGameScoreCollection())
+    .then(() => ensureGameHistoryCollection())
     .then(() => { startMatchExpirySweeper(); })
     .then(() => ensureBlacklistFields())
     .then(() => ensureSessionTokenField())

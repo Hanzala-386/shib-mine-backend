@@ -19,11 +19,11 @@
  * ──────────────────────────────────────────────────────────────────────────── */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Platform, ActivityIndicator, Animated, Easing, Image } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Platform, ActivityIndicator, Animated, Easing, Image, BackHandler } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import * as Device from 'expo-device';
 import Colors from '@/constants/colors';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
@@ -34,6 +34,7 @@ import TicketIcon from '@/components/TicketIcon';
 import KycGateModal, { useKycGate } from '@/components/KycGate';
 import { InlineBannerAd } from '@/components/StickyBannerAd';
 import { ArcadeSocket } from '@/lib/arcadeClient';
+import { logGameHistory, gameDisplayName } from '@/lib/gameHistory';
 import {
   ARCADE_TIERS, TIER_CONFIGS,
   type ArcadeServerMsg, type ArcadeOutcome, type ArcadeEndReason,
@@ -55,11 +56,11 @@ const GAME_HOSTS: Record<string, { url: string; v: number; afkMs: number }> = {
   // Stack: TAP-TO-START = the first gameplay tap on the Game layout (adapter
   // signals ARCADE_STARTED there). Ordering invariant: adapter stage-1 forfeit
   // 45s < this 50s < the 60s server backstop (readyAfkSeconds).
-  stack:    { url: 'https://webcod.in/stack/index.html',    v: 4, afkMs: 50000 },
+  stack:    { url: 'https://webcod.in/stack/index.html',    v: 5, afkMs: 50000 },
   // 2048 / Ice Block / Color Rush — same invariant: adapter stage-1 forfeit 45s
   // < this 50s (RN AFK) < 60s server backstop (readyAfkSeconds in @shared/arcade).
-  '2048':   { url: 'https://webcod.in/2048/index.html',     v: 2, afkMs: 50000 },
-  iceblock: { url: 'https://webcod.in/iceblock/index.html', v: 2, afkMs: 50000 },
+  '2048':   { url: 'https://webcod.in/2048/index.html',     v: 3, afkMs: 50000 },
+  iceblock: { url: 'https://webcod.in/iceblock/index.html', v: 3, afkMs: 50000 },
   color:    { url: 'https://webcod.in/color/index.html',    v: 4, afkMs: 50000 },
 };
 
@@ -200,6 +201,30 @@ export default function ArcadeMatchScreen() {
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { iAmOutRef.current = iAmOut; }, [iAmOut]);
+
+  /* ── Android back-button lockdown during a live match ─────────────────────
+   *  From the moment a match is found until the Game Over (result) screen,
+   *  the hardware back button / back gesture is swallowed so an accidental
+   *  press can never forfeit a staked match. Once the result is up (mode
+   *  'gameover'), or in practice/queue/error states, back works normally —
+   *  leaving the queue is handled by the on-screen Cancel button, and the
+   *  result screen has explicit exit buttons.                                */
+  const matchLive = (mode === 'matchfound' || mode === 'playing') && !practiceActive;
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !matchLive) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [matchLive]);
+
+  /* iOS swipe-back + any navigation-driven removal while the match is live.
+   * Listener only exists while matchLive, so programmatic router.back() from
+   * the result/error screens is never intercepted. */
+  const navigation = useNavigation();
+  useEffect(() => {
+    if (!matchLive) return;
+    const unsub = (navigation as any).addListener('beforeRemove', (e: any) => e.preventDefault());
+    return unsub;
+  }, [matchLive, navigation]);
 
   /* ── current user's real avatar (avatar2), falls back to initials ─────────── */
   useEffect(() => {
@@ -438,6 +463,13 @@ export default function ArcadeMatchScreen() {
           winnerTickets: msg.winnerTickets, refundPT: msg.refundPT,
         });
         setMode('gameover');
+        // Cosmetic history row (fire-and-forget; draw = stake refunded → no loss)
+        logGameHistory({
+          game: gameDisplayName(gameId),
+          outcome: msg.outcome === 'win' ? 'win' : msg.outcome === 'draw' ? 'draw' : 'loss',
+          ticketsWon: msg.outcome === 'win' ? msg.winnerTickets : 0,
+          tokensLost: msg.outcome === 'lose' ? tier : 0,
+        });
         refetch().catch(() => {}); // balances changed server-side
         break;
       case 'OPPONENT_LEFT': setOppLeft(true); break;
@@ -494,7 +526,12 @@ export default function ArcadeMatchScreen() {
       onReconnecting: () => { if (matchIdRef.current && modeRef.current === 'playing') setReconnecting(true); },
       onReconnectGaveUp: () => {
         setReconnecting(false);
-        if (modeRef.current === 'playing') { setErrorMsg('Lost connection to the match.'); setMode('error'); }
+        // Include 'matchfound': if the reconnect budget dies during the VS
+        // reveal, flipping to 'error' here releases the back-button lockdown
+        // instead of entering 'playing' on a dead socket.
+        if (modeRef.current === 'playing' || modeRef.current === 'matchfound') {
+          setErrorMsg('Lost connection to the match.'); setMode('error');
+        }
       },
     });
     sockRef.current = sock;

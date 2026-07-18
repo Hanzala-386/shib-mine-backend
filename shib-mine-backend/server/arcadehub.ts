@@ -226,6 +226,13 @@ function acceptScore(m: ArcadeMatch, p: ArcadePlayer, raw: number): number {
   const elapsed = p.lastScoreAt ? now - p.lastScoreAt : spec.minIntervalMs;
   const windows = Math.floor(elapsed / spec.minIntervalMs);
   const allowedDelta = Math.max(0, windows) * spec.maxIncrement;
+  // Remainder-preserving budget clock: when we accept, advance lastScoreAt by the
+  // WHOLE WINDOWS actually consumed (not to `now`), so the sub-window remainder
+  // (e.g. 100ms of every 600ms report cycle) keeps accruing instead of being
+  // silently discarded — the old `lastScoreAt = now` reset threw away ~17% of the
+  // honest budget at the adapters' 600ms reporting cadence and made the accepted
+  // score (opponent display + settlement input) drift behind honest play.
+  const nextLastScoreAt = p.lastScoreAt ? p.lastScoreAt + windows * spec.minIntervalMs : now;
 
   const violations: string[] = [];
   if (delta > allowedDelta) {
@@ -250,7 +257,7 @@ function acceptScore(m: ArcadeMatch, p: ArcadePlayer, raw: number): number {
   if (accepted <= p.score) return p.score;
 
   p.score = accepted;
-  p.lastScoreAt = now;
+  p.lastScoreAt = nextLastScoreAt;
   return accepted;
 }
 

@@ -126,6 +126,17 @@ export default function GamesScreen() {
             contentFit="contain"
           />
         </Pressable>
+
+        {/* Game History — read-only match & redemption log */}
+        <Pressable
+          onPress={() => router.push('/game-history')}
+          testID="games-history"
+          style={({ pressed }) => [styles.historyBtn, { opacity: pressed ? 0.85 : 1 }]}
+        >
+          <Ionicons name="time-outline" size={18} color={Colors.gold} />
+          <Text style={styles.historyTxt}>Game History</Text>
+          <Ionicons name="chevron-forward" size={16} color={Colors.textSecondary} />
+        </Pressable>
       </ScrollView>
 
       {/* KYC gate — blocks non-verified users from the Multiplayer Hub */}
@@ -140,6 +151,25 @@ export default function GamesScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.darkBg },
+
+  historyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 14,
+    paddingVertical: 13,
+    borderRadius: 14,
+    backgroundColor: 'rgba(244,196,48,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(244,196,48,0.30)',
+  },
+  historyTxt: {
+    color: Colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
 
   title: {
     color: Colors.textPrimary,

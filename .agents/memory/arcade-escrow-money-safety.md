@@ -74,3 +74,18 @@ UI delay as long as it stays well under the grace period.
 be clobbered; on mid-match RESUME (matchAcked) skip the reveal entirely. Keep the game
 WebView in ONE positionally-stable JSX slot toggled visible/offscreen (never a second
 mount) so it doesn't reload at match start.
+
+## 6. The scoreDelta budget must EXCEED the game's honest scoring pace — validate, don't guess
+A per-game `scoreDelta.maxIncrement` set BELOW the real honest rate makes the clamp
+silently eat legitimate points: the server-accepted score (which feeds BOTH the
+opponent's live display AND settlement) crawls behind real play, so both players see
+a "stuck" opponent and the settle can pick the wrong winner.
+**Why:** Stack's spec assumed +1/block but the C3 template scores ~+10/block with combo
+spikes — the budget sat under honest pace and every match desynced. Docs/assumptions
+about a template's scoring lie; only a real practice run tells the truth.
+**How to apply:** before real stakes, measure the honest peak pts/s in a practice run
+and set the budget ~5–10x above it (a teleport cheat is still clamped at the cap and
+flagged). Also: the accept-clock must be remainder-preserving — advance `lastScoreAt`
+by `windows * minIntervalMs` actually consumed, NOT to `now`; resetting to `now`
+discards the sub-window remainder (~17% of budget at a 600ms report cadence vs a
+500ms window) and compounds the lag. Never advances past `now`, so nothing banks.

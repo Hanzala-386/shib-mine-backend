@@ -1,0 +1,41 @@
+Agent, I have critical updates required for the game stability, UI/UX, and compliance. Implement the following strictly:
+
+1. Game Score Sync (Stack Game):
+
+Fix the real-time score calculation. In multiplayer, both users must see the exact same score instantly. Use Socket.io or high-frequency database synchronization to ensure there is zero latency in score updates.
+
+2. Back Button Lockdown:
+
+Disable the back button (physical/gesture) while a game is actively running. Users should not be able to exit a match by accidental sliding/back button presses. It must be locked from the moment the game starts until the 'Game Over' screen.
+
+3. Global Performance Optimization:
+
+Apply the 'Color Rush' performance template (smooth rendering, adaptive resolution) to ALL other games. Every game must maintain a stable 50-60 FPS on all devices, with the back button locked as specified in point 2.
+
+4. Game History Feature:
+
+Add a 'Game History' button under the main game page (Solo Knife Hit, Multiplayer Hub, Redemption Centre).
+
+Display a list: [Sr. No] | [Game Name] | [Win/Loss] | [Tickets Won / Tokens Lost].
+
+This should be 'Read-Only'—users can view history but cannot edit any entries.
+
+5. Notification Modal:
+
+Update the notification system. Currently, long messages get cut off. Make the notification component clickable/expandable. When a user clicks a notification, a full-screen modal should open displaying the complete, scrollable text.
+
+6. Privacy Policy & Terms of Service (Hardened):
+
+Rewrite these pages to be more professional, strict, and detailed.
+
+Include: Clear disclaimers that this is NOT a gambling app, we do not accept deposits, and all interactions are free.
+
+Enforcement: Include strict clauses for banning/blacklisting users for multi-accounting, suspicious activity, or fraud.
+
+Restrictions: Explicitly state that the application is restricted for users in Iran, Ukraine, Afghanistan, and North Korea.
+
+The content should be long, detailed, and structured to make the app appear highly genuine and trustworthy to Google.
+
+7. T&C Popup Scroll Fix:
+
+The Terms & Conditions popup during account opening has a scroll issue (it gets stuck). Fix the UI/CSS so that it scrolls smoothly and consistently to the very bottom, allowing the 'Confirm' tick button to become active only after full scrolling.

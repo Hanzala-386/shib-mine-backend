@@ -34,10 +34,14 @@ description: Why the Start Frontend workflow gets stuck and how to actually reco
   reanimated `entering`) precisely so it stays visible on web.
 
 ## `app_preview` screenshots hit Express :5000, not Metro :8081
-- A `screenshot` app_preview at a deep route like `/games` returns a plain
-  `Cannot GET /games` (Express 404) — the preview tool resolves to the backend
-  on :5000, not the Expo web bundle on :8081, so client-side Expo Router paths
-  don't exist there. It is a tooling/port artifact, NOT an app crash.
+- The preview tool resolves to the backend on :5000. In dev, Express proxies
+  everything to Metro EXCEPT the static-game prefixes in its `pathFilter`
+  (`/api`, `/game`, `/arcade`, `/flappy`, …), so deep Expo Router routes DO
+  normally render through :5000.
+- A plain `Cannot GET /<route>` therefore means the route name collides with a
+  pathFilter exclusion prefix (e.g. `/game-history` was swallowed by the old
+  `startsWith('/game')` exclusion). Fix the filter to exact-segment matching
+  (`pathname !== '/game' && !startsWith('/game/')`), don't rename the route.
 - Cheap alternative verification when you can't screenshot: after touching a
   screen, a matching deprecation warning in the browser console (e.g.
   `"textShadow*" style props are deprecated`) proves that screen's styles

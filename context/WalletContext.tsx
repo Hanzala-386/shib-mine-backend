@@ -7,6 +7,7 @@ import { pb } from '@/lib/pocketbase';
 import { notifyWithdrawalCancelled } from '@/lib/notifications';
 import { lockedBalanceForVipLevel, availableBalanceAfterVipLock, normalizeVipLevel } from '@shared/vip';
 import { ticketsToShib, validateRedeem } from '@shared/gamehub';
+import { logGameHistory } from '@/lib/gameHistory';
 
 export interface WithdrawalRecord {
   id: string;
@@ -350,7 +351,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const data: any = await res.json().catch(() => ({}));
       await refreshBalance();
       await fetchWalletData();
-      return { success: true, shib: typeof data?.shib === 'number' ? data.shib : ticketsToShib(tickets) };
+      const shibOut = typeof data?.shib === 'number' ? data.shib : ticketsToShib(tickets);
+      logGameHistory({ game: 'Redemption Center', outcome: 'redeem', tokensLost: tickets, shibWon: shibOut });
+      return { success: true, shib: shibOut };
     } catch {
       // PB SDK fallback — credit the redeemed SHIB straight to the WALLET BALANCE.
       // Redemption tops up the active balance (shib_balance); it does NOT create a
@@ -383,6 +386,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
         await refreshBalance();
         await fetchWalletData();
+        logGameHistory({ game: 'Redemption Center', outcome: 'redeem', tokensLost: tickets, shibWon: shib });
         return { success: true, shib };
       } catch (e: any) {
         return { success: false, error: e?.message ?? 'Redemption failed' };

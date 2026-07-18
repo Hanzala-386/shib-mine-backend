@@ -1,7 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Pressable, Platform,
-  Animated as RNAnimated,
+  Animated as RNAnimated, Modal, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -23,36 +23,95 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function NotifItem({ item, isUnread }: { item: AppNotification; isUnread: boolean }) {
+function NotifItem({ item, isUnread, onPress }: { item: AppNotification; isUnread: boolean; onPress: (n: AppNotification) => void }) {
   const isGlobal = item.type === 'global';
   const iconColor = isGlobal ? Colors.gold : Colors.neonOrange;
   const iconBg    = isGlobal ? 'rgba(244,196,48,0.12)' : 'rgba(255,107,0,0.12)';
 
   return (
-    <Animated.View entering={FadeInDown.springify()} style={[styles.item, isUnread && styles.itemUnread]}>
-      {isUnread && <View style={styles.unreadDot} />}
-      <View style={[styles.iconWrap, { backgroundColor: iconBg }]}>
-        <Ionicons name={isGlobal ? 'megaphone' : 'person-circle'} size={20} color={iconColor} />
-      </View>
-      <View style={styles.itemBody}>
-        <View style={styles.topRow}>
-          <Text style={styles.itemTitle} numberOfLines={1}>{item.title}</Text>
-          <Text style={styles.itemTime}>{timeAgo(item.created)}</Text>
+    <Animated.View entering={FadeInDown.springify()}>
+      <Pressable
+        onPress={() => onPress(item)}
+        style={({ pressed }) => [styles.item, isUnread && styles.itemUnread, pressed && { opacity: 0.8 }]}
+        testID={`notif-${item.id}`}
+      >
+        {isUnread && <View style={styles.unreadDot} />}
+        <View style={[styles.iconWrap, { backgroundColor: iconBg }]}>
+          <Ionicons name={isGlobal ? 'megaphone' : 'person-circle'} size={20} color={iconColor} />
         </View>
-        <Text style={styles.itemMsg} numberOfLines={4}>{item.message}</Text>
-        <View style={[styles.badge, { backgroundColor: isGlobal ? 'rgba(244,196,48,0.1)' : 'rgba(255,107,0,0.1)' }]}>
-          <Text style={[styles.badgeText, { color: iconColor }]}>
-            {isGlobal ? 'Broadcast' : 'Personal'}
-          </Text>
+        <View style={styles.itemBody}>
+          <View style={styles.topRow}>
+            <Text style={styles.itemTitle} numberOfLines={1}>{item.title}</Text>
+            <Text style={styles.itemTime}>{timeAgo(item.created)}</Text>
+          </View>
+          <Text style={styles.itemMsg} numberOfLines={4}>{item.message}</Text>
+          <View style={styles.readMoreRow}>
+            <View style={[styles.badge, { backgroundColor: isGlobal ? 'rgba(244,196,48,0.1)' : 'rgba(255,107,0,0.1)' }]}>
+              <Text style={[styles.badgeText, { color: iconColor }]}>
+                {isGlobal ? 'Broadcast' : 'Personal'}
+              </Text>
+            </View>
+            <View style={styles.readMoreHint}>
+              <Text style={styles.readMoreText}>Tap to read</Text>
+              <Ionicons name="chevron-forward" size={12} color={Colors.textMuted} />
+            </View>
+          </View>
         </View>
-      </View>
+      </Pressable>
     </Animated.View>
+  );
+}
+
+/** Full-screen reader: the complete notification text, scrollable end-to-end. */
+function NotifDetailModal({ notif, onClose }: { notif: AppNotification | null; onClose: () => void }) {
+  const insets = useSafeAreaInsets();
+  const isGlobal = notif?.type === 'global';
+  const iconColor = isGlobal ? Colors.gold : Colors.neonOrange;
+
+  return (
+    <Modal visible={!!notif} animationType="slide" onRequestClose={onClose}>
+      <View style={[styles.detailContainer, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 10) }]}>
+        <LinearGradient
+          colors={['rgba(244,196,48,0.08)', 'transparent']}
+          style={StyleSheet.absoluteFill}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 0.4 }}
+        />
+        <View style={styles.detailHeader}>
+          <Pressable onPress={onClose} style={styles.backBtn} testID="notif-detail-close">
+            <Ionicons name="close" size={22} color={Colors.textPrimary} />
+          </Pressable>
+          <Text style={styles.headerTitle}>Notification</Text>
+          <View style={{ width: 40 }} />
+        </View>
+        {notif && (
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={[styles.detailBody, { paddingBottom: insets.bottom + 48 }]}
+            showsVerticalScrollIndicator
+          >
+            <View style={[styles.iconWrap, { backgroundColor: isGlobal ? 'rgba(244,196,48,0.12)' : 'rgba(255,107,0,0.12)', width: 56, height: 56, borderRadius: 16 }]}>
+              <Ionicons name={isGlobal ? 'megaphone' : 'person-circle'} size={26} color={iconColor} />
+            </View>
+            <Text style={styles.detailTitle}>{notif.title}</Text>
+            <View style={styles.detailMetaRow}>
+              <View style={[styles.badge, { backgroundColor: isGlobal ? 'rgba(244,196,48,0.1)' : 'rgba(255,107,0,0.1)' }]}>
+                <Text style={[styles.badgeText, { color: iconColor }]}>{isGlobal ? 'Broadcast' : 'Personal'}</Text>
+              </View>
+              <Text style={styles.itemTime}>{notif.created ? timeAgo(notif.created) : ''}</Text>
+            </View>
+            <Text style={styles.detailMessage} selectable>{notif.message}</Text>
+          </ScrollView>
+        )}
+      </View>
+    </Modal>
   );
 }
 
 export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
   const { notifications, markAllRead, unreadCount, isLoading } = useNotifications();
+  const [selected, setSelected] = useState<AppNotification | null>(null);
 
   const snapshotUnread = useRef(new Set<string>());
 
@@ -110,9 +169,11 @@ export default function NotificationsScreen() {
           </View>
         }
         renderItem={({ item }) => (
-          <NotifItem item={item} isUnread={false} />
+          <NotifItem item={item} isUnread={false} onPress={setSelected} />
         )}
       />
+
+      <NotifDetailModal notif={selected} onClose={() => setSelected(null)} />
     </View>
   );
 }
@@ -176,6 +237,21 @@ const styles = StyleSheet.create({
   itemMsg: { fontFamily: 'Inter_400Regular', fontSize: 13, color: Colors.textSecondary, lineHeight: 19 },
   badge: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 },
   badgeText: { fontFamily: 'Inter_600SemiBold', fontSize: 10 },
+
+  readMoreRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  readMoreHint: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  readMoreText: { fontFamily: 'Inter_400Regular', fontSize: 11, color: Colors.textMuted },
+
+  detailContainer: { flex: 1, backgroundColor: Colors.darkBg },
+  detailHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingBottom: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.darkBorder,
+  },
+  detailBody: { paddingHorizontal: 24, paddingTop: 24, gap: 14 },
+  detailTitle: { fontFamily: 'Inter_700Bold', fontSize: 22, color: Colors.textPrimary, lineHeight: 30 },
+  detailMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  detailMessage: { fontFamily: 'Inter_400Regular', fontSize: 15, color: Colors.textSecondary, lineHeight: 24 },
 
   empty: { alignItems: 'center', paddingTop: 80, gap: 12 },
   emptyIconWrap: {

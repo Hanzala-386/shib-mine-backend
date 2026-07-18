@@ -102,6 +102,7 @@ function RootLayoutNav() {
         <Stack.Screen name="hub/arcade-lobby" />
         <Stack.Screen name="hub/arcade-match" options={{ gestureEnabled: false }} />
         <Stack.Screen name="redeem" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
+        <Stack.Screen name="game-history" />
       </Stack>
       <TermsGateModal />
       {/* Announcement banner — resolved at boot; mounted on top from the first frame */}

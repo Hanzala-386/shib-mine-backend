@@ -48,10 +48,7 @@
   } catch (e) { /* very old WebView — game falls back to the real dpr */ }
 
   /* ── 2. Adaptive render-scale ladder ───────────────────────────────────── */
-  var LADDER = [1]; /* C3 games: STATIC dpr cap only — no dynamic stepping in v1.
-                     The C3 runtime owns its canvas sizing; the capped
-                     devicePixelRatio getter (re-read by scripts/main.js on
-                     every resize) is the whole resolution story here. */
+  var LADDER = [1, 0.75, 0.5];
   var DOWN_FPS = 30, UP_FPS = 50;
   var DOWN_HOLD_MS = 2000, UP_HOLD_MS = 10000;
   var idx = 0;
@@ -164,7 +161,24 @@
   /* ══ GAME-SPECIFIC GLUE (Construct 3 runtime) ═══════════════════════ */
 
   // Gameplay-active gate: the game's *-arcade.js adapter sets window.__c3Active
-  // every C3 tick (Game layout + not game-over). No __perfApplyScale — the
-  // ladder is disabled for C3 (static dpr cap only).
+  // every C3 tick (Game layout + not game-over).
   window.__perfActive = function () { return window.__c3Active === true; };
+
+  // Dynamic resolution for C3: the runtime owns its canvas sizing, but it
+  // re-reads window.devicePixelRatio inside its resize handlers. So we fold the
+  // ladder scale INTO the dpr getter (capped dpr × __renderScale) and apply a
+  // scale step by dispatching a synthetic window resize — C3 then rebuilds its
+  // backing store at the reduced density. CSS layout size is untouched, and C3
+  // maps pointer input from CSS coordinates, so touch stays pixel-accurate at
+  // every scale step.
+  try {
+    Object.defineProperty(window, 'devicePixelRatio', {
+      get: function () { return cappedDpr * (window.__renderScale || 1); },
+      configurable: true,
+    });
+  } catch (e) { /* old WebView: getter stays at the plain cap; ladder no-ops */ }
+
+  window.__perfApplyScale = function () {
+    try { window.dispatchEvent(new Event('resize')); } catch (e) { /* noop */ }
+  };
 })();
