@@ -52,19 +52,19 @@ title = "Flappy webcod.in update (arcade-sdk.js + assets/script.js)"
 id = "ep_I_rFVESsGEkcm4tM1I"
 uri = "file://dist/flappy-arcade.zip"
 type = "unspecified"
-title = "Flappy Bounce — upload to webcod.in/flappy/"
+title = "Flappy Bounce — upload to /flappy/"
 
 [[outputs]]
 id = "ZxaZp96DYG3wv4AgeJocK"
 uri = "file://dist/fruitcut-arcade.zip"
 type = "unspecified"
-title = "Fruit Cut — upload to webcod.in/fruitcut/"
+title = "Fruit Cut — upload to /fruitcut/"
 
 [[outputs]]
 id = "1OFy91d1UMdDKTt1QX8fQ"
 uri = "file://dist/stack-arcade.zip"
 type = "unspecified"
-title = "Tower Stack — upload to webcod.in/stack/"
+title = "Tower Stack — upload to /stack/"
 
 [[outputs]]
 id = "VE3YejJOp6O8FpTedkv3g"
@@ -94,4 +94,16 @@ title = "user_id populated in game_score (production, live)"
 id = "v1bsfphhd1RioUPLLe3y6"
 uri = "file://dist/color-arcade.zip"
 type = "unspecified"
-title = "Color Rush — updated game (upload to webcod.in /color/)"
+title = "Color Rush — upload to /color/"
+
+[[outputs]]
+id = "PlnLE-Xkox9z8V4X5rSfe"
+uri = "file://dist/2048-arcade.zip"
+type = "unspecified"
+title = "2048 — upload to /2048/"
+
+[[outputs]]
+id = "vbMlEWkDhK6jh3g6myr2Y"
+uri = "file://dist/iceblock-arcade.zip"
+type = "unspecified"
+title = "Ice Block — upload to /iceblock/"
