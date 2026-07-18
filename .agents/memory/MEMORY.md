@@ -22,3 +22,4 @@
 - [KYC gating on deep-link routes](kyc-gating-deep-links.md) — gate EVERY deep-linkable route; clear UI gates when async auth hydrates (else latch-open bug); LATCH money-path gates so re-hydration never kills a live socket.
 - [Workflow log snapshots](workflow-log-snapshots.md) — /tmp/logs files are per-refresh snapshots, never live tails; loop refresh_all_logs to await boot log lines (PB init chain ~60-90s).
 - [Referral commission pipeline](referral-commission-pipeline.md) — referred_by is usually a record ID not a code; code-only lookups pay nothing; cross-user reads need LIST filter, not getOne.
+- [Telegram webhook ownership](telegram-webhook-ownership.md) — prod must own the bot webhook (dev domain sleeps → 404 → silent bot); host missing bot-token env silently discards updates (secret mismatch); probe via signed fake update + PB row check.

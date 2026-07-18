@@ -1223,12 +1223,22 @@ async function ensureTelegramVerificationsCollection() {
   registerTelegramWebhook().catch((e) => console.warn("[telegram] webhook registration failed:", e.message));
 }
 
-// Points the bot's webhook at THIS server. Dev (Replit) and prod (VPS) share
-// one bot — whichever server booted LAST owns the webhook. After a VPS
-// redeploy/restart the prod server takes it back automatically.
+// Points the bot's webhook at THIS server. Dev (Replit) and prod share one
+// bot — whichever server registers LAST owns the webhook. PROD must own it:
+// the Replit dev domain sleeps when the workspace is idle, so a dev-owned
+// webhook 404s every real user attempt. Dev therefore NEVER registers unless
+// explicitly opted in via TELEGRAM_DEV_WEBHOOK=1 (or TELEGRAM_WEBHOOK_BASE).
 async function registerTelegramWebhook() {
   if (!TELEGRAM_BOT_TOKEN) {
     console.warn("[telegram] TELEGRAM_BOT_TOKEN not set — webhook registration skipped, phone verification disabled");
+    return;
+  }
+  if (
+    process.env.REPLIT_DEV_DOMAIN &&
+    !process.env.TELEGRAM_WEBHOOK_BASE &&
+    process.env.TELEGRAM_DEV_WEBHOOK !== "1"
+  ) {
+    console.log("[telegram] dev sandbox — webhook registration skipped (prod owns the webhook; set TELEGRAM_DEV_WEBHOOK=1 to test locally)");
     return;
   }
   const base =
