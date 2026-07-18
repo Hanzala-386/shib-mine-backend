@@ -194,6 +194,13 @@ export const ARCADE_GAME_LIST: GameSpec[] = Object.values(ARCADE_GAMES);
  * so a dropped or idle player can never escrow both stakes forever. */
 export const ARCADE_GRACE_SECONDS = 30;             // disconnect grace before forfeit
 export const ARCADE_MAX_MATCH_MS = 10 * 60 * 1000;  // hard lifetime cap → settle by current scores
+/* Idle-lock while the opponent is FINISHED and waiting: once one seat is locked,
+ * the still-alive seat must keep making score progress. If it goes this long with
+ * zero accepted score increases (e.g. app backgrounded but socket still open),
+ * it is locked at its current score and the match settles by comparison — the
+ * finished player is never stuck on "Waiting for opponent" until the 10-min cap.
+ * Generous enough for think-pauses in 2048; reset on every accepted increment. */
+export const ARCADE_WAITING_IDLE_MS = 45 * 1000;
 
 /* ── WebSocket protocol (RN client ↔ server) ───────────────────────────────
  * The RN app owns the socket and holds the auth token; the WebView game only

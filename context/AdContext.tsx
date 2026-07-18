@@ -17,7 +17,7 @@ import {
   RewardedAdEventType,
   isAdMobAvailable,
 } from '@/lib/admob';
-import { ADMOB_TEST_IDS } from '@/lib/AdService';
+import { ADMOB_AD_UNIT_IDS } from '@/lib/AdService';
 
 /* ─── Types ─────────────────────────────────────────────────────────────── */
 export interface AdSettings {
@@ -60,7 +60,7 @@ const AdContext = createContext<AdContextValue>({
 
 export function useAds() { return useContext(AdContext); }
 
-/* ─── Provider — AdMob ONLY (official Google TEST unit IDs) ─────────────── */
+/* ─── Provider — AdMob ONLY (Android: LIVE unit IDs; iOS: Google test IDs) ── */
 export function AdProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<AdSettings>(DEFAULT_SETTINGS);
   const [sdkReady, setSdkReady] = useState(false);
@@ -122,8 +122,8 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
       .then(() => { console.log('[AdContext] Google Mobile Ads SDK initialized'); setSdkReady(true); })
       .catch((e: Error) => { console.warn('[AdContext] SDK init failed:', e.message); setSdkReady(true); });
 
-    // Interstitial — official Google TEST unit ID
-    const inter = InterstitialAd.createForAdRequest(ADMOB_TEST_IDS.interstitial, {
+    // Interstitial — unit ID from ADMOB_AD_UNIT_IDS (live on Android, test on iOS)
+    const inter = InterstitialAd.createForAdRequest(ADMOB_AD_UNIT_IDS.interstitial, {
       requestNonPersonalizedAdsOnly: true,
     });
     interRef.current = inter;
@@ -149,8 +149,8 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
     }));
     try { inter.load(); } catch {}
 
-    // Rewarded — official Google TEST unit ID
-    const rew = RewardedAd.createForAdRequest(ADMOB_TEST_IDS.rewarded, {
+    // Rewarded — unit ID from ADMOB_AD_UNIT_IDS (live on Android, test on iOS)
+    const rew = RewardedAd.createForAdRequest(ADMOB_AD_UNIT_IDS.rewarded, {
       requestNonPersonalizedAdsOnly: true,
     });
     rewRef.current = rew;

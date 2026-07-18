@@ -355,42 +355,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       logGameHistory({ game: 'Redemption Center', outcome: 'redeem', tokensLost: tickets, shibWon: shibOut });
       return { success: true, shib: shibOut };
     } catch {
-      // PB SDK fallback — credit the redeemed SHIB straight to the WALLET BALANCE.
-      // Redemption tops up the active balance (shib_balance); it does NOT create a
-      // withdrawal. The user requests a withdrawal from their balance separately.
-      try {
-        const userRec = await pb.collection('users').getOne(pbId, { fields: 'id,hit_tickets' });
-        const currentTickets = Number(userRec.hit_tickets) || 0;
-
-        // Re-validate against the authoritative balance from PocketBase.
-        const serverCheck = validateRedeem(tickets, currentTickets);
-        if (!serverCheck.ok) return { success: false, error: serverCheck.error };
-
-        const shib = ticketsToShib(tickets);
-
-        // Single atomic PB write: debit Hit Tickets + credit the SHIB wallet balance
-        // together, so a concurrent mining claim can't clobber the balance.
-        const updated = await pb.collection('users').update(pbId, {
-          'hit_tickets-': tickets,
-          'shib_balance+': shib,
-        });
-        // TOCTOU guard: if a concurrent redeem drove tickets below zero, reverse this
-        // write so a stale-read double-redeem can never inflate the SHIB balance.
-        if (Number(updated.hit_tickets) < 0) {
-          await pb.collection('users').update(pbId, {
-            'hit_tickets+': tickets,
-            'shib_balance-': shib,
-          }).catch(() => {});
-          return { success: false, error: 'Redemption conflict, please retry' };
-        }
-
-        await refreshBalance();
-        await fetchWalletData();
-        logGameHistory({ game: 'Redemption Center', outcome: 'redeem', tokensLost: tickets, shibWon: shib });
-        return { success: true, shib };
-      } catch (e: any) {
-        return { success: false, error: e?.message ?? 'Redemption failed' };
-      }
+      // NO client-side PB fallback for redemption. Hit Tickets are guarded by the
+      // users updateRule (`hit_tickets:isset = false`) so ONLY the server (admin
+      // token) can move them — the same guard that stops a cheater from minting
+      // tickets with their own PB token also blocks a client-side debit here.
+      // Redeem is therefore server-only: if the backend is unreachable, fail
+      // closed and let the user retry (tickets are untouched — nothing was sent).
+      return {
+        success: false,
+        error: 'Redemption is temporarily unavailable. Please check your connection and try again.',
+      };
     }
   }
 

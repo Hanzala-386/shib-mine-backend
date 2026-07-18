@@ -36,7 +36,7 @@ import {
   pbGet, pbPost, pbPatchChecked, pbDeleteChecked,
 } from './gamehub';
 import {
-  ARCADE_TIERS, ARCADE_GRACE_SECONDS, ARCADE_MAX_MATCH_MS,
+  ARCADE_TIERS, ARCADE_GRACE_SECONDS, ARCADE_MAX_MATCH_MS, ARCADE_WAITING_IDLE_MS,
   computePoolSettlement, getGameSpec,
   type ArcadeClientMsg, type ArcadeServerMsg, type ArcadeEndReason,
   type Seat, type GameSpec,
@@ -190,6 +190,7 @@ interface ArcadeMatch {
   startedAt: number;
   graceTimer: Partial<Record<Seat, ReturnType<typeof setTimeout>>>;
   afkTimer: Partial<Record<Seat, ReturnType<typeof setTimeout>>>;   // TAP-TO-START AFK forfeit (per seat)
+  idleTimer: Partial<Record<Seat, ReturnType<typeof setTimeout>>>;  // waiting-idle lock (armed when opponent is locked)
   lifetimeTimer: ReturnType<typeof setTimeout> | null;
 }
 interface QueueEntry { ws: WebSocket; pbId: string; name: string; gameId: string; tier: number }
@@ -269,19 +270,35 @@ function acceptScore(m: ArcadeMatch, p: ArcadePlayer, raw: number): number {
 const readyAfkMs = (spec: GameSpec): number =>
   (Number(spec.readyAfkSeconds) > 0 ? Number(spec.readyAfkSeconds) : 45) * 1000;
 
-function forfeitSeat(m: ArcadeMatch, seat: Seat): void {
+/** Lock a seat at its SERVER-known score — NOT a pool forfeit: an earned lead still
+ *  wins. Notifies the opponent, settles if terminal, and otherwise arms the
+ *  waiting-idle clock on the one seat still alive so the locked player is never
+ *  stuck on "Waiting for opponent" until the 10-minute lifetime cap. */
+function lockSeat(m: ArcadeMatch, seat: Seat): void {
   if (m.settled) return;
   const p = m.players[seat];
   if (p.locked) return;
-  const t = m.afkTimer[seat];
-  if (t) { clearTimeout(t); delete m.afkTimer[seat]; }
-  // Lock the idle seat at its current score — NOT a pool forfeit: an opponent who
-  // also never engaged still draws (both locked at 0 → refund), an engaged one wins.
+  const at = m.afkTimer[seat]; if (at) { clearTimeout(at); delete m.afkTimer[seat]; }
+  const it = m.idleTimer[seat]; if (it) { clearTimeout(it); delete m.idleTimer[seat]; }
   p.alive = false;
   p.locked = true;
   const opp = m.players[other(seat)];
   if (!opp.locked) send(opp.ws, { type: 'OPPONENT_OUT', matchId: m.id, score: p.score });
   checkSettlement(m);
+  if (!m.settled) armIdleLock(m, other(seat));
+}
+
+/** (Re)arm the waiting-idle clock on the only still-alive seat. handleScore resets
+ *  it on every ACCEPTED increment; expiry locks the seat at its current score, so a
+ *  backgrounded app with a still-open socket resolves within ARCADE_WAITING_IDLE_MS. */
+function armIdleLock(m: ArcadeMatch, seat: Seat): void {
+  if (m.settled) return;
+  if (m.players[seat].locked) return;
+  const prev = m.idleTimer[seat]; if (prev) clearTimeout(prev);
+  m.idleTimer[seat] = setTimeout(() => {
+    delete m.idleTimer[seat];
+    lockSeat(m, seat);
+  }, ARCADE_WAITING_IDLE_MS);
 }
 
 /* ── Settlement (latch `settled` BEFORE the first await — money invariant) ── */
@@ -289,6 +306,7 @@ function clearMatchTimers(m: ArcadeMatch): void {
   for (const s of ['A', 'B'] as Seat[]) {
     const t = m.graceTimer[s]; if (t) { clearTimeout(t); delete m.graceTimer[s]; }
     const a = m.afkTimer[s]; if (a) { clearTimeout(a); delete m.afkTimer[s]; }
+    const i = m.idleTimer[s]; if (i) { clearTimeout(i); delete m.idleTimer[s]; }
   }
   if (m.lifetimeTimer) { clearTimeout(m.lifetimeTimer); m.lifetimeTimer = null; }
 }
@@ -481,6 +499,7 @@ async function createMatch(
     startedAt: Date.now(),
     graceTimer: {},
     afkTimer: {},
+    idleTimer: {},
     lifetimeTimer: null,
   };
   matches.set(id, m);
@@ -496,7 +515,7 @@ async function createMatch(
 
   // AFK backstop: auto-forfeit any seat that never engages within the ready window.
   (['A', 'B'] as Seat[]).forEach((s) => {
-    m.afkTimer[s] = setTimeout(() => forfeitSeat(m, s), readyAfkMs(spec));
+    m.afkTimer[s] = setTimeout(() => lockSeat(m, s), readyAfkMs(spec));
   });
 }
 
@@ -518,7 +537,10 @@ function handleScore(ws: WebSocket, msg: Extract<ArcadeClientMsg, { type: 'SCORE
   const at = m.afkTimer[seat];
   if (at) { clearTimeout(at); delete m.afkTimer[seat]; } // engaged → cancel AFK forfeit
 
+  const before = p.score;
   const accepted = acceptScore(m, p, msg.score);
+  // Real progress while the opponent waits → push the waiting-idle deadline back.
+  if (accepted > before && m.idleTimer[seat]) armIdleLock(m, seat);
   send(m.players[other(seat)].ws, { type: 'OPPONENT_SCORE', matchId: m.id, score: accepted });
   checkSettlement(m);
 }
@@ -531,18 +553,10 @@ function handlePlayerOut(ws: WebSocket, msg: Extract<ArcadeClientMsg, { type: 'P
   const p = m.players[seat];
   if (p.locked) return;
 
-  const at = m.afkTimer[seat];
-  if (at) { clearTimeout(at); delete m.afkTimer[seat]; } // finished / forfeited → cancel AFK timer
-
   // The locked score is the SERVER-tracked score (validated increments), never the
   // client's out-message number — that message is only a signal that the run ended.
   acceptScore(m, p, msg.score); // absorb a possible final +1
-  p.alive = false;
-  p.locked = true;
-
-  const opp = m.players[other(seat)];
-  if (!opp.locked) send(opp.ws, { type: 'OPPONENT_OUT', matchId: m.id, score: p.score });
-  checkSettlement(m);
+  lockSeat(m, seat);
 }
 
 /* ── Reconnect / disconnect ───────────────────────────────────────────────── */
@@ -566,8 +580,14 @@ async function handleResume(ws: WebSocket, msg: Extract<ArcadeClientMsg, { type:
 
   const opp = m.players[other(seat)];
   send(ws, { type: 'MATCH_START', matchId: m.id, gameId: m.gameId, tier: m.tier, youAre: seat, opponent: { name: opp.name }, lives: m.spec.lives, startAt: Date.now() });
-  if (opp.locked) send(ws, { type: 'OPPONENT_OUT', matchId: m.id, score: opp.score });
-  else send(ws, { type: 'OPPONENT_SCORE', matchId: m.id, score: opp.score });
+  if (opp.locked) {
+    send(ws, { type: 'OPPONENT_OUT', matchId: m.id, score: opp.score });
+    // Opponent finished while we were away → this seat is now the only one alive;
+    // it must make progress or be idle-locked (never leave the finished player hanging).
+    armIdleLock(m, seat);
+  } else {
+    send(ws, { type: 'OPPONENT_SCORE', matchId: m.id, score: opp.score });
+  }
   send(opp.ws, { type: 'OPPONENT_BACK', matchId: m.id });
 }
 
@@ -584,17 +604,22 @@ function handleDisconnect(ws: WebSocket): void {
   p.ws = null;
   if (p.locked) return; // already resolved — result credits server-side regardless
 
-  send(m.players[other(seat)].ws, { type: 'OPPONENT_LEFT', matchId: m.id, graceMs: ARCADE_GRACE_SECONDS * 1000 });
+  // Opponent already FINISHED and is waiting on this player: don't hold the winner
+  // hostage to the 30s reconnect grace — lock the leaver at the server-known score
+  // NOW and settle instantly. This is NOT a forfeit: an earned lead still wins, so
+  // a leader whose battery dies is still credited; but the waiting player gets
+  // their result (and tickets, if they won) the moment the opponent drops.
+  const oppNow = m.players[other(seat)];
+  if (oppNow.locked) { lockSeat(m, seat); return; }
+
+  // Both still mid-run → keep the reconnect grace (protects honest network blips).
+  send(oppNow.ws, { type: 'OPPONENT_LEFT', matchId: m.id, graceMs: ARCADE_GRACE_SECONDS * 1000 });
   const t = setTimeout(() => {
     if (m.settled) return;
     const pp = m.players[seat];
     if (pp.connected || pp.locked) return; // reconnected or finished during grace
     // Lock the run at the last server-known score (NOT a forfeit — a lead still wins).
-    pp.alive = false;
-    pp.locked = true;
-    const opp = m.players[other(seat)];
-    if (!opp.locked) send(opp.ws, { type: 'OPPONENT_OUT', matchId: m.id, score: pp.score });
-    checkSettlement(m);
+    lockSeat(m, seat);
   }, ARCADE_GRACE_SECONDS * 1000);
   m.graceTimer[seat] = t;
 }

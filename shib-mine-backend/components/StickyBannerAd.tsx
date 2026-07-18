@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, Platform, AppState } from 'react-native';
 import { useIsFocused } from '@react-navigation/native';
 import { BannerAd, BannerAdSize, isAdMobAvailable } from '@/lib/admob';
-import { ADMOB_TEST_IDS } from '@/lib/AdService';
+import { ADMOB_AD_UNIT_IDS } from '@/lib/AdService';
 
 export const BANNER_HEIGHT = 50;
 
@@ -35,7 +35,7 @@ function useBannerVisible(): boolean {
   return isFocused && appActive;
 }
 
-/* ── The actual AdMob banner (official Google TEST unit ID) ─────────────── */
+/* ── The actual AdMob banner (unit ID from ADMOB_AD_UNIT_IDS) ────────────── */
 function AdMobBanner() {
   const visible = useBannerVisible();
   const [refreshKey, setRefreshKey] = useState(0);
@@ -52,7 +52,7 @@ function AdMobBanner() {
   return (
     <BannerAd
       key={refreshKey}
-      unitId={ADMOB_TEST_IDS.banner}
+      unitId={ADMOB_AD_UNIT_IDS.banner}
       size={BannerAdSize.BANNER}
       requestOptions={{ requestNonPersonalizedAdsOnly: true }}
       onAdLoaded={() => console.log('[Banner/AdMob] Loaded')}

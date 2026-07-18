@@ -800,7 +800,11 @@ async function ensureCollectionRules() {
           " && @request.data.kyc_reject_reason:isset = false" +
           " && @request.data.submission_count:isset = false" +
           " && @request.data.wa_verified_phone:isset = false" +
-          " && @request.data.wa_verified_at:isset = false",
+          " && @request.data.wa_verified_at:isset = false" +
+          // Arcade Hit Tickets are SERVER-credited only (gamehub creditTickets via
+          // admin token) and SERVER-debited on redeem (/api/app/hub/redeem). With
+          // this guard a client PB token can never mint or move tickets directly.
+          " && @request.data.hit_tickets:isset = false",
         // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
         deleteRule: "@request.auth.id = id",
       }, token);
