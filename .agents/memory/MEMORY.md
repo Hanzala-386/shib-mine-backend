@@ -9,6 +9,7 @@
 - [Yodo1 MAS migration](yodo1-migration.md) — SUPERSEDED: Yodo1/Unity fully removed (Jul 2026); app is AdMob-only on Google TEST IDs; RNGMA expo plugin writes the manifest App ID.
 - [AdMob mediation config plugin](admob-mediation-plugin.md) — SUPERSEDED twice (mediation → Yodo1 → AdMob-only); keep only for Expo-54 gradle ground-truth + verify-without-CLI technique.
 - [PB admin-token route auth](pb-admin-token-routes.md) — admin-token /api/app/* routes bypass PB rules; money routes MUST verify caller token==pbId + TOCTOU-guard atomic debits; redeem tops up shib_balance, no withdrawal row.
+- [users updateRule guard list](users-updaterule-guards.md) — every server-stamped users field needs a `:isset = false` guard in the self-update rule or any authed client can forge it (bit us on phone verification).
 - [PB schema quirks](pb-schema-key-gotcha.md) — fields live under `col.schema` not `col.fields`; field TYPE change is forbidden (400) — convert via temp-field copy + delete-and-rename swap.
 - [Pool/Game-Hub money invariants](pool-hub-money-invariants.md) — atomic PB modifiers; checked pbHttp wrapper; settle-latch before first await; RESUME MATCH_FOUND must carry ballInHand.
 - [Replit firewall URLs break Railway npm ci](replit-firewall-lockfile-deploy.md) — package-lock resolved URLs can be package-firewall.replit.local so external hosts get ENOTFOUND; host-rewrite to registry.npmjs.org (integrity stays valid); Railway installs from the ROOT lockfile.
