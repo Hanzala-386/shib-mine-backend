@@ -1166,10 +1166,11 @@ async function ensureTelegramVerificationsCollection() {
     const token = await getAdminToken();
     const check = await pbGet("/api/collections/telegram_verifications");
     if (check.code) {
-      await pbHttp("POST", "/api/collections", {
+      // NOTE: This PB version uses the `schema` key (older API), not `fields`.
+      const created = await pbHttp("POST", "/api/collections", {
         name: "telegram_verifications",
         type: "base",
-        fields: [
+        schema: [
           { name: "token",      type: "text", required: true },
           { name: "user",       type: "text", required: true },
           { name: "phone",      type: "text", required: true },
@@ -1179,7 +1180,11 @@ async function ensureTelegramVerificationsCollection() {
         ],
         listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null,
       }, token);
-      console.log("[telegram] telegram_verifications collection created ✓");
+      if (created.code) {
+        console.warn("[telegram] collection create FAILED:", JSON.stringify(created).slice(0, 200));
+      } else {
+        console.log("[telegram] telegram_verifications collection created ✓");
+      }
     } else {
       console.log("[telegram] telegram_verifications ✓");
     }
