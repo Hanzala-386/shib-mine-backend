@@ -63,7 +63,7 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     // PvP is 1-life sudden death (server-authoritative; sent in MATCH_START).
     // Offline/practice mode keeps 3 lives client-side (see script.js MAX_LIVES).
     lives: 1,
-    maxScore: 9999,
+    maxScore: 999999,
     // Flappy spawns a scoring pipe roughly every ~1.5s and only ever scores +1.
     scoreDelta: { maxIncrement: 1, minIntervalMs: 1200 },
     timerSeconds: null,
@@ -76,7 +76,7 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     // Matches the game's native NUM_LIVES (3): a missed fruit costs a life,
     // slicing a bomb is an instant game over regardless of lives left.
     lives: 3,
-    maxScore: 99999,
+    maxScore: 999999,
     // Fruit waves launch every ~3s (up to 10 fruits at max difficulty); each fruit
     // scores 10–40 and combos add +10×n. The game adapter reports the CUMULATIVE
     // score throttled to one message per ~600ms, so with 500ms windows every
@@ -94,8 +94,9 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     // No lives concept — one collapse (or the 5:00 timer) ends the run.
     lives: 1,
     // A block lands every ~1–2s scoring ~+10 (with perfect-drop combo bonuses on
-    // top — live matches show ~7–10 pts/s honest pace), 999 is the ceiling.
-    maxScore: 999,
+    // top — live matches show ~7–10 pts/s honest pace). Uncapped by product
+    // decision (Jul 2026): the scoreDelta rate clamp is the cheat bound now.
+    maxScore: 999999,
     // Adapter reports the CUMULATIVE score throttled to one message per ~600ms
     // (same recipe as Fruit Cut). Real per-block gain is ~10 pts (NOT +1 — the
     // C3 template multiplies score_to_add), with combo spikes above that.
@@ -122,11 +123,12 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     path: '2048',
     // One board, no lives — the 5:00 match timer (client-enforced) ends the run.
     lives: 1,
-    // Honest 5-minute 2048 runs top out around ~5–7k; 20000 is a generous
-    // ceiling. Do NOT raise it: acceptScore never flags a drip at exactly the
-    // allowed rate, so maxScore is the only real cheat bound for a scripted
-    // client. A 99999 ceiling would let 1024/500ms bank 99999 in ~24s unflagged.
-    maxScore: 20000,
+    // Uncapped by product decision (Jul 2026) — scores must support arbitrary
+    // integers. NOTE the tradeoff: acceptScore never flags a drip at exactly
+    // the allowed rate, so with the ceiling gone the scoreDelta rate clamp
+    // (1024/500ms) is the only bound on a scripted client. Both seats face the
+    // same clamp and settlement is relative, so match fairness is preserved.
+    maxScore: 999999,
     // Merges can jump a lot in a single swipe (1024+1024 = +2048). The adapter
     // reports the CUMULATIVE score throttled to one message per ~600ms; the
     // clamp banks quiet windows (merges always follow non-scoring setup swipes)
@@ -148,8 +150,9 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     path: 'iceblock',
     // One board, no lives — the 5:00 match timer (client-enforced) ends the run.
     lives: 1,
-    // Line-clear puzzle; honest 5-minute runs stay well under 9999.
-    maxScore: 9999,
+    // Line-clear puzzle. Uncapped by product decision (Jul 2026); the
+    // scoreDelta rate clamp is the cheat bound.
+    maxScore: 999999,
     // Score jumps per line-clear / combo. Adapter reports CUMULATIVE score
     // throttled to ~600ms; 150/window with quiet-window banking covers a big
     // multi-line combo. (De-risk 150 with a practice run logging Score deltas.)
@@ -169,8 +172,9 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     path: 'color',
     // Sudden death — one wrong-colour collision ends the endless run.
     lives: 1,
-    // Endless +1-per-ball game; honest runs stay well under 5000 in a session.
-    maxScore: 5000,
+    // Endless +1-per-ball game. Uncapped by product decision (Jul 2026); the
+    // scoreDelta rate clamp is the cheat bound.
+    maxScore: 999999,
     // Scores +1 per same-colour ball collected, but balls arrive in clusters,
     // so 5/window (~10 pts/s budget vs ~2–3 honest) never clamps honest play
     // while still catching a scripted drip. Cumulative report throttled ~600ms.

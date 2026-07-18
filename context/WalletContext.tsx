@@ -7,7 +7,6 @@ import { pb } from '@/lib/pocketbase';
 import { notifyWithdrawalCancelled } from '@/lib/notifications';
 import { lockedBalanceForVipLevel, availableBalanceAfterVipLock, normalizeVipLevel } from '@shared/vip';
 import { ticketsToShib, validateRedeem } from '@shared/gamehub';
-import { logGameHistory } from '@/lib/gameHistory';
 
 export interface WithdrawalRecord {
   id: string;
@@ -352,7 +351,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       await refreshBalance();
       await fetchWalletData();
       const shibOut = typeof data?.shib === 'number' ? data.shib : ticketsToShib(tickets);
-      logGameHistory({ game: 'Redemption Center', outcome: 'redeem', tokensLost: tickets, shibWon: shibOut });
       return { success: true, shib: shibOut };
     } catch {
       // NO client-side PB fallback for redemption. Hit Tickets are guarded by the

@@ -12,7 +12,6 @@ import { useAuth } from '@/context/AuthContext';
 import { pb } from '@/lib/pocketbase';
 import { api } from '@/lib/api';
 import { getApiUrl } from '@/lib/query-client';
-import { logGameHistory } from '@/lib/gameHistory';
 import Constants from 'expo-constants';
 import Colors from '@/constants/colors';
 import { useAds } from '@/context/AdContext';
@@ -415,7 +414,6 @@ export default function SoloPlayScreen() {
         await refreshBalance();
         setEarned(pts);
         setPhase('reward');
-        logGameHistory({ game: 'Knife Hit', outcome: 'win', ptWon: pts });
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         if (pbIdRef.current) fetchGameData(pbIdRef.current);
       } catch {
@@ -453,7 +451,6 @@ export default function SoloPlayScreen() {
       await refreshBalance();
       setEarned(pts);
       setPhase('reward');
-      logGameHistory({ game: 'Knife Hit', outcome: 'win', ptWon: pts });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       if (pbId) fetchGameData(pbId);
     } catch {

@@ -1,9 +1,12 @@
 /* ────────────────────────────────────────────────────────────────────────────
  * Game History — cosmetic per-event feed backing the read-only Game History
  * screen. Rows live in the PB `game_history` collection (created server-side
- * on boot; rules: list/view/create scoped to the owning user, update/delete
- * locked → append-only). Writes are FIRE-AND-FORGET: history logging must
- * never block or fail a money flow, and no money logic ever reads this data.
+ * on boot; rules: list/view/create/delete scoped to the owning user, update
+ * locked). The screen shows ONLY multiplayer match results (win/loss/draw),
+ * kept as a rolling window of the newest 100 rows — after each new row the
+ * client prunes its own older rows. Writes are FIRE-AND-FORGET: history
+ * logging must never block or fail a money flow, and no money logic ever
+ * reads this data.
  * ──────────────────────────────────────────────────────────────────────────── */
 
 import { pb } from '@/lib/pocketbase';
@@ -35,10 +38,39 @@ export function gameDisplayName(gameId: string): string {
   return GAME_DISPLAY_NAMES[gameId] ?? gameId;
 }
 
+export const HISTORY_WINDOW = 100;
+
+/** PB filter for multiplayer match rows only (excludes legacy solo/redeem rows). */
+function matchFilter(pbId: string): string {
+  return `user = "${pbId}" && outcome != "redeem" && game != "Knife Hit"`;
+}
+
 /**
- * Append one history row for the signed-in user. Fire-and-forget: swallows
- * every error (offline, missing collection, auth expiry) — the surrounding
- * game/redeem flow must never be affected by history logging.
+ * Rolling-window prune: delete this user's match rows beyond the newest 100.
+ * Fire-and-forget; requires the self-scoped deleteRule on game_history.
+ */
+function pruneGameHistory(pbId: string): void {
+  pb.collection('game_history')
+    .getList(2, HISTORY_WINDOW, {
+      filter: matchFilter(pbId),
+      sort: '-created',
+      requestKey: null,
+    })
+    .then((res) =>
+      Promise.allSettled(
+        res.items.map((r: any) =>
+          pb.collection('game_history').delete(r.id, { requestKey: null })
+        )
+      )
+    )
+    .catch(() => {});
+}
+
+/**
+ * Append one history row for the signed-in user, then prune the rolling
+ * window. Fire-and-forget: swallows every error (offline, missing collection,
+ * auth expiry) — the surrounding game flow must never be affected by history
+ * logging.
  */
 export function logGameHistory(entry: {
   game: string;
@@ -59,14 +91,16 @@ export function logGameHistory(entry: {
       tokens_lost: Math.max(0, Math.floor(entry.tokensLost ?? 0)),
       pt_won: Math.max(0, Math.floor(entry.ptWon ?? 0)),
       shib_won: Math.max(0, entry.shibWon ?? 0),
-    }, { requestKey: null }).catch(() => {});
+    }, { requestKey: null })
+      .then(() => pruneGameHistory(pbId))
+      .catch(() => {});
   } catch {}
 }
 
-/** Newest-first history for the signed-in user (read-only screen data). */
-export async function fetchGameHistory(pbId: string, limit = 100): Promise<GameHistoryRecord[]> {
+/** Newest-first multiplayer match history (read-only screen data, max 100). */
+export async function fetchGameHistory(pbId: string, limit = HISTORY_WINDOW): Promise<GameHistoryRecord[]> {
   const res = await pb.collection('game_history').getList(1, limit, {
-    filter: `user = "${pbId}"`,
+    filter: matchFilter(pbId),
     sort: '-created',
     requestKey: null,
   });

@@ -1099,8 +1099,8 @@ async function ensureGameScoreCollection() {
 // One row per finished arcade match / solo claim / ticket redemption. Written
 // CLIENT-SIDE (fire-and-forget) so it works identically in dev and on the APK
 // (direct PB). Rows are display-only: no money logic ever reads this
-// collection. Rules make it append-only per user — users can list/create ONLY
-// their own rows and can never edit or delete them (read-only history).
+// collection. Rules: users can list/create/delete ONLY their own rows (delete
+// powers the client-side rolling-100 prune) and can never edit them.
 async function ensureGameHistoryCollection() {
   try {
     const token = await getAdminToken();
@@ -1109,7 +1109,9 @@ async function ensureGameHistoryCollection() {
       viewRule: 'user = @request.auth.id',
       createRule: '@request.auth.id != "" && user = @request.auth.id',
       updateRule: null,
-      deleteRule: null,
+      // Delete is self-scoped so the client can prune its own rolling-100
+      // match window (history is cosmetic — no money logic reads it).
+      deleteRule: 'user = @request.auth.id',
     };
     const check = await pbGet("/api/collections/game_history");
     if (!check.code) {

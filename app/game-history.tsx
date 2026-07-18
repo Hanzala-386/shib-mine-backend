@@ -1,8 +1,9 @@
 /* ────────────────────────────────────────────────────────────────────────────
- * Game History — READ-ONLY table of the user's game + redemption activity.
- * Columns: Sr | Game | Win/Loss | Tickets Won / Tokens Lost.
- * Data: PB `game_history` collection (append-only, user-scoped rules); rows are
- * written fire-and-forget at arcade settle / solo claim / ticket redeem time.
+ * Game History — READ-ONLY table of the user's MULTIPLAYER match results only
+ * (rolling window of the last 100 matches; solo games and redemptions are
+ * excluded). Columns: Sr | Game | Win/Loss | Tickets Won / Tokens Lost.
+ * Data: PB `game_history` collection (user-scoped rules); rows are written
+ * fire-and-forget at arcade match settle time and pruned client-side to 100.
  * ──────────────────────────────────────────────────────────────────────────── */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -116,6 +117,9 @@ export default function GameHistoryScreen() {
         <View style={styles.backBtn} />
       </View>
 
+      {/* Page heading */}
+      <Text style={styles.pageHeading} testID="history-heading">Last 100 Match Results</Text>
+
       {/* Table header */}
       <View style={styles.tableHead}>
         <Text style={[styles.headTxt, styles.cellSr]}>Sr</Text>
@@ -151,7 +155,7 @@ export default function GameHistoryScreen() {
                 color={Colors.textSecondary}
               />
               <Text style={styles.emptyTxt}>
-                {error ?? 'No games played yet.\nYour match results and redemptions will appear here.'}
+                {error ?? 'No matches played yet.\nYour last 100 multiplayer match results will appear here.'}
               </Text>
             </View>
           }
@@ -180,6 +184,15 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     textShadowColor: 'rgba(244,196,48,0.35)',
     textShadowRadius: 10,
+  },
+  pageHeading: {
+    color: Colors.gold,
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textAlign: 'center',
+    marginBottom: 10,
+    textTransform: 'uppercase',
   },
 
   tableHead: {
