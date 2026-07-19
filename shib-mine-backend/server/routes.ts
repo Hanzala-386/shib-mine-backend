@@ -35,10 +35,35 @@ import {
 } from "./networkGuard";
 
 // ─── Multer — memory storage for proof screenshot uploads ─────────────────
+// Upload policy: images only (JPG/PNG). Any other type (.php/.js/.html etc.)
+// is rejected in fileFilter; the route returns a clean 400 via req.fileRejected.
+const ALLOWED_UPLOAD_MIME = new Set(["image/jpeg", "image/png"]);
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
+  fileFilter: (req, file, cb) => {
+    if (!ALLOWED_UPLOAD_MIME.has((file.mimetype || "").toLowerCase())) {
+      (req as any).fileRejected = true;
+      return cb(null, false); // skip the file; handler responds 400
+    }
+    cb(null, true);
+  },
 });
+
+// ─── Input cleanup (email / display name) ─────────────────────────────────
+// Keep in sync with lib/sanitize.ts (client mirrors for direct-PB fallbacks).
+const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+function cleanEmail(raw: unknown): string | null {
+  const e = String(raw ?? "").trim().toLowerCase();
+  return e.length <= 254 && EMAIL_RE.test(e) ? e : null;
+}
+function cleanDisplayName(raw: unknown): string {
+  return String(raw ?? "")
+    .replace(/[\u0000-\u001F\u007F<>"'`\\]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40);
+}
 
 
 const PB_URL = "https://api.webcod.in";
@@ -2442,8 +2467,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
   app.post("/api/auth/request-delete-otp", async (req: Request, res: Response) => {
     try {
-      const { pbId, email } = req.body;
-      if (!pbId || !email) return res.status(400).json({ error: "pbId and email required" });
+      const { pbId } = req.body;
+      const email = cleanEmail(req.body.email);
+      if (!pbId || !email) return res.status(400).json({ error: "pbId and a valid email are required" });
 
       // Verify user exists
       const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
@@ -2733,10 +2759,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ── Auth sync ─────────────────────────────────────────────────────────────
   app.post("/api/app/auth/sync", async (req: Request, res: Response) => {
     try {
-      const { firebaseUid, email, displayName, referralCode, referredBy } =
-        req.body;
+      const { firebaseUid, referralCode, referredBy } = req.body;
+      // Input cleanup: normalize email + strip junk from display name before any DB use
+      const email = cleanEmail(req.body.email);
+      const displayName = cleanDisplayName(req.body.displayName);
       if (!firebaseUid || !email)
-        return res.status(400).json({ error: "firebaseUid and email required" });
+        return res.status(400).json({ error: "firebaseUid and a valid email are required" });
 
       // ── Fraud prevention: block deleted emails ──────────────────────────────
       const blocked = await isEmailBlacklisted(email);
@@ -2886,8 +2914,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ── Check if email exists in PocketBase (for Forgot Password validation) ─
   app.post("/api/app/auth/check-email", async (req: Request, res: Response) => {
     try {
-      const { email } = req.body;
-      if (!email) return res.status(400).json({ error: "email required" });
+      const email = cleanEmail(req.body.email);
+      if (!email) return res.status(400).json({ error: "A valid email is required" });
       const r = await pbGet(
         `/api/collections/users/records?filter=${encodeURIComponent(`email="${email}"`)}&perPage=1&fields=id,is_verified`,
       );
@@ -2905,9 +2933,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Finds or creates the PB user and marks is_verified: true.
   app.post("/api/app/auth/confirm-verified", async (req: Request, res: Response) => {
     try {
-      const { firebaseUid, email, displayName, referralCode, referredBy } = req.body;
+      const { firebaseUid, referralCode, referredBy } = req.body;
+      // Input cleanup: normalize email + strip junk from display name before any DB use
+      const email = cleanEmail(req.body.email);
+      const displayName = cleanDisplayName(req.body.displayName);
       if (!firebaseUid || !email)
-        return res.status(400).json({ error: "firebaseUid and email required" });
+        return res.status(400).json({ error: "firebaseUid and a valid email are required" });
 
       // ── Fraud prevention: block re-registration from a previously deleted email ──
       const confirmedBlocked = await isEmailBlacklisted(email);
@@ -5512,8 +5543,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { pbId, taskId } = req.body;
       if (!pbId || !taskId) return res.status(400).json({ error: "pbId and taskId required" });
 
+      if ((req as any).fileRejected) {
+        return res.status(400).json({ error: "Only JPG or PNG images are allowed." });
+      }
       if (!req.file) {
         return res.status(400).json({ error: "Proof screenshot is required — no file received by server. Please try again." });
+      }
+
+      // Magic-byte check — the declared MIME is client-controlled, so verify the
+      // actual bytes look like JPG (FF D8) or PNG (89 50 4E 47).
+      const buf = req.file.buffer;
+      const looksJpg = buf.length > 2 && buf[0] === 0xff && buf[1] === 0xd8;
+      const looksPng = buf.length > 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+      if (!looksJpg && !looksPng) {
+        return res.status(400).json({ error: "Only JPG or PNG images are allowed." });
       }
 
       const task = await pbGet(`/api/collections/tasks/records/${taskId}`);
@@ -5553,8 +5596,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       form.append("reward_type",  task.reward_type || clientType);
 
       if (req.file) {
+        // Never trust the client filename — generate a safe one from validated MIME.
+        const safeExt = req.file.mimetype === "image/png" ? "png" : "jpg";
+        const safeName = `proof_${String(pbId).replace(/[^a-zA-Z0-9_-]/g, "")}_${Date.now()}.${safeExt}`;
         const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "image/jpeg" });
-        form.append("proof_screenshot", blob, req.file.originalname || "proof.jpg");
+        form.append("proof_screenshot", blob, safeName);
       }
 
       const sub = await pbFetchMultipart("POST", "/api/collections/task_submissions/records", form);

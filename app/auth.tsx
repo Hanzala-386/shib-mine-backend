@@ -42,6 +42,7 @@ function getStrength(pw: string): Strength {
 
 function validateStrongPassword(pw: string): string | null {
   if (pw.length < 8)              return 'Password must be at least 8 characters.';
+  if (pw.length > 16)             return 'Password must be 16 characters or less.';
   if (!/[A-Z]/.test(pw))          return 'Add at least one uppercase letter (A-Z).';
   if (!/[a-z]/.test(pw))          return 'Add at least one lowercase letter (a-z).';
   if (!/[0-9]/.test(pw))          return 'Add at least one number (0-9).';
@@ -384,9 +385,10 @@ export default function AuthScreen() {
                   style={[styles.input, { flex: 1 }]}
                   value={password}
                   onChangeText={(v) => { setPassword(v); setErrorMsg(''); }}
-                  placeholder={mode === 'signup' ? '8+ chars, A-Z, 0-9, !@#' : '••••••••'}
+                  placeholder={mode === 'signup' ? '8-16 chars, A-Z, 0-9, !@#' : '••••••••'}
                   placeholderTextColor={Colors.textMuted}
                   secureTextEntry={!showPassword}
+                  maxLength={mode === 'signup' ? 16 : undefined}
                   testID="input-password"
                 />
                 <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
@@ -402,7 +404,7 @@ export default function AuthScreen() {
                 <InputField
                   icon="lock-closed-outline" label="Confirm Password"
                   value={confirmPassword} onChangeText={(v: string) => { setConfirmPassword(v); setErrorMsg(''); }}
-                  placeholder="••••••••" secureTextEntry={!showPassword} testID="input-confirm-password"
+                  placeholder="••••••••" secureTextEntry={!showPassword} maxLength={16} testID="input-confirm-password"
                 />
                 <InputField
                   icon="gift-outline" label="Referral Code (Optional)"

@@ -14,6 +14,7 @@ import {
 } from '@/lib/firebase';
 import { api, type PBUser } from '@/lib/api';
 import { pb, POCKETBASE_URL, processPendingReferralEarnings } from '@/lib/pocketbase';
+import { cleanEmail, cleanDisplayName } from '@/lib/sanitize';
 import { normalizeVipLevel } from '@shared/vip';
 import { normalizeKycStatus } from '@shared/kyc';
 
@@ -421,13 +422,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           try {
             const pass = pbPassword(fbUser.uid);
             const code = pending.referralCode || generateReferralCode();
+            // Input cleanup — mirrors server-side normalization (lib/sanitize.ts)
+            const emailClean = cleanEmail(fbUser.email) ?? (fbUser.email ?? '').trim().toLowerCase();
+            const nameClean  = cleanDisplayName(pending.displayName);
             const createdRecord = await pb.collection('users').create({
-              email:            fbUser.email ?? '',
+              email:            emailClean,
               password:         pass,
               passwordConfirm:  pass,
               emailVisibility:  false,
               firebase_uid:     fbUser.uid,
-              display_name:     pending.displayName || (fbUser.email ?? '').split('@')[0],
+              display_name:     nameClean || emailClean.split('@')[0],
               referral_code:    code,
               referred_by:      pending.referredBy || '',
               shib_balance:     100,

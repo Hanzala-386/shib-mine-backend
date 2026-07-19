@@ -326,6 +326,15 @@ export default function ProfileScreen() {
       const mimeType = asset.mimeType || 'image/jpeg';
       const ext      = (mimeType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
 
+      // Upload policy: only JPG/PNG images are accepted
+      const uriExt = (localUri.split('?')[0].split('.').pop() || '').toLowerCase();
+      const mimeOk = mimeType === 'image/jpeg' || mimeType === 'image/png';
+      const extOk  = !asset.mimeType && ['jpg', 'jpeg', 'png'].includes(uriExt);
+      if (!mimeOk && !extOk) {
+        Alert.alert('Unsupported Image', 'Only JPG or PNG images are allowed.');
+        return;
+      }
+
       // Show the picked image immediately
       setAvatarUri(localUri);
 
@@ -519,6 +528,10 @@ export default function ProfileScreen() {
     }
     if (newPw.length < 6) {
       Alert.alert('Too Short', 'New password must be at least 6 characters.');
+      return;
+    }
+    if (newPw.length > 16) {
+      Alert.alert('Too Long', 'Password must be 16 characters or less.');
       return;
     }
     if (!firebaseUser || !user?.email) {
@@ -1064,7 +1077,8 @@ export default function ProfileScreen() {
               value={newPw}
               onChangeText={setNewPw}
               secureTextEntry
-              placeholder="At least 6 characters"
+              maxLength={16}
+              placeholder="6-16 characters"
               placeholderTextColor={Colors.textMuted}
               autoCapitalize="none"
             />
@@ -1075,6 +1089,7 @@ export default function ProfileScreen() {
               value={confirmPw}
               onChangeText={setConfirmPw}
               secureTextEntry
+              maxLength={16}
               placeholder="Repeat new password"
               placeholderTextColor={Colors.textMuted}
               autoCapitalize="none"

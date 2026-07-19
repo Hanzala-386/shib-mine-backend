@@ -13,6 +13,7 @@ import {
   networkGuardMiddleware,
   guardWebSocketUpgrade,
 } from "./networkGuard";
+import { apiRateLimiter } from "./rateLimiter";
 
 const app = express();
 const log = console.log;
@@ -319,6 +320,9 @@ function setupErrorHandler(app: express.Application) {
   setupRequestLogging(app);
 
   configureExpoAndLanding(app);
+
+  // ── Basic request limiter: per-user/per-IP, keeps the API smooth ─────────
+  app.use("/api", apiRateLimiter());
 
   // ── Network guard: VPN / proxy / datacenter / geo blocking ──────────────
   // Mounted on /api/app only (static /game, /arcade, health etc. stay open).
