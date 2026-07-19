@@ -400,6 +400,90 @@ function withUnityGameIdManifest(config) {
   });
 }
 
+/* ─── 10. Kotlin version — enforce 2.2.20 at BOTH propagation layers ─────────── */
+//
+// EAS failed with a Kotlin metadata error ("binary version of its metadata is
+// 2.3.0, expected version is 2.1.0") — that "expected 2.1.0" fingerprint means
+// the failing module compiled with Kotlin 2.0.x, i.e. Expo's fallback default
+// (2.0.21) was used because the project's kotlinVersion pin never reached the
+// build. The Kotlin compiler reads metadata ONE minor ahead, so 2.2.x reads the
+// 2.3.0 metadata in play-services-ads / the Unity adapter's kotlin-stdlib.
+//
+// WHY 2.2.20 AND NOT 2.3.0: Expo SDK 54's autolinking KSP lookup table tops out
+// at 2.2.20 — any higher value hard-fails prebuild with "Can't find KSP version".
+// 2.2.20 is the ceiling AND is sufficient (one-minor-ahead metadata rule).
+//
+// Layer 1 (gradle.properties `android.kotlinVersion`): feeds Expo's settings
+//   plugin → version catalog `kotlin` → KGP/KSP for every expo module.
+//   expo-build-properties also writes this; we upsert it here too so the key
+//   survives even if plugin order changes or a cached/stale file drops it.
+// Layer 2 (root build.gradle `ext.kotlinVersion`): read directly by libraries
+//   like react-native-google-mobile-ads via getExtOrDefault('kotlinVersion',…)
+//   — their fallback is an ancient 1.8.22 if the ext is missing.
+//
+// KEEP IN SYNC with app.json → plugins → expo-build-properties → android.kotlinVersion.
+// If that value ever changes (e.g. SDK 55 upgrade), update this constant in lockstep —
+// otherwise this plugin silently overwrites the app.json value (last writer wins).
+const KOTLIN_VERSION_PIN  = '2.2.20';
+const KOTLIN_EXT_MARKER   = '// [shib-patch] kotlin-version-pin';
+
+/** Pure transform (exported for tests): upsert android.kotlinVersion in gradle.properties items. */
+function upsertKotlinGradleProp(items) {
+  const list = Array.isArray(items) ? [...items] : [];
+  const idx = list.findIndex((i) => i && i.type === 'property' && i.key === 'android.kotlinVersion');
+  if (idx >= 0) {
+    if (list[idx].value === KOTLIN_VERSION_PIN) return { items: list, changed: false };
+    list[idx] = { type: 'property', key: 'android.kotlinVersion', value: KOTLIN_VERSION_PIN };
+    return { items: list, changed: true };
+  }
+  list.push({ type: 'property', key: 'android.kotlinVersion', value: KOTLIN_VERSION_PIN });
+  return { items: list, changed: true };
+}
+
+/**
+ * Pure transform (exported for tests): pin ext.kotlinVersion in the root
+ * build.gradle. Injects inside the top-level `buildscript {` block (classic RN
+ * pattern — safe before `plugins {}` constraints); if no buildscript block
+ * exists, appends at EOF (still evaluated before any subproject configures).
+ * Idempotent via marker. Returns { contents, changed }.
+ */
+function injectRootKotlinExt(contents) {
+  if (typeof contents !== 'string') return { contents, changed: false };
+  if (contents.includes(KOTLIN_EXT_MARKER)) return { contents, changed: false };
+
+  const pin = `${KOTLIN_EXT_MARKER}\n    ext.kotlinVersion = "${KOTLIN_VERSION_PIN}"`;
+  const buildscriptRe = /^buildscript\s*\{/m;
+
+  if (buildscriptRe.test(contents)) {
+    return {
+      contents: contents.replace(buildscriptRe, `buildscript {\n    ${pin}`),
+      changed: true,
+    };
+  }
+  return {
+    contents: `${contents}\n${KOTLIN_EXT_MARKER}\next.kotlinVersion = "${KOTLIN_VERSION_PIN}"\n`,
+    changed: true,
+  };
+}
+
+function withKotlinVersionEnforced(config) {
+  config = withGradleProperties(config, (cfg) => {
+    const res = upsertKotlinGradleProp(cfg.modResults);
+    cfg.modResults = res.items;
+    console.log(`[withAndroidConfig] ✓ gradle.properties android.kotlinVersion=${KOTLIN_VERSION_PIN} enforced`);
+    return cfg;
+  });
+  config = withProjectBuildGradle(config, (cfg) => {
+    const res = injectRootKotlinExt(cfg.modResults.contents);
+    cfg.modResults.contents = res.contents;
+    if (res.changed) {
+      console.log(`[withAndroidConfig] ✓ root build.gradle ext.kotlinVersion=${KOTLIN_VERSION_PIN} pinned`);
+    }
+    return cfg;
+  });
+  return config;
+}
+
 /* ─── Compose all patches and export ─────────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   // Build system
@@ -417,6 +501,9 @@ module.exports = function withAndroidConfig(config) {
   config = withUnityMediationDeps(config);
   config = withUnityGameIdManifest(config);
 
+  // Kotlin 2.2.20 — SDK-54 ceiling; reads the 2.3.0 metadata of GMA/Unity deps
+  config = withKotlinVersionEnforced(config);
+
   return config;
 };
 
@@ -429,3 +516,7 @@ module.exports.addUnityGameIdMetaData      = addUnityGameIdMetaData;
 module.exports.UNITY_MEDIATION_MARKER      = UNITY_MEDIATION_MARKER;
 module.exports.UNITY_ADAPTER_DEP           = UNITY_ADAPTER_DEP;
 module.exports.UNITY_SDK_DEP               = UNITY_SDK_DEP;
+module.exports.upsertKotlinGradleProp      = upsertKotlinGradleProp;
+module.exports.injectRootKotlinExt         = injectRootKotlinExt;
+module.exports.KOTLIN_VERSION_PIN          = KOTLIN_VERSION_PIN;
+module.exports.KOTLIN_EXT_MARKER           = KOTLIN_EXT_MARKER;
