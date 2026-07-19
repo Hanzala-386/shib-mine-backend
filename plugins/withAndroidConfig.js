@@ -340,9 +340,19 @@ function withAdiRegistration(config) {
 // the adapter receives them server-side from AdMob; they are NOT read from code.
 // The manifest meta-data below records the Game ID for auditability.
 //
+// VERSION PAIRING RULE (do not bump casually): the adapter's POM pins an exact
+// play-services-ads version, and Gradle resolves the HIGHEST of {RNGMA's default,
+// adapter's pin}. RNGMA 16.1.0 expects GMA 25.0.0 (package.json sdkVersions).
+// Adapter 4.17.0.0 pins GMA 25.0.0 — exact parity, so the resolved GMA never
+// moves. Adapter 4.19.0.0 pinned GMA 25.4.0, whose artifacts are built with
+// Kotlin 2.3.0 — that metadata broke :react-native-google-mobile-ads:
+// compileReleaseKotlin on builders running older Kotlin ("expected 2.1.0").
+// 4.17.0.0's own kotlin-stdlib is 2.1.10 (metadata 2.1.0) — readable everywhere.
+// If you upgrade the adapter, verify its POM GMA pin matches RNGMA's sdkVersions:
+//   curl -s https://dl.google.com/dl/android/maven2/com/google/ads/mediation/unity/<V>/unity-<V>.pom
 const UNITY_MEDIATION_MARKER = '// [shib-patch] unity-admob-mediation';
-const UNITY_ADAPTER_DEP      = 'com.google.ads.mediation:unity:4.19.0.0';
-const UNITY_SDK_DEP          = 'com.unity3d.ads:unity-ads:4.19.0';
+const UNITY_ADAPTER_DEP      = 'com.google.ads.mediation:unity:4.17.0.0';
+const UNITY_SDK_DEP          = 'com.unity3d.ads:unity-ads:4.17.0';
 const UNITY_GAME_ID          = '6061517';
 
 /**
