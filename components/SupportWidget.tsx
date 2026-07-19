@@ -15,6 +15,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { pb } from '@/lib/pocketbase';
+import { cleanFreeText, cleanDisplayName } from '@/lib/sanitize';
 import Colors from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -193,11 +194,13 @@ function SupportWidgetInner() {
   const handleSubmit = useCallback(async () => {
     if (!question.trim() || !user) return;
     setSubmitting(true);
+    const cleaned = cleanFreeText(question, 1000);
+    if (!cleaned) { setSubmitting(false); return; }
     const ok = await createTicket(
       user.pbId,
-      user.displayName || user.email,
+      cleanDisplayName(user.displayName || user.email),
       user.email,
-      question.trim(),
+      cleaned,
     );
     if (ok) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);

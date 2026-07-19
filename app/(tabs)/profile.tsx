@@ -32,7 +32,7 @@ import { vipIncrementPerHr } from '@shared/vip';
 import Colors from '@/constants/colors';
 
 const AVATAR_KEY = 'profile_avatar2_uri'; // "Avatar 2.0" — fresh key, no stale data
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.3';
 const APP_NAME    = 'Shiba Hit';
 
 /* ── Permanent Delete Account — PocketBase native email ───────────────────

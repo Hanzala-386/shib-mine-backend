@@ -20,3 +20,19 @@ export function cleanDisplayName(raw: unknown): string {
     .trim()
     .slice(0, 40);
 }
+
+/**
+ * Plain-text cleanup for free-form user text (support tickets, notes, etc.).
+ * Ensures what is stored is data-only: strips HTML/script tags and control
+ * characters (newlines kept), so script-like input is stored as harmless
+ * literal text and can never render or run as markup/code anywhere.
+ */
+export function cleanFreeText(raw: unknown, maxLen = 1000): string {
+  return String(raw ?? '')
+    .replace(/<[^>]*>/g, '')                       // strip anything tag-shaped
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '') // control chars, keep \n \t
+    .replace(/[ \t]+/g, ' ')                       // collapse runs of spaces/tabs
+    .replace(/\n{3,}/g, '\n\n')                    // cap blank-line runs
+    .trim()
+    .slice(0, maxLen);
+}

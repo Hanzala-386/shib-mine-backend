@@ -14,6 +14,7 @@ import { useAdmin, type AppSettings } from '@/context/AdminContext';
 import { useAuth } from '@/context/AuthContext';
 import { api, type AdminTask, type AdminTaskSubmission, type SupportTicketRecord, type PBUser } from '@/lib/api';
 import { pb } from '@/lib/pocketbase';
+import { cleanFreeText } from '@/lib/sanitize';
 import { MAX_VIP_LEVEL } from '@shared/vip';
 import { KYC_REJECT_REASONS } from '@shared/kyc';
 import type { VerificationRequestRecord } from '@/lib/api';
@@ -240,7 +241,7 @@ export default function AdminScreen() {
   }, []);
 
   const handleSendReply = useCallback(async (ticketId: string) => {
-    const reply = replyTexts[ticketId]?.trim();
+    const reply = cleanFreeText(replyTexts[ticketId] ?? '', 2000);
     if (!reply) return;
     setReplyingId(ticketId);
     try {

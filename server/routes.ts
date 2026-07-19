@@ -3527,7 +3527,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Expire any existing active sessions
       const existing = await pbGet(
-        `/api/collections/mining_sessions/records?filter=user="${pbId}"&perPage=50`,
+        `/api/collections/mining_sessions/records?filter=${encodeURIComponent(`user="${pbId}"`)}&perPage=50`,
       );
       for (const s of existing.items || []) {
         if (!s.claimed_amount || s.claimed_amount === 0) {
@@ -4558,7 +4558,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const { pbId } = req.params;
         const r = await pbGet(
-          `/api/collections/withdrawals/records?filter=user="${pbId}"&sort=-created&perPage=50`,
+          `/api/collections/withdrawals/records?filter=${encodeURIComponent(`user="${pbId}"`)}&sort=-created&perPage=50`,
         );
         res.json(
           (r.items || []).map((w: any) => ({
