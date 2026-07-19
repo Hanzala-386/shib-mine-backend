@@ -96,37 +96,41 @@ export default function HubScreen() {
       >
         <View style={[styles.grid, { width: gridW }]}>
           {GAMES.map((g, i) => (
-            <Pressable
+            <View
               key={g.id}
-              onPress={() => openGame(g)}
-              testID={`hub-game-${g.id}`}
-              style={({ pressed }) => [
-                {
-                  width: cellW,
-                  height: cellH,
-                  marginRight: i % 2 === 0 ? CELL_GAP : 0,
-                  marginBottom: CELL_GAP,
-                  opacity: pressed ? 0.9 : 1,
-                },
-              ]}
+              style={{
+                width: cellW,
+                marginRight: i % 2 === 0 ? CELL_GAP : 0,
+                marginBottom: CELL_GAP,
+              }}
             >
-              <Image source={FRAME} style={StyleSheet.absoluteFill} contentFit="contain" />
-              <View style={styles.cellContent}>
-                <Image source={g.image} style={styles.iconImg} contentFit="cover" />
-                <Text
-                  style={styles.cellName}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.7}
-                  maxFontSizeMultiplier={1.1}
-                >
-                  {g.name}
-                </Text>
-                <View style={styles.liveBadgeWrap}>
-                  <LivePlayersBadge count={liveGames[g.id] ?? 0} variant="compact" />
+              <Pressable
+                onPress={() => openGame(g)}
+                testID={`hub-game-${g.id}`}
+                style={({ pressed }) => [
+                  { width: cellW, height: cellH, opacity: pressed ? 0.9 : 1 },
+                ]}
+              >
+                <Image source={FRAME} style={StyleSheet.absoluteFill} contentFit="contain" />
+                <View style={styles.cellContent}>
+                  <Image source={g.image} style={styles.iconImg} contentFit="cover" />
+                  <Text
+                    style={styles.cellName}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.7}
+                    maxFontSizeMultiplier={1.1}
+                  >
+                    {g.name}
+                  </Text>
                 </View>
+              </Pressable>
+              {/* Online-players pill sits fully BELOW the framed box (the frame
+                  has a baked-in LIVE panel at its bottom — nothing may overlap it) */}
+              <View style={styles.liveBadgeWrap}>
+                <LivePlayersBadge count={liveGames[g.id] ?? 0} variant="compact" />
               </View>
-            </Pressable>
+            </View>
           ))}
         </View>
       </ScrollView>
@@ -175,5 +179,5 @@ const styles = StyleSheet.create({
   },
   iconImg: { width: '52%', aspectRatio: 1, borderRadius: 16 },
   cellName: { color: Colors.textPrimary, fontSize: 14, fontWeight: '800', textAlign: 'center', marginTop: 8 },
-  liveBadgeWrap: { marginTop: 6 },
+  liveBadgeWrap: { marginTop: 4, alignItems: 'center' },
 });

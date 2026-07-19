@@ -22,6 +22,8 @@ const {
   withAppBuildGradle,
   withGradleProperties,
   withDangerousMod,
+  withAndroidManifest,
+  AndroidConfig,
 } = require('@expo/config-plugins');
 const path = require('path');
 const fs   = require('fs');
@@ -317,6 +319,87 @@ function withAdiRegistration(config) {
   ]);
 }
 
+/* ─── 9. Unity Ads via official Google AdMob mediation (waterfall source) ────── */
+//
+// Official Google mediation ONLY (NOT IronSource/LevelPlay). Two artifacts are
+// required because the adapter POM states "This build does not contain the
+// UnityAds SDK" — the adapter does NOT pull unity-ads transitively:
+//
+//   com.google.ads.mediation:unity:4.19.0.0  (adapter; POM verified 2026-07-19:
+//     targets play-services-ads 25.4.0 — same GMA 25.x major that
+//     react-native-google-mobile-ads 16.1.0 bundles [sdkVersions → 25.0.0])
+//   com.unity3d.ads:unity-ads:4.19.0         (Unity SDK the adapter wraps;
+//     resolves on Maven Central — verified HTTP 200)
+//
+// Version floor compliance: Unity SDK 4.19.0 ≥ 4.11.3 ✓; adapter 4.19.0.0 ≥
+// 4.11.3.0 ✓; GMA 25.x ≥ 23.0.0 ✓. Both repos (google() + mavenCentral()) are
+// already in the Expo 54 template root build.gradle — no repo injection needed.
+//
+// Game ID 6061517 and placements (Shib_Banner_Android / Shib_Interstitial_Android
+// / Shib_Rewarded_Android) are configured in the AdMob console mediation group —
+// the adapter receives them server-side from AdMob; they are NOT read from code.
+// The manifest meta-data below records the Game ID for auditability.
+//
+const UNITY_MEDIATION_MARKER = '// [shib-patch] unity-admob-mediation';
+const UNITY_ADAPTER_DEP      = 'com.google.ads.mediation:unity:4.19.0.0';
+const UNITY_SDK_DEP          = 'com.unity3d.ads:unity-ads:4.19.0';
+const UNITY_GAME_ID          = '6061517';
+
+/**
+ * Pure transform (exported for tests): inject the Unity mediation adapter +
+ * Unity Ads SDK into the app build.gradle top-level `dependencies {` block.
+ * The Expo SDK 54 template has exactly ONE column-0 `dependencies {`.
+ * Idempotent via marker. Returns { contents, changed }.
+ */
+function injectUnityMediationDeps(contents) {
+  if (typeof contents !== 'string') return { contents, changed: false };
+  if (contents.includes(UNITY_MEDIATION_MARKER)) return { contents, changed: false };
+
+  const depsBlockRe = /^dependencies\s*\{/m;
+  if (!depsBlockRe.test(contents)) {
+    console.warn('[withAndroidConfig] ✗ Unity mediation: no top-level dependencies{} block found — NOT injected');
+    return { contents, changed: false };
+  }
+
+  const injected = contents.replace(
+    depsBlockRe,
+    `dependencies {\n    ${UNITY_MEDIATION_MARKER}\n    implementation("${UNITY_ADAPTER_DEP}")\n    implementation("${UNITY_SDK_DEP}")\n`
+  );
+  return { contents: injected, changed: true };
+}
+
+function withUnityMediationDeps(config) {
+  return withAppBuildGradle(config, (cfg) => {
+    const res = injectUnityMediationDeps(cfg.modResults.contents);
+    cfg.modResults.contents = res.contents;
+    if (res.changed) {
+      console.log(`[withAndroidConfig] ✓ Unity mediation deps injected (${UNITY_ADAPTER_DEP} + ${UNITY_SDK_DEP})`);
+    }
+    return cfg;
+  });
+}
+
+/**
+ * Pure transform (exported for tests): add the Unity Game ID meta-data entry
+ * to <application> in AndroidManifest.xml. addMetaDataItemToMainApplication
+ * is upsert-style, so re-running prebuild never duplicates the entry.
+ * NOTE: AdMob mediation itself does not read this key — the Game ID lives in
+ * the AdMob console mediation source config. Kept for explicit auditability.
+ */
+function addUnityGameIdMetaData(androidManifest) {
+  const app = AndroidConfig.Manifest.getMainApplicationOrThrow(androidManifest);
+  AndroidConfig.Manifest.addMetaDataItemToMainApplication(app, 'com.unity3d.ads.gameId', UNITY_GAME_ID);
+  return androidManifest;
+}
+
+function withUnityGameIdManifest(config) {
+  return withAndroidManifest(config, (cfg) => {
+    cfg.modResults = addUnityGameIdMetaData(cfg.modResults);
+    console.log(`[withAndroidConfig] ✓ AndroidManifest meta-data com.unity3d.ads.gameId=${UNITY_GAME_ID}`);
+    return cfg;
+  });
+}
+
 /* ─── Compose all patches and export ─────────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   // Build system
@@ -330,6 +413,10 @@ module.exports = function withAndroidConfig(config) {
   // App assets / Google Play ownership registration
   config = withAdiRegistration(config);
 
+  // Unity Ads via official Google AdMob mediation (waterfall source)
+  config = withUnityMediationDeps(config);
+  config = withUnityGameIdManifest(config);
+
   return config;
 };
 
@@ -337,3 +424,8 @@ module.exports = function withAndroidConfig(config) {
 module.exports.filterDeprecatedGradleKeys  = filterDeprecatedGradleKeys;
 module.exports.injectSubprojectsCompileSdk = injectSubprojectsCompileSdk;
 module.exports.SUBPROJECTS_PATCH_MARKER    = SUBPROJECTS_PATCH_MARKER;
+module.exports.injectUnityMediationDeps    = injectUnityMediationDeps;
+module.exports.addUnityGameIdMetaData      = addUnityGameIdMetaData;
+module.exports.UNITY_MEDIATION_MARKER      = UNITY_MEDIATION_MARKER;
+module.exports.UNITY_ADAPTER_DEP           = UNITY_ADAPTER_DEP;
+module.exports.UNITY_SDK_DEP               = UNITY_SDK_DEP;

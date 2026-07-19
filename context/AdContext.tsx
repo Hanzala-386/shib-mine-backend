@@ -119,7 +119,31 @@ export function AdProvider({ children }: { children: React.ReactNode }) {
 
     mobileAds()
       .initialize()
-      .then(() => { console.log('[AdContext] Google Mobile Ads SDK initialized'); setSdkReady(true); })
+      .then((statuses: { name: string; state: number; description: string }[]) => {
+        // initialize() resolves with MobileAds.getInitializationStatus() —
+        // one entry per registered adapter. state 1 = READY, 0 = NOT_READY.
+        console.log('[AdContext] Google Mobile Ads SDK initialized');
+        for (const s of statuses ?? []) {
+          console.log(
+            `[AdContext] Adapter ${s.name}: ${s.state === 1 ? 'READY' : 'NOT_READY'} (${s.description})`
+          );
+        }
+        // Unity mediation adapter — registers as com.google.ads.mediation.unity.UnityMediationAdapter
+        // (older GMA versions report it as com.unity3d.ads.UnityAds)
+        const unity = (statuses ?? []).find(
+          (s) => s.name.toLowerCase().includes('unity'),
+        );
+        if (unity) {
+          console.log(
+            `[AdContext] UNITY MEDIATION CHECK — ${unity.name} → ${unity.state === 1 ? 'READY ✓' : 'NOT READY ✗'}`
+          );
+        } else {
+          console.warn(
+            '[AdContext] UNITY MEDIATION CHECK — no com.unity3d.ads adapter registered (expected in Expo Go / builds without the adapter dependency)'
+          );
+        }
+        setSdkReady(true);
+      })
       .catch((e: Error) => { console.warn('[AdContext] SDK init failed:', e.message); setSdkReady(true); });
 
     // Interstitial — unit ID from ADMOB_AD_UNIT_IDS (live on Android, test on iOS)

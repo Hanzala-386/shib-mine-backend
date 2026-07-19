@@ -6,8 +6,8 @@
 - [Tournament config serialization](tournament-config-serialization.md) — prizes are client-computed from config.reward_structure; endpoint must send it as a raw JSON string or prizes blank.
 - [Expo/Metro dev server recovery](frontend-dev-server.md) — "app is starting" = Metro EADDRINUSE :8081; blank web ≈ reanimated-on-web; Cannot GET on a route = proxy pathFilter prefix collision.
 - [AGP gradle config-plugin pitfalls](agp-gradle-config-plugin.md) — enableDexingArtifactTransform hard-fails on AGP 8.3; upsert-only gradle.properties plugin must FILTER deprecated cached keys.
-- [Yodo1 MAS migration](yodo1-migration.md) — SUPERSEDED: Yodo1/Unity removed (Jul 2026); app is AdMob-only on Google TEST IDs; RNGMA expo plugin writes the manifest App ID.
-- [AdMob mediation config plugin](admob-mediation-plugin.md) — SUPERSEDED twice; keep only for Expo-54 gradle ground-truth + verify-without-CLI technique.
+- [Yodo1 MAS migration](yodo1-migration.md) — SUPERSEDED: Yodo1 abandoned; ad stack is RNGMA + official AdMob mediation (Unity waterfall since Jul 2026).
+- [AdMob mediation config plugin](admob-mediation-plugin.md) — ACTIVE again (Unity adapter): the adapter POM EXCLUDES the Unity SDK — pin BOTH deps; gradle ground-truth + verify-without-CLI inside.
 - [PB admin-token route auth](pb-admin-token-routes.md) — admin-token /api/app/* routes bypass PB rules; money routes MUST verify caller token==pbId + TOCTOU-guard atomic debits.
 - [users updateRule guard list](users-updaterule-guards.md) — every server-stamped users field needs `:isset = false` in the self-update rule or any authed client can forge it.
 - [PB schema quirks](pb-schema-key-gotcha.md) — fields live under `col.schema` not `col.fields`; field TYPE change forbidden (400) — temp-field copy + delete-and-rename swap.
