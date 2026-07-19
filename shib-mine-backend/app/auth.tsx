@@ -16,6 +16,8 @@ import { api } from '@/lib/api';
 import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 import { useInstallReferrer } from '@/hooks/useInstallReferrer';
+/* Full Terms of Service text — single source of truth in TermsGateModal */
+import { TC_CONTENT } from '@/components/TermsGateModal';
 
 type Mode = 'signin' | 'signup';
 
@@ -42,6 +44,7 @@ function getStrength(pw: string): Strength {
 
 function validateStrongPassword(pw: string): string | null {
   if (pw.length < 8)              return 'Password must be at least 8 characters.';
+  if (pw.length > 16)             return 'Password must be 16 characters or less.';
   if (!/[A-Z]/.test(pw))          return 'Add at least one uppercase letter (A-Z).';
   if (!/[a-z]/.test(pw))          return 'Add at least one lowercase letter (a-z).';
   if (!/[0-9]/.test(pw))          return 'Add at least one number (0-9).';
@@ -108,33 +111,6 @@ const sBar = StyleSheet.create({
   chip:  { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5 },
   chipText: { fontFamily: 'Inter_500Medium', fontSize: 9 },
 });
-
-/* ── T&C Modal content ── */
-const TC_CONTENT = `1. Platform Nature
-Shiba Hit is a gamified engagement and rewards platform. No device hardware is used for cryptocurrency mining. Virtual SHIB tokens are earned through in-app sessions, rewarded ads, and mini-games.
-
-2. Data Collection
-We collect your email address and display name for account management. We do not collect payment data or government ID.
-
-3. Virtual Rewards
-SHIB token balances have no inherent monetary value until approved through our withdrawal reward model. Rewards cannot be transferred between accounts.
-
-4. Withdrawal Processing
-Withdrawal requests are reviewed manually within 24 hours. Requests may be rejected for fraudulent activity or invalid wallet details.
-
-5. Advertising
-The App displays ads via Google AdMob and other ad networks. Attempting to block or manipulate ad delivery may result in account suspension.
-
-6. Prohibited Conduct
-You agree not to use bots, scripts, or multiple accounts to abuse the reward system. Violations will result in account termination and forfeiture of all balances.
-
-7. Age Requirement
-You must be at least 13 years old to use this app.
-
-8. Amendments
-We may update these Terms at any time. Continued use of the App constitutes acceptance of the revised Terms.
-
-By creating an account, you confirm you have read and agree to our full Privacy Policy and Terms of Service.`;
 
 /* ══════════════════════════════════════════════════════════════════════════ */
 export default function AuthScreen() {
@@ -384,9 +360,10 @@ export default function AuthScreen() {
                   style={[styles.input, { flex: 1 }]}
                   value={password}
                   onChangeText={(v) => { setPassword(v); setErrorMsg(''); }}
-                  placeholder={mode === 'signup' ? '8+ chars, A-Z, 0-9, !@#' : '••••••••'}
+                  placeholder={mode === 'signup' ? '8-16 chars, A-Z, 0-9, !@#' : '••••••••'}
                   placeholderTextColor={Colors.textMuted}
                   secureTextEntry={!showPassword}
+                  maxLength={mode === 'signup' ? 16 : undefined}
                   testID="input-password"
                 />
                 <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
@@ -402,7 +379,7 @@ export default function AuthScreen() {
                 <InputField
                   icon="lock-closed-outline" label="Confirm Password"
                   value={confirmPassword} onChangeText={(v: string) => { setConfirmPassword(v); setErrorMsg(''); }}
-                  placeholder="••••••••" secureTextEntry={!showPassword} testID="input-confirm-password"
+                  placeholder="••••••••" secureTextEntry={!showPassword} maxLength={16} testID="input-confirm-password"
                 />
                 <InputField
                   icon="gift-outline" label="Referral Code (Optional)"
