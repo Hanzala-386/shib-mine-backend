@@ -203,6 +203,40 @@ const ctxOf = new WeakMap<WebSocket, WsCtx>();
 const other = (s: Seat): Seat => (s === 'A' ? 'B' : 'A');
 const qKey = (gameId: string, tier: number) => `${gameId}:${tier}`;
 
+/* ── Live player counts (read-only, in-memory) ────────────────────────────
+ * Snapshot of players currently searching (open-socket queue entries) or
+ * playing (seats of unsettled matches). Pure Map iteration — no DB, no
+ * game-logic side effects. Served via GET /api/app/arcade/live-counts and
+ * short-polled by the hub / lobby screens. */
+export function getArcadeLiveCounts(): {
+  games: Record<string, number>;
+  rooms: Record<string, number>;
+} {
+  const games: Record<string, number> = {};
+  const rooms: Record<string, number> = {};
+  const add = (gameId: string, tier: number, n: number) => {
+    if (n <= 0) return;
+    games[gameId] = (games[gameId] ?? 0) + n;
+    const k = qKey(gameId, tier);
+    rooms[k] = (rooms[k] ?? 0) + n;
+  };
+  for (const entries of queues.values()) {
+    for (const e of entries) {
+      if (e.ws && e.ws.readyState === 1) add(e.gameId, e.tier, 1);
+    }
+  }
+  for (const m of matches.values()) {
+    if (m.settled) continue;
+    let n = 0;
+    for (const seat of ['A', 'B'] as Seat[]) {
+      const p = m.players[seat];
+      if (p && (p.connected || p.alive)) n++;
+    }
+    add(m.gameId, m.tier, n);
+  }
+  return { games, rooms };
+}
+
 function send(ws: WebSocket | null, msg: ArcadeServerMsg): void {
   try { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); } catch { /* noop */ }
 }

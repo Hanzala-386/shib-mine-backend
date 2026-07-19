@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { registerRoutes, setupGameWebSocket } from "./routes";
 import { setupTournamentSchema, startTournamentCron } from "./tournament";
 import { setupGameHubWebSocket, ensureGameHubSchema } from "./gamehub";
-import { setupArcadeHubWebSocket, ensureSuspiciousUsersCollection } from "./arcadehub";
+import { setupArcadeHubWebSocket, ensureSuspiciousUsersCollection, getArcadeLiveCounts } from "./arcadehub";
 import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
@@ -366,6 +366,13 @@ function setupErrorHandler(app: express.Application) {
   // ── Arcade PvP WebSocket — path /api/ws/hub-arcade ──────────────────────
   const arcadeWss = new WebSocketServer({ noServer: true });
   setupArcadeHubWebSocket(arcadeWss);
+
+  // Live player counts for hub / lobby screens — pure in-memory snapshot,
+  // no DB. Short-polled (~5s) by the client; trivially cheap per request.
+  app.get("/api/app/arcade/live-counts", (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(getArcadeLiveCounts());
+  });
 
   // Handle WebSocket upgrade requests for the game scoring path.
   // The Metro proxy upgrade handler skips paths starting with /api (pathFilter),

@@ -10,6 +10,8 @@ import Colors from '@/constants/colors';
 import KycGateModal, { useKycGate } from '@/components/KycGate';
 import NebulaBg from '@/components/NebulaBg';
 import { InlineBannerAd, BANNER_HEIGHT, BANNERS_AVAILABLE } from '@/components/StickyBannerAd';
+import LivePlayersBadge from '@/components/LivePlayersBadge';
+import { useArcadeLiveCounts } from '@/hooks/useArcadeLiveCounts';
 
 const FRAME = require('@/assets/images/game_frame.png');
 const FRAME_AR = 1008 / 1053; // ready-made sci-fi frame (LIVE panel baked into the bottom)
@@ -52,6 +54,7 @@ export default function HubScreen() {
   // Must clear when isKycVerified flips true: pbUser hydrates async on cold
   // start, so the gate would otherwise latch open for verified users.
   const { isKycVerified } = useKycGate();
+  const { games: liveGames } = useArcadeLiveCounts();
   const [showKycGate, setShowKycGate] = useState(false);
   useEffect(() => {
     setShowKycGate(!isKycVerified);
@@ -119,6 +122,9 @@ export default function HubScreen() {
                 >
                   {g.name}
                 </Text>
+                <View style={styles.liveBadgeWrap}>
+                  <LivePlayersBadge count={liveGames[g.id] ?? 0} variant="compact" />
+                </View>
               </View>
             </Pressable>
           ))}
@@ -169,4 +175,5 @@ const styles = StyleSheet.create({
   },
   iconImg: { width: '52%', aspectRatio: 1, borderRadius: 16 },
   cellName: { color: Colors.textPrimary, fontSize: 14, fontWeight: '800', textAlign: 'center', marginTop: 8 },
+  liveBadgeWrap: { marginTop: 6 },
 });

@@ -1,7 +1,7 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { registerRoutes, setupGameWebSocket } from "./routes";
-import { setupArcadeHubWebSocket, ensureSuspiciousUsersCollection } from "./arcadehub";
+import { setupArcadeHubWebSocket, ensureSuspiciousUsersCollection, getArcadeLiveCounts } from "./arcadehub";
 import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
@@ -333,6 +333,13 @@ function setupErrorHandler(app: express.Application) {
   ensureSuspiciousUsersCollection().catch((e: any) =>
     console.warn("[arcade] suspicious_users setup failed:", e?.message),
   );
+
+  // Live player counts for hub / lobby screens — pure in-memory snapshot,
+  // no DB. Short-polled (~5s) by the client; trivially cheap per request.
+  app.get("/api/app/arcade/live-counts", (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(getArcadeLiveCounts());
+  });
 
   // Handle WebSocket upgrade requests for the game scoring path.
   // The Metro proxy upgrade handler skips paths starting with /api (pathFilter),

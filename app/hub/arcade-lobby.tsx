@@ -13,6 +13,8 @@ import KycGateModal, { useKycGate } from '@/components/KycGate';
 import { useWallet } from '@/context/WalletContext';
 import { InlineBannerAd, BANNER_HEIGHT, BANNERS_AVAILABLE } from '@/components/StickyBannerAd';
 import { TIER_CONFIGS } from '@shared/arcade';
+import LivePlayersBadge from '@/components/LivePlayersBadge';
+import { useArcadeLiveCounts } from '@/hooks/useArcadeLiveCounts';
 
 // Room entry card artwork, keyed by PT entry (matches POOL_TIERS). All 677x369.
 const ROOM_IMAGES: Record<number, number> = {
@@ -86,6 +88,7 @@ export default function ArcadeLobbyScreen() {
   const params = useLocalSearchParams<{ gameId?: string }>();
   const gameId = typeof params.gameId === 'string' && GAME_META[params.gameId] ? params.gameId : 'flappy';
   const meta = GAME_META[gameId];
+  const { rooms: liveRooms } = useArcadeLiveCounts();
 
   // Mount guard — lobby is deep-linkable, so KYC must be re-checked here too.
   // Cleared when isKycVerified flips true (pbUser hydrates async on cold start).
@@ -148,6 +151,9 @@ export default function ArcadeLobbyScreen() {
               >
                 <Image source={ROOM_IMAGES[t.entryPT]} style={styles.roomCard} resizeMode="contain" />
               </Pressable>
+              <View style={styles.liveRow}>
+                <LivePlayersBadge count={liveRooms[`${gameId}:${t.entryPT}`] ?? 0} variant="wide" />
+              </View>
               {!afford && <Text style={styles.needMore}>Need {(t.entryPT - powerTokens).toLocaleString()} more PT</Text>}
             </View>
           );
@@ -209,6 +215,7 @@ const styles = StyleSheet.create({
   heroSub: { color: Colors.textSecondary, fontSize: 12, marginTop: 3, lineHeight: 17 },
   section: { color: Colors.textMuted, fontSize: 12, fontWeight: '700', letterSpacing: 1, marginBottom: 2, marginTop: 4 },
   roomCard: { width: '100%', height: 'auto', aspectRatio: ROOM_AR },
+  liveRow: { marginTop: 6, alignItems: 'center' },
   needMore: { color: Colors.error, fontSize: 11, marginTop: 4, marginLeft: 4 },
   practiceCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: Colors.darkCard, borderColor: Colors.darkBorder, borderWidth: 1, borderRadius: 14, padding: 14, marginTop: 2 },
   practiceTitle: { color: Colors.textPrimary, fontSize: 14, fontWeight: '700' },

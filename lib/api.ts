@@ -145,9 +145,19 @@ async function robustPost<T = any>(
   throw lastErr;
 }
 
+/** Live arcade player counts — `games` keyed by gameId, `rooms` keyed by `${gameId}:${tier}`. */
+export interface ArcadeLiveCounts {
+  games: Record<string, number>;
+  rooms: Record<string, number>;
+}
+
 export const api = {
   // ── Settings ───────────────────────────────────────────────────────────
   getSettings: () => request<AppSettings>('GET', '/api/app/settings'),
+
+  // ── Arcade: live player counts (hub + lobby short-polling) ─────────────
+  getArcadeLiveCounts: () =>
+    request<ArcadeLiveCounts>('GET', '/api/app/arcade/live-counts', undefined, 8000),
 
   // ── Security: network guard verdict (VPN / proxy / geo) ────────────────
   networkCheck: () =>
