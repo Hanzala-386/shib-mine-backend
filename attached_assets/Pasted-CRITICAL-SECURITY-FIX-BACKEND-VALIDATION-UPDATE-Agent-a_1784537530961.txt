@@ -1,0 +1,37 @@
+CRITICAL SECURITY FIX & BACKEND VALIDATION UPDATE:
+
+Agent, a hacker has bypassed our frontend validations and injected fake data directly into our database. We need to lock down the entire backend API and database architecture immediately so it is 100% secure and untouchable. Implement the following security measures strictly:
+
+1. Strict Booster Multiplier Validation (Mining Sessions):
+
+In the mining session and booster logic, currently users are injecting invalid multipliers (like 100, 10000, 100000000).
+
+Fix: Hardcode an strict allowed array of multipliers on the server side: [1, 2, 4, 6, 10].
+
+If any incoming request contains a booster_multiplier value that is not in this exact array, the server must immediately reject the request, return a 400 Bad Request, and log a security alert. Never trust the client value.
+
+2. Server-Side VIP Level Upgrade Verification:
+
+Users are currently able to upgrade their VIP levels (e.g., VIP Level 5) without fulfilling requirements.
+
+Fix: Implement a strict backend function that runs whenever a VIP upgrade request is received. The server must independently query the database to verify:
+
+Total valid referrals count.
+
+Total referral income generated.
+
+Current SHIB balance.
+
+Completed tasks count.
+
+Successful withdrawals count.
+
+If any of these conditions fail, the server must reject the upgrade request instantly. The frontend button must also be dynamically controlled by server responses so it cannot be clicked or faked.
+
+3. General API Security & Sanitization:
+
+Ensure all incoming API payloads (mining claims, session creations, booster updates, and VIP upgrades) are fully validated using backend schemas (e.g., Zod or strict type checking).
+
+Prevent direct database insertion from client requests. Only server-calculated values should be written to sensitive collections (mining_sessions, users VIP levels, balances).
+
+Please audit all backend endpoints related to mining, boosters, and VIP upgrades right now and patch these vulnerabilities permanently.

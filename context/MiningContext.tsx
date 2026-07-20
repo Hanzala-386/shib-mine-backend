@@ -6,84 +6,20 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import storage from '@/lib/storage';
 import { useAuth } from './AuthContext';
 import { useSecurity } from './SecurityContext';
-import { api, syncTournamentPointsToPb } from '@/lib/api';
+import { api } from '@/lib/api';
 import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 import {
   effectiveRatePerSec,
   normalizeVipLevel,
-  highestBalanceEligibleTier,
 } from '@shared/vip';
 
-// ── PocketBase direct mining (fallback when Express is unreachable) ──────────
-// Mining sessions schema: user (relation), start_time (date),
-// claimed_amount (number), booster_multiplier (number), is_verified (bool)
+// ── PocketBase direct reads (session restore only) ───────────────────────────
+// SECURITY: All money-moving mining actions (start / claim / booster) are
+// SERVER-ONLY via Express — PocketBase collection rules now block client
+// writes to balances, sessions, and booster fields entirely. The only PB
+// SDK usage left here is READ-ONLY session restore (pbGetActiveMining).
 
 const PB_DURATION_MS = 60 * 60 * 1000; // 60 minutes
-
-async function pbStartMining(
-  pbId: string,
-  multiplier: number,
-  miningRatePerSec: number,
-): Promise<{ id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; expectedReward: number; vipLevel: number; newPowerTokens: number; serverTime: number; miningRatePerSec: number }> {
-  // Fetch the authoritative mining cost from PocketBase settings — never rely on
-  // the React state value (miningEntryCost) which may be stale or default (24) if
-  // settings haven't loaded yet when the user taps Start.
-  let entryCost = 24;
-  try {
-    const settingsRes = await pb.collection('settings').getList(1, 1);
-    const raw = settingsRes.items[0];
-    if (raw && raw.power_token_per_click) {
-      entryCost = Number(raw.power_token_per_click) || 24;
-    }
-  } catch { /* keep fallback */ }
-
-  const user = await pb.collection('users').getOne(pbId);
-  const currentPt = Number(user.power_tokens) || 0;
-  if (currentPt < entryCost) throw new Error(`Not enough Power Tokens. Need ${entryCost} PT.`);
-
-  // Lock the user's CURRENT VIP level into this session (like booster_multiplier).
-  const lockedVip = normalizeVipLevel(user.vip_level);
-
-  // Deduct PT
-  await pb.collection('users').update(pbId, { power_tokens: currentPt - entryCost });
-
-  // Create session — if this fails, roll back PT so the user is not charged twice
-  let session: any;
-  try {
-    session = await pb.collection('mining_sessions').create({
-      user: pbId,
-      start_time: new Date().toISOString(),
-      booster_multiplier: multiplier,
-      claimed_amount: 0,
-      is_verified: false,
-      vip_level: lockedVip,
-    });
-  } catch (sessionErr: any) {
-    await pb.collection('users').update(pbId, { power_tokens: currentPt }).catch(() => {});
-    throw new Error(`Session creation failed — your tokens have been refunded. (${sessionErr?.message || 'unknown error'})`);
-  }
-
-  await pb.collection('users').update(pbId, { current_mining_session: session.id });
-
-  // Use PocketBase's server-assigned `created` field as the authoritative start time.
-  // This is set by PocketBase's own clock — immune to device clock manipulation.
-  const rawCreated = ((session as any).created || (session as any).start_time || '').replace(' ', 'T');
-  const parsedCreated = rawCreated.endsWith('Z') ? rawCreated : rawCreated + 'Z';
-  const startTimeMs = new Date(parsedCreated).getTime() || Date.now();
-
-  return {
-    id: session.id,
-    startTimeMs,
-    endTimeMs: startTimeMs + PB_DURATION_MS,
-    durationMs: PB_DURATION_MS,
-    multiplier,
-    expectedReward: effectiveRatePerSec(miningRatePerSec, lockedVip) * (PB_DURATION_MS / 1000) * multiplier,
-    vipLevel: lockedVip,
-    newPowerTokens: currentPt - entryCost,
-    serverTime: startTimeMs, // PB's timestamp = server time
-    miningRatePerSec,
-  };
-}
 
 async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; vipLevel: number; serverTime: number } }> {
   try {
@@ -93,9 +29,10 @@ async function pbGetActiveMining(pbId: string): Promise<{ session: null | { id: 
 
     const s = await pb.collection('mining_sessions').getOne(sessionId);
     // claimed_amount > 0 = normal claim; < 0 (e.g. -1) = fraud-voided.
-    // Both mean the session is no longer active — clear the reference.
+    // Both mean the session is no longer active. (The stale user.current_mining_session
+    // reference is cleared SERVER-SIDE on claim — client writes to it are now blocked
+    // by PocketBase rules, so no cleanup write is attempted here.)
     if ((Number(s.claimed_amount) || 0) !== 0) {
-      await pb.collection('users').update(pbId, { current_mining_session: null }).catch(() => {});
       return { session: null };
     }
 
@@ -134,263 +71,6 @@ async function getServerTimeMs(): Promise<number> {
     }
   } catch { /* fall back to device time */ }
   return Date.now();
-}
-
-async function pbClaimMining(
-  sessionId: string,
-  pbId: string,
-  miningRatePerSec: number,
-): Promise<{ reward: number }> {
-  // Fetch session and user together; also grab server time from PB's Date header
-  const [[s, user], serverNowMs] = await Promise.all([
-    Promise.all([
-      pb.collection('mining_sessions').getOne(sessionId),
-      pb.collection('users').getOne(pbId),
-    ]),
-    getServerTimeMs(),
-  ]);
-
-  // ── Anti-fraud: block banned accounts immediately ──────────────────────────
-  // user.status may come back from PocketBase as a non-string type (number, object, null).
-  // String() ensures .toLowerCase() never throws regardless of what PB returns.
-  const userStatus = String(user.status || '').toLowerCase();
-  if (userStatus === 'blocked' || userStatus === 'banned') {
-    throw Object.assign(new Error('Account is blocked due to suspicious activity.'), {
-      data: { error: 'ACCOUNT_BLOCKED' },
-    });
-  }
-
-  // ── Anti-fraud: reject double-claims ──────────────────────────────────────
-  if ((Number(s.claimed_amount) || 0) > 0) {
-    throw new Error('Session already claimed.');
-  }
-
-  // ── Anti-fraud: use SERVER clock, not device clock ────────────────────────
-  // Use PocketBase's `created` field (server-set) as canonical start time —
-  // immune to device clock manipulation. Fall back to start_time for older sessions.
-  const rawCreated = ((s as any).created || s.start_time || '').replace(' ', 'T');
-  const parsedCreated = rawCreated.endsWith('Z') ? rawCreated : rawCreated + 'Z';
-  const startTimeMs = new Date(parsedCreated).getTime();
-  if (isNaN(startTimeMs)) throw new Error('Invalid session start time.');
-
-  const nowMs = serverNowMs;
-  const elapsedMs = nowMs - startTimeMs;
-
-  // ── Fraud detection: only flag claims that are IMPOSSIBLY EARLY ────────────
-  // Minimum: 55 minutes (5-min grace for network latency / slow UI).
-  // There is NO upper bound — users who come back after 70 min, 2 hours, or even
-  // a day should always receive their reward (capped at 60 min).
-  // Penalising late claimers was the bug that was rejecting legitimate sessions.
-  const MIN_CLAIM_MS = 55 * 60 * 1000;  // 55 minutes
-  const MAX_CLAIM_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (session replay protection only)
-
-  const tooEarly = elapsedMs < MIN_CLAIM_MS;
-  const tooOld   = elapsedMs > MAX_CLAIM_MS; // extremely stale — potential replay
-
-  if (tooEarly || tooOld) {
-    const fraudAttempts = tooEarly ? (Number(user.fraud_attempts) || 0) + 1 : (Number(user.fraud_attempts) || 0);
-    const shouldBlock   = fraudAttempts >= 3;
-    if (tooEarly) {
-      await pb.collection('users').update(pbId, {
-        fraud_attempts: fraudAttempts,
-        ...(shouldBlock ? { status: 'blocked' } : {}),
-      }).catch(() => {});
-    }
-    // Mark session so it can't be retried
-    await pb.collection('mining_sessions').update(sessionId, { claimed_amount: -1 }).catch(() => {});
-    const minutesElapsed = Math.round(elapsedMs / 60000);
-    throw Object.assign(
-      new Error(shouldBlock
-        ? 'Account blocked after repeated clock manipulation attempts.'
-        : tooOld
-          ? 'Session too old — please start a new mining session.'
-          : 'Claim submitted too early. Please wait for the full 60-minute session.'),
-      {
-        data: {
-          error:         shouldBlock ? 'ACCOUNT_BLOCKED' : 'FRAUD_DETECTED',
-          fraudAttempts,
-          blocked:       shouldBlock,
-          message:       shouldBlock
-            ? 'Your account has been permanently disabled due to multiple fraud attempts.'
-            : tooOld
-              ? 'Session expired. Start a new mining session.'
-              : `Strike ${fraudAttempts}/3! Only ${minutesElapsed} minutes elapsed (need 55+). Mining progress reset. 3 strikes = permanent ban.`,
-        },
-      },
-    );
-  }
-
-  const multiplier = Number(s.booster_multiplier) || 1;
-
-  // ── VIP reward: pay at the session-locked tier, capped by CURRENT balance
-  //    (anti-drain) and floored at admin_promoted_level. Admin-promoted users
-  //    are immune. Any demotion persists to the user record going forward.
-  const sessionVip = normalizeVipLevel(s.vip_level);
-  const currentVip = normalizeVipLevel(user.vip_level);
-  const promoted = !!user.is_admin_promoted;
-  const vipFloor = normalizeVipLevel(user.admin_promoted_level);
-  const balanceForTier = Number(user.shib_balance) || 0;
-  const claimVip = promoted ? sessionVip : highestBalanceEligibleTier(balanceForTier, sessionVip, vipFloor);
-  const newUserVip = promoted ? currentVip : highestBalanceEligibleTier(balanceForTier, currentVip, vipFloor);
-
-  const reward = effectiveRatePerSec(miningRatePerSec, claimVip) * (Math.min(elapsedMs, PB_DURATION_MS) / 1000) * multiplier;
-
-  await pb.collection('mining_sessions').update(sessionId, {
-    claimed_amount: reward,
-    is_verified: true,
-  });
-
-  // ── CRITICAL: credit balance in its own standalone update ────────────────
-  // NEVER bundle shib_balance with tournament_points in the same PB call.
-  // If PocketBase rejects any field (e.g. tournament_points validation fails),
-  // the entire update would fail and the user's balance would not be credited.
-  await pb.collection('users').update(pbId, {
-    shib_balance:            (Number(user.shib_balance) || 0) + reward,
-    total_claims:            (Number(user.total_claims) || 0) + 1,
-    current_mining_session:  null,
-    vip_level:               newUserVip,
-  });
-
-  // ── Tournament points — recompute & persist on EVERY claim (PRODUCTION-SAFE) ─
-  // The APK has NO Express server, so the old `/api/app/tournament/sync-points`
-  // fetch silently 404'd and `users.weekly_tournament_points` (the field the
-  // leaderboard sorts by) stayed 0 forever. syncTournamentPointsToPb() recomputes
-  // it from mining_sessions via the PocketBase SDK directly — gated on an active
-  // cycle + tournament_joined, and mirrored into the cosmetic participant row.
-  // Fire-and-forget: it runs AFTER the balance credit above and can never block it.
-  if (user.tournament_joined && pbId) {
-    syncTournamentPointsToPb(pbId).catch(() => {});
-  }
-
-  // Referral commission (10%) — written to referral_earnings_log for secure deferred crediting.
-  //
-  // WHY NOT direct update: PocketBase updateRule = "@request.auth.id = id" means a user
-  // token can ONLY update their OWN record. Updating the REFERRER's record returns 403.
-  // This PB version's rule parser also rejects complex &&-joined rules in updateRule.
-  //
-  // THE ARCHITECTURE:
-  //   1. The claimer creates a referral_earnings_log entry (createRule allows any auth user).
-  //   2. When the REFERRER next opens the app, processPendingReferralEarnings() runs:
-  //      it reads their pending log entries, totals the amounts, and credits their OWN
-  //      balance (self-update → always allowed). Entries are then marked processed.
-  //
-  // This is secure, requires no permissive updateRule, and works from the APK.
-  if (user.referred_by && reward > 0) {
-    try {
-      // referred_by may hold EITHER the referrer's PB record ID (newer signups)
-      // OR their referral_code (older signups). The old code-only lookup silently
-      // failed for ID-linked referees, so their referrers never received a single
-      // commission. NOTE: users.viewRule is "@request.auth.id = id" so getOne()
-      // on another user is FORBIDDEN — must resolve via a filtered LIST query
-      // (listRule allows any authenticated user).
-      let referrerId: string | null = null;
-      try {
-        const ref = await pb.collection('users').getFirstListItem(
-          `id="${user.referred_by}" || referral_code="${user.referred_by}"`,
-          { fields: 'id' },
-        );
-        referrerId = ref?.id || null;
-      } catch { /* referrer not found — skip */ }
-      if (referrerId) {
-        const commission = reward * 0.1;
-        // Write to the log — the referrer's client will process and credit their own balance
-        await pb.collection('referral_earnings_log').create({
-          referrer_id: referrerId,
-          claimer_id:  pbId,
-          amount:      commission,
-          processed:   false,
-        }).catch(() => {});
-      }
-    } catch { /* non-critical — claim itself already succeeded */ }
-  }
-
-  return { reward };
-}
-
-async function pbActivateBooster(
-  pbId: string,
-  multiplier: number,
-  boosterCost: number,
-): Promise<{ success: boolean; multiplier: number; expiresAt: number }> {
-  const user = await pb.collection('users').getOne(pbId);
-  const currentPt = Number(user.power_tokens) || 0;
-  if (currentPt < boosterCost) throw new Error(`Not enough Power Tokens. Need ${boosterCost} PT.`);
-
-  const expiresAt = Date.now() + 3600000; // 1 hour
-  await pb.collection('users').update(pbId, {
-    power_tokens: currentPt - boosterCost,
-    active_booster_multiplier: multiplier,
-    booster_expires: String(expiresAt),
-  });
-
-  return { success: true, multiplier, expiresAt };
-}
-
-async function pbActivateAndMine(
-  pbId: string,
-  multiplier: number,
-  miningRatePerSec: number,
-  miningCost: number,
-  boosterCost: number,
-): Promise<{ id: string; startTimeMs: number; endTimeMs: number; durationMs: number; multiplier: number; boosterExpiresAt: number; expectedReward: number; vipLevel: number; newPowerTokens: number; serverTime: number; miningRatePerSec: number }> {
-  const totalCost = miningCost + boosterCost;
-  const user = await pb.collection('users').getOne(pbId);
-  const currentPt = Number(user.power_tokens) || 0;
-  if (currentPt < totalCost) throw new Error(`Not enough Power Tokens. Need ${totalCost} PT.`);
-
-  // Lock the user's CURRENT VIP level into this session (like booster_multiplier).
-  const lockedVip = normalizeVipLevel(user.vip_level);
-
-  const expiresAt = Date.now() + 3600000; // booster active 1 hour
-
-  // Deduct PT and activate booster
-  await pb.collection('users').update(pbId, {
-    power_tokens: currentPt - totalCost,
-    active_booster_multiplier: multiplier,
-    booster_expires: String(expiresAt),
-  });
-
-  // Create session — if this fails, roll back PT so the user is not charged twice
-  let session: any;
-  try {
-    session = await pb.collection('mining_sessions').create({
-      user: pbId,
-      start_time: new Date().toISOString(),
-      booster_multiplier: multiplier,
-      claimed_amount: 0,
-      is_verified: false,
-      vip_level: lockedVip,
-    });
-  } catch (sessionErr: any) {
-    // Roll back: restore PT and remove booster fields so user can retry
-    await pb.collection('users').update(pbId, {
-      power_tokens: currentPt,
-      active_booster_multiplier: 0,
-      booster_expires: '',
-    }).catch(() => {});
-    throw new Error(`Session creation failed — your tokens have been refunded. (${sessionErr?.message || 'unknown error'})`);
-  }
-
-  await pb.collection('users').update(pbId, { current_mining_session: session.id });
-
-  // Use PocketBase's server-assigned `created` field as the authoritative start time.
-  const rawCreated = ((session as any).created || (session as any).start_time || '').replace(' ', 'T');
-  const parsedCreated = rawCreated.endsWith('Z') ? rawCreated : rawCreated + 'Z';
-  const startTimeMs = new Date(parsedCreated).getTime() || Date.now();
-
-  return {
-    id: session.id,
-    startTimeMs,
-    endTimeMs: startTimeMs + PB_DURATION_MS,
-    durationMs: PB_DURATION_MS,
-    multiplier,
-    boosterExpiresAt: expiresAt,
-    expectedReward: effectiveRatePerSec(miningRatePerSec, lockedVip) * (PB_DURATION_MS / 1000) * multiplier,
-    vipLevel: lockedVip,
-    newPowerTokens: currentPt - totalCost,
-    serverTime: startTimeMs, // PB's timestamp = server time
-    miningRatePerSec,
-  };
 }
 
 const SESSIONS_COUNT_KEY = 'shib_mine_sessions_v1';
@@ -866,9 +546,14 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     clearAllTimers();
 
     try {
-      // Go directly to PocketBase SDK — Express is unreachable from the APK.
-      // pbStartMining fetches the entry cost from PB settings itself (never trusts stale state).
-      const res = await pbStartMining(currentPbId, multiplier, miningRateRef.current);
+      // SERVER-ONLY: the Express backend validates the caller's PB token,
+      // reads the entry cost from settings, and creates the session itself.
+      // PocketBase rules block client-side session/balance writes entirely.
+      const res = await api.startMining({
+        pbId: currentPbId,
+        multiplier,
+        miningRatePerSec: miningRateRef.current,
+      });
 
       // Sync clock drift immediately from the server response
       if (res?.serverTime && isFinite(res.serverTime)) {
@@ -940,20 +625,14 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       storage.removeItem(currentCacheKey ?? '').catch(() => {});
     };
 
-    // ── The actual claim work — PocketBase SDK directly ───────────────────
-    // Express is unreachable from the APK (api.webcod.in is PocketBase-only).
-    // Going PB-direct eliminates the 4-second Express timeout dead zone and the
-    // silent-failure where the claim request never reached a writable endpoint.
-    // Best-effort: clear current_mining_session on PB so re-login never
-    // auto-restores a session the user has already interacted with.
-    const clearPbSessionRef = () => {
-      if (currentPbId) {
-        pb.collection('users').update(currentPbId, { current_mining_session: null }).catch(() => {});
-      }
-    };
-
+    // ── The actual claim work — SERVER-ONLY via Express ───────────────────
+    // The server recomputes the reward from the session's server-set timestamps
+    // and rate settings; the client sends only sessionId + pbId. PocketBase
+    // rules block any client-side balance/session write, so there is no
+    // PB-direct fallback — if the backend is unreachable the claim fails
+    // closed and the user retries (the session is untouched server-side).
     const doActualClaim = async (): Promise<number> => {
-      const res = await pbClaimMining(s.pbSessionId!, currentPbId, miningRateRef.current);
+      const res = await api.claimMining({ sessionId: s.pbSessionId!, pbId: currentPbId });
 
       // ── Success path ────────────────────────────────────────────────────
       resetLocalSession();
@@ -1005,15 +684,16 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       const errCode = e?.data?.error || '';
 
       if (errCode === 'CLAIM_TIMEOUT') {
-        // Network stall — clear local state and PB reference so user can retry
+        // Network stall — clear local state so the user can retry. The server
+        // still holds the unclaimed session; it will restore on next login and
+        // the reward remains claimable (server clears the ref only on claim).
         resetLocalSession();
-        clearPbSessionRef(); // BUG 2 FIX: prevent auto-start on re-login
         throw e; // handleClaim shows "try again" message
       }
 
       if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED' || errCode === 'SESSION_EXPIRED') {
         resetLocalSession();
-        // pbClaimMining already sets claimed_amount=-1; pbGetActiveMining now
+        // The server voids the session (claimed_amount=-1) itself; pbGetActiveMining
         // treats ≠0 as inactive, so the session won't auto-restore on next login.
         if (errCode === 'FRAUD_DETECTED' || errCode === 'ACCOUNT_BLOCKED') throw e;
         console.warn('[Mining] Session expired/voided — reset to idle');
@@ -1021,10 +701,10 @@ export function MiningProvider({ children }: { children: ReactNode }) {
       }
 
       // Any other error (e.g. "already claimed", 404 session not found):
-      // reset locally and clear PB reference so re-login starts clean.
+      // reset locally — the server owns the session reference and clears or
+      // voids it on its side, so no client-side PB write is needed here.
       console.warn('[Mining] claimReward error:', e?.message);
       resetLocalSession();
-      clearPbSessionRef(); // BUG 2 FIX: prevent stale session auto-restoring
       return 0;
 
     } finally {
@@ -1037,19 +717,10 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     const currentPbId = pbIdRef.current;
     if (!currentPbId) return { success: false, error: 'Account not ready. Please wait.' };
     try {
-      // Go PB-direct — read costs from PocketBase settings, no Express needed
-      let pbSettings: any = null;
-      try {
-        const settingsRes = await pb.collection('settings').getList(1, 1);
-        pbSettings = settingsRes.items[0] ?? null;
-      } catch { /* keep null */ }
-      const costMap: Record<number, number> = {
-        2:  safe(pbSettings?.boost_2x_cost,  200),
-        4:  safe(pbSettings?.boost_4x_cost,  400),
-        6:  safe(pbSettings?.boost_6x_cost,  600),
-        10: safe(pbSettings?.boost_10x_cost, 800),
-      };
-      const res = await pbActivateBooster(currentPbId, multiplier, costMap[multiplier] ?? 400);
+      // SERVER-ONLY: the server validates the multiplier against its whitelist
+      // (2/4/6/10) and reads the cost from settings itself — the client sends
+      // only the multiplier. Forged values are rejected with 400.
+      const res = await api.activateBooster({ pbId: currentPbId, multiplier });
       if (res?.success) {
         const expiresAt = parseBoosterTs(res.expiresAt);
         const newBooster = { multiplier: safe(res.multiplier, multiplier), expiresAt };
@@ -1074,24 +745,10 @@ export function MiningProvider({ children }: { children: ReactNode }) {
     clearAllTimers();
 
     try {
-      // Go PB-direct — read all costs from PocketBase settings directly
-      let pbSettings: any = null;
-      try {
-        const settingsRes = await pb.collection('settings').getList(1, 1);
-        pbSettings = settingsRes.items[0] ?? null;
-      } catch { /* keep null */ }
-      const costMap: Record<number, number> = {
-        2:  safe(pbSettings?.boost_2x_cost,  200),
-        4:  safe(pbSettings?.boost_4x_cost,  400),
-        6:  safe(pbSettings?.boost_6x_cost,  600),
-        10: safe(pbSettings?.boost_10x_cost, 800),
-      };
-      const boosterCost = costMap[multiplier] ?? 400;
-      // Fetch mining entry cost from PB settings (authoritative — never use stale React state)
-      const miningCost = Number(pbSettings?.power_token_per_click) || 24;
-      const res = await pbActivateAndMine(
-        currentPbId, multiplier, miningRateRef.current, miningCost, boosterCost,
-      );
+      // SERVER-ONLY: one atomic Express round-trip. The server whitelists the
+      // multiplier, reads booster + entry costs from settings, deducts PT, and
+      // creates the session — no client-side PB writes anywhere in this path.
+      const res = await api.activateAndMine({ pbId: currentPbId, multiplier });
 
       // Sync clock drift from server response
       if (res?.serverTime && isFinite(res.serverTime)) {

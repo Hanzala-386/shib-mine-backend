@@ -44,6 +44,18 @@ async function parseJsonSafe(res: Response): Promise<any> {
   }
 }
 
+// ── Caller identity — every Express call carries the user's own PocketBase
+// auth token. Server money routes verify token.id === pbId and reject
+// spoofed pbIds with 401 (fail-closed; no client-side PB money writes exist).
+function authHeaders(): Record<string, string> {
+  try {
+    const token = pb?.authStore?.token;
+    return token ? { Authorization: token } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function request<T = any>(
   method: string,
   path: string,
@@ -56,7 +68,7 @@ async function request<T = any>(
   try {
     const res = await globalThis.fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
@@ -106,7 +118,7 @@ async function robustPost<T = any>(
       // globalThis.fetch = React Native's built-in fetch (not expo/fetch streaming)
       const res = await globalThis.fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -204,12 +216,6 @@ export const api = {
   checkEmailExists: (email: string) =>
     request<{ found: boolean; verified: boolean }>('POST', '/api/app/auth/check-email', { email }),
 
-  updateBalance: (pbId: string, shibBalance?: number, powerTokens?: number) =>
-    request<PBUser>('PUT', `/api/app/user/${pbId}/balance`, {
-      shibBalance,
-      powerTokens,
-    }),
-
   // ── Mining ────────────────────────────────────────────────────────────
   startMining: (payload: {
     pbId: string;
@@ -251,6 +257,7 @@ export const api = {
       expectedReward: number;
       miningRatePerSec: number;
       boosterExpiresAt: string;
+      vipLevel: number;      // VIP tier locked into the session by the server
       ptDeducted: number;
       newPowerTokens: number;
       serverTime: number;
@@ -706,11 +713,11 @@ export async function syncTournamentPointsToPb(pbId: string): Promise<number> {
       0,
     );
 
-    // 4. AUTHORITATIVE write — standalone update (NEVER bundle with balance credit).
-    //    Skip when unchanged so repeated calls (claim + leaderboard refresh) don't churn.
-    if (Number(u.weekly_tournament_points) !== total) {
-      await pb.collection('users').update(pbId, { weekly_tournament_points: total });
-    }
+    // 4. SECURITY: the client can no longer write users.weekly_tournament_points —
+    //    the updateRule guards it (`:isset = false`). The AUTHORITATIVE write now
+    //    happens SERVER-SIDE on every mining claim (all claims go through Express).
+    //    This function is read-only against `users`: it recomputes the total for
+    //    display and mirrors it into the cosmetic participant row only.
 
     // 5. Mirror into the cosmetic participant row for the active cycle (create it if
     //    missing — the admin DB column reads from here). Non-critical.
@@ -853,40 +860,28 @@ async function vipUpgradeImpl(pbId: string): Promise<VipUpgradeResult> {
         error: err.data.error,
       };
     }
-    // Network/unreachable → PB-direct fallback with the SAME gating logic.
-    const user = await pb.collection('users').getOne(pbId);
-    const current = normalizeVipLevel(user.vip_level);
-    const target = current + 1;
-    if (target > MAX_VIP_LEVEL) {
-      return { success: false, vipLevel: current, error: 'Already at maximum VIP level' };
-    }
-    const metrics = await pbComputeVipMetrics(user);
-    if (!meetsVipRequirements(target, metrics)) {
-      return {
-        success: false,
-        vipLevel: current,
-        metrics,
-        unmet: unmetVipRequirements(target, metrics) as string[],
-        error: 'Requirements not met',
-      };
-    }
-    await pb.collection('users').update(pbId, { vip_level: target });
-    return { success: true, vipLevel: target, metrics };
+    // SECURITY: no PB-direct fallback. vip_level is server-managed only
+    // (users updateRule guards it with `:isset = false`) — the upgrade MUST be
+    // verified and written by the Express server. Fail closed.
+    const current = await pb.collection('users')
+      .getOne(pbId, { fields: 'id,vip_level' })
+      .then((u) => normalizeVipLevel(u.vip_level))
+      .catch(() => 0);
+    return {
+      success: false,
+      vipLevel: current,
+      error: 'VIP upgrade is temporarily unavailable. Please check your connection and try again.',
+    };
   }
 }
 
 async function adminSetUserVipImpl(pbId: string, level: number): Promise<PBUser> {
   const lvl = normalizeVipLevel(level);
-  try {
-    return await request<PBUser>('POST', '/api/admin/users/vip', { pbId, level: lvl });
-  } catch {
-    const updated = await pb.collection('users').update(pbId, {
-      vip_level: lvl,
-      is_admin_promoted: true,
-      admin_promoted_level: lvl,
-    });
-    return pbFormatUserLite(updated);
-  }
+  // SECURITY: server-only — no PB-direct fallback. vip_level/is_admin_promoted/
+  // admin_promoted_level are guarded by the users updateRule, and a user token
+  // can never update another user's record anyway. The Express admin route
+  // (admin token) is the only path.
+  return await request<PBUser>('POST', '/api/admin/users/vip', { pbId, level: lvl });
 }
 
 async function adminSearchUsersImpl(q: string): Promise<PBUser[]> {
@@ -1072,6 +1067,7 @@ export interface MiningSessionResponse {
   multiplier: number;
   expectedReward: number;
   miningRatePerSec: number;
+  vipLevel: number;      // VIP tier locked into the session by the server
   ptDeducted: number;
   newPowerTokens: number;
   status: string;

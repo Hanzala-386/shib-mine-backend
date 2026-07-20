@@ -131,11 +131,6 @@ export const api = {
   checkEmailExists: (email: string) =>
     request<{ found: boolean; verified: boolean }>('POST', '/api/app/auth/check-email', { email }),
 
-  updateBalance: (pbId: string, shibBalance?: number, powerTokens?: number) =>
-    request<PBUser>('PUT', `/api/app/user/${pbId}/balance`, {
-      shibBalance,
-      powerTokens,
-    }),
 
   // ── Mining ────────────────────────────────────────────────────────────
   startMining: (payload: {

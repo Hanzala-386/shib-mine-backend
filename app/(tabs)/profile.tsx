@@ -23,7 +23,8 @@ import {
 import { auth } from '@/lib/firebase';
 import SpinningCoin from '@/components/SpinningCoin';
 import { useAuth } from '@/context/AuthContext';
-import { pb, POCKETBASE_URL, processPendingReferralEarnings } from '@/lib/pocketbase';
+import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
+import { api } from '@/lib/api';
 import { useWallet } from '@/context/WalletContext';
 import { useAds } from '@/context/AdContext';
 import { InlineBannerAd, BANNER_HEIGHT } from '@/components/StickyBannerAd';
@@ -141,20 +142,26 @@ export default function ProfileScreen() {
   const { data: referralStats, refetch: refetchReferralStats } = useQuery({
     queryKey: ['/api/app/user/referral-stats', pbId, referralCode],
     queryFn: async () => {
-      // PRIMARY: PocketBase SDK direct — api.webcod.in, works on APK + web preview
+      // PRIMARY: PocketBase SDK direct READS — api.webcod.in, works on APK + web preview.
+      // SECURITY: crediting happens server-side on claim; here we only READ the
+      // unprocessed log entries and add them to the displayed balance.
       try {
-        // Process any pending commissions first so balance is always current
-        try { await processPendingReferralEarnings(pbId); } catch {}
-
         const code = referralCode;
-        const result = await pb.collection('users').getList(1, 50, {
-          filter: code ? `(referred_by = "${code}" || referred_by = "${pbId}")` : 'id = ""',
-          fields: 'id,display_name,email,created,total_claims',
-          sort: '-created',
-        });
-        const meRec = await pb.collection('users').getOne(pbId, {
-          fields: 'id,referral_balance,referral_earnings',
-        });
+        const [result, meRec, pendingLogs] = await Promise.all([
+          pb.collection('users').getList(1, 50, {
+            filter: code ? `(referred_by = "${code}" || referred_by = "${pbId}")` : 'id = ""',
+            fields: 'id,display_name,email,created,total_claims',
+            sort: '-created',
+          }),
+          pb.collection('users').getOne(pbId, {
+            fields: 'id,referral_balance,referral_earnings',
+          }),
+          pb.collection('referral_earnings_log').getFullList({
+            filter: `referrer_id = "${pbId}" && processed = false`,
+            fields: 'id,amount',
+          }).catch(() => [] as any[]),
+        ]);
+        const pendingSum = pendingLogs.reduce((s: number, r: any) => s + (Number(r.amount) || 0), 0);
         const referredUsers = (result.items || []).map((u: any) => ({
           id: u.id,
           email: u.display_name || u.email || 'Miner',
@@ -163,8 +170,8 @@ export default function ProfileScreen() {
         }));
         return {
           referredCount:   result.totalItems,
-          referralBalance: meRec.referral_balance ?? pbUser?.referralBalance ?? 0,
-          totalEarnings:   meRec.referral_earnings ?? pbUser?.referralEarnings ?? 0,
+          referralBalance: (meRec.referral_balance ?? pbUser?.referralBalance ?? 0) + pendingSum,
+          totalEarnings:   (meRec.referral_earnings ?? pbUser?.referralEarnings ?? 0) + pendingSum,
           referredUsers,
         };
       } catch {
@@ -195,70 +202,19 @@ export default function ProfileScreen() {
     RNAnimated.timing(claimAnim, { toValue: 1, duration: 280, useNativeDriver: true }).start();
   }
 
-  // ── Referral anti-cheat (soft / non-blocking) ────────────────────────────────
-  // Reads the user's last 100 referral_earnings_log rows. Flags when any single
-  // commission is abnormally large (> 200) OR 5+ entries land in the exact same
-  // minute (scripted/auto-clicker pattern). First offense → is_blacklist_1;
-  // a further offense while already on tier 1 → is_blacklist_2. The claim ALWAYS
-  // proceeds — this only sets advisory flags admins review on withdrawal approval.
-  async function detectReferralInfraction(uid: string) {
-    try {
-      const logs = await pb.collection('referral_earnings_log').getList(1, 100, {
-        filter: `referrer_id="${uid}"`,
-        sort: '-created',
-      });
-      const items = logs?.items ?? [];
-      if (items.length === 0) return;
-
-      const bigAmount = items.some((r: any) => (Number(r.amount) || 0) > 200);
-
-      const minuteBuckets: Record<string, number> = {};
-      for (const r of items) {
-        const created: string = r.created || '';
-        const minuteKey = created.slice(0, 16); // "YYYY-MM-DD HH:MM"
-        if (!minuteKey) continue;
-        minuteBuckets[minuteKey] = (minuteBuckets[minuteKey] || 0) + 1;
-      }
-      const burst = Object.values(minuteBuckets).some((n) => n >= 5);
-
-      if (!bigAmount && !burst) return;
-
-      const me = await pb.collection('users').getOne(uid, {
-        fields: 'id,is_blacklist_1,is_blacklist_2',
-      });
-      if (me.is_blacklist_2) return; // already at the highest tier
-      if (me.is_blacklist_1) {
-        await pb.collection('users').update(uid, { is_blacklist_2: true });
-      } else {
-        await pb.collection('users').update(uid, { is_blacklist_1: true });
-      }
-    } catch {
-      // Non-blocking: detection failures must never stop a legitimate claim.
-    }
-  }
-
   function handleClaimReferral() {
     if (isClaiming || !pbId) return;
     setIsClaiming(true);
 
     const doTransfer = async () => {
       try {
-        // Soft anti-cheat scan BEFORE transfer — never blocks the claim.
-        await detectReferralInfraction(pbId);
-
-        // PRIMARY: PocketBase SDK direct — api.webcod.in, works on APK + web preview
-        let result: { success: boolean; claimed: number; newShibBalance: number };
-        const userRec = await pb.collection('users').getOne(pbId, {
-          fields: 'id,referral_balance,shib_balance',
-        });
-        const balance = userRec.referral_balance || 0;
-        if (balance <= 0) throw new Error('No referral rewards to claim');
-        const newShib = (userRec.shib_balance || 0) + balance;
-        await pb.collection('users').update(pbId, {
-          shib_balance: newShib,
-          referral_balance: 0,
-        });
-        result = { success: true, claimed: balance, newShibBalance: newShib };
+        // SERVER-ONLY: the Express claim route processes pending
+        // referral_earnings_log entries, runs the anti-cheat scan (big-amount /
+        // same-minute burst → blacklist tiers), and moves referral_balance →
+        // shib_balance atomically. PocketBase rules block the old client-side
+        // self-credit entirely, so there is no PB fallback here.
+        const result = await api.claimReferral(pbId);
+        if (!result?.success) throw new Error('No referral rewards to claim');
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setShowClaimModal(false);
         claimAnim.setValue(0);

@@ -13,7 +13,7 @@ import {
   type FirebaseUser,
 } from '@/lib/firebase';
 import { api, type PBUser } from '@/lib/api';
-import { pb, POCKETBASE_URL, processPendingReferralEarnings } from '@/lib/pocketbase';
+import { pb, POCKETBASE_URL } from '@/lib/pocketbase';
 import { cleanEmail, cleanDisplayName } from '@/lib/sanitize';
 import { normalizeVipLevel } from '@shared/vip';
 import { normalizeKycStatus } from '@shared/kyc';
@@ -481,21 +481,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Process any pending referral commissions for this user (deferred crediting pattern).
-      // If this user was referred someone who just claimed, their commission is in the log.
-      // This self-updates their own balance (always allowed) and resolves within ~1 second.
-      if (pbRecord) {
-        const pendingCommission = await processPendingReferralEarnings(pbRecord.pbId);
-        if (pendingCommission > 0) {
-          // Update the in-memory record so the displayed balance is accurate immediately
-          pbRecord = {
-            ...pbRecord,
-            shibBalance:      (Number(pbRecord.shibBalance)      || 0) + pendingCommission,
-            referralBalance:  (Number(pbRecord.referralBalance)  || 0) + pendingCommission,
-            referralEarnings: (Number(pbRecord.referralEarnings) || 0) + pendingCommission,
-          };
-        }
-      }
+      // SECURITY: referral commissions are now credited SERVER-SIDE (the claim
+      // route processes referral_earnings_log). The old client-side
+      // processPendingReferralEarnings self-credit was removed — PocketBase
+      // rules block client writes to referral_balance/referral_earnings.
+      // Pending (not-yet-claimed) commissions are shown read-only by the
+      // referral stats queries in profile/invite.
 
       if (!pbRecord) throw new Error('Failed to load or create the user record');
       setPbUser(pbRecord);
@@ -745,19 +736,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await signOut();
         return;
       }
-      // Process any pending referral commissions and apply to in-memory record
-      if (pbRecord.pbId) {
-        const earned = await processPendingReferralEarnings(pbRecord.pbId).catch(() => 0);
-        if (earned > 0) {
-          // Mirror only referral_balance + referral_earnings — NOT shib_balance (wallet).
-          // Referral commissions must be claimed by the user via the Claim button.
-          pbRecord = {
-            ...pbRecord,
-            referralBalance:  (pbRecord.referralBalance  || 0) + earned,
-            referralEarnings: (pbRecord.referralEarnings || 0) + earned,
-          };
-        }
-      }
+      // SECURITY: pending referral commissions are credited server-side on
+      // claim — no client-side self-credit here (PB rules block those writes).
       setPbUser(pbRecord);
       if (pbRecord.is_verified) setUser(pbToProfile(pbRecord, fbUser));
     } catch (e: any) {

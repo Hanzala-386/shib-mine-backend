@@ -11,7 +11,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
-import { pb, processPendingReferralEarnings } from '@/lib/pocketbase';
+import { pb } from '@/lib/pocketbase';
 import Colors from '@/constants/colors';
 
 export default function InviteScreen() {
@@ -25,13 +25,12 @@ export default function InviteScreen() {
   const { data: stats } = useQuery({
     queryKey: ['/api/app/user/referral-stats', pbId],
     queryFn: async () => {
-      // PRIMARY: PocketBase SDK direct — api.webcod.in, works on APK + web preview
+      // PRIMARY: PocketBase SDK direct READS — api.webcod.in, works on APK + web preview.
+      // SECURITY: crediting happens server-side on claim; pending commissions are
+      // READ from referral_earnings_log and added to the display only.
       try {
-        // Process any pending referral commissions before reading balance
-        try { await processPendingReferralEarnings(pbId); } catch {}
-
         const code = user?.referralCode ?? pbUser?.referralCode ?? '';
-        const [refRes, meRes] = await Promise.all([
+        const [refRes, meRes, pendingLogs] = await Promise.all([
           pb.collection('users').getList(1, 200, {
             filter: code ? `(referred_by = "${code}" || referred_by = "${pbId}")` : 'id = ""',
             fields: 'id,email,created,total_claims',
@@ -39,11 +38,16 @@ export default function InviteScreen() {
           pb.collection('users').getOne(pbId, {
             fields: 'id,referral_balance,referral_earnings',
           }),
+          pb.collection('referral_earnings_log').getFullList({
+            filter: `referrer_id = "${pbId}" && processed = false`,
+            fields: 'id,amount',
+          }).catch(() => [] as any[]),
         ]);
+        const pendingSum = pendingLogs.reduce((s: number, r: any) => s + (Number(r.amount) || 0), 0);
         return {
           referredCount: refRes.totalItems,
-          totalEarnings: meRes.referral_earnings || 0,
-          referralBalance: meRes.referral_balance || 0,
+          totalEarnings: (meRes.referral_earnings || 0) + pendingSum,
+          referralBalance: (meRes.referral_balance || 0) + pendingSum,
           referredUsers: (refRes.items || []).map((u: any) => ({
             id: u.id,
             email: u.email,

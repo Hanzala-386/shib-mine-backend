@@ -102,86 +102,10 @@ async function fetchStatusDirect(pbId: string, rewards: DailyRewards): Promise<D
   return computeDailyStatus(streak, effectiveLastMs, serverNowMs, rewards);
 }
 
-// ─── APK fallback: claim directly via PocketBase (server-time secure) ─────────
-async function claimDirect(pbId: string, rewards: DailyRewards): Promise<DailyClaimResult> {
-  // Step 1: Get authoritative server time BEFORE doing any eligibility check.
-  // This prevents device-clock manipulation from bypassing the 24-hour window.
-  const [u, serverNowMs] = await Promise.all([
-    pb.collection('users').getOne(pbId, {
-      fields: 'id,daily_streak,last_daily_claim,shib_balance,power_tokens',
-    }),
-    getServerTimeMs(),  // HTTP Date header from PocketBase — device-independent
-  ]);
-
-  const streak  = Number(u.daily_streak) || 0;
-  const lastMs  = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
-  // Clamp future timestamps (prior exploit artifact)
-  const effectiveLastMs = (lastMs > 0 && lastMs > serverNowMs) ? 0 : lastMs;
-
-  // Step 2: Eligibility check against authoritative server time
-  const preStatus = computeDailyStatus(streak, effectiveLastMs, serverNowMs, rewards);
-  if (!preStatus.canClaim) throw new Error('Not yet eligible. Check back when the timer resets.');
-
-  const claimDay = preStatus.activeDay;
-  const rewardMap: Record<number, { shib: number; pt: number }> = {
-    1: { shib: rewards.day1Shib, pt: 0 },
-    2: { shib: 0,                pt: rewards.day2Pt },
-    3: { shib: rewards.day3Shib, pt: 0 },
-    4: { shib: 0,                pt: rewards.day4Pt },
-    5: { shib: rewards.day5Shib, pt: 0 },
-    6: { shib: 0,                pt: rewards.day6Pt },
-    7: { shib: rewards.day7Shib, pt: rewards.day7Pt },
-  };
-  const reward = rewardMap[claimDay] ?? { shib: 0, pt: 0 };
-
-  // Step 3: Write the audit log record. PocketBase assigns `created` server-side.
-  // createRule is now set to "@request.auth.id != \"\"" so authenticated APK users can write.
-  let serverNowIso: string;
-  try {
-    const claimRec = await pb.collection('daily_claims').create({
-      user_id:    pbId,
-      day_number: claimDay,
-      reward_shib: reward.shib,
-      reward_pt:   reward.pt,
-    });
-    // Use PocketBase's server-generated `created` field as the claim timestamp
-    serverNowIso = claimRec.created as string;
-  } catch {
-    // Fallback: re-fetch server time via HTTP Date header (still device-independent)
-    const fallbackMs = await getServerTimeMs();
-    serverNowIso = new Date(fallbackMs).toISOString();
-  }
-
-  // Step 4: Final validation with the PB-server timestamp (catches extreme skew)
-  const serverWriteMs  = new Date(serverNowIso).getTime();
-  const effectiveFinal = (lastMs > 0 && lastMs > serverWriteMs) ? 0 : lastMs;
-  const finalStatus    = computeDailyStatus(streak, effectiveFinal, serverWriteMs, rewards);
-  if (!finalStatus.canClaim) throw new Error('Server time confirms it is too early to claim.');
-
-  // Step 5: Commit balances — use server-generated timestamp, never device clock
-  const newStreak = claimDay;
-  const newShib   = (Number(u.shib_balance) || 0) + reward.shib;
-  const newPt     = (Number(u.power_tokens) || 0) + reward.pt;
-
-  await pb.collection('users').update(pbId, {
-    daily_streak:     newStreak,
-    last_daily_claim: serverNowIso,  // ← PB-server timestamp, not device time
-    shib_balance:     newShib,
-    power_tokens:     newPt,
-  });
-
-  return {
-    success:        true,
-    claimDay,
-    newStreak,
-    rewardShib:     reward.shib,
-    rewardPt:       reward.pt,
-    newShibBalance: newShib,
-    newPt,
-    nextClaimAt:    new Date(serverWriteMs + 24 * 3_600_000).toISOString(),
-    serverTime:     serverNowIso,
-  };
-}
+// SECURITY: claimDirect (client-side PocketBase daily-claim credit) was
+// REMOVED. Daily claims are SERVER-ONLY via api.claimDailyReward — PocketBase
+// rules block client writes to shib_balance/power_tokens/daily_streak.
+// Read-only status fetch (fetchStatusDirect above) is kept for APK display.
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function fmtNum(n: number): string {
@@ -785,12 +709,10 @@ function DailyRewardWidgetInner() {
     setClaiming(true);
     setClaimError(null);
     try {
-      let result: DailyClaimResult;
-      try {
-        result = await api.claimDailyReward(user.pbId);
-      } catch {
-        result = await claimDirect(user.pbId, effectiveRewards);
-      }
+      // SERVER-ONLY: the daily claim credits balances, so it must go through
+      // Express (which validates eligibility against its own clock). PocketBase
+      // rules block client-side balance writes — no claimDirect fallback.
+      const result: DailyClaimResult = await api.claimDailyReward(user.pbId);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setClaimDone({ shib: result.rewardShib, pt: result.rewardPt });
       autoPopRef.current = false;

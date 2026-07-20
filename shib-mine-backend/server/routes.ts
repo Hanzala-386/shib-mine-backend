@@ -788,6 +788,87 @@ async function ensureOtpCollection() {
 }
 
 // ─── Patch users + leaderboard-related collection rules ──────────────────────
+// ─── SECURITY: booster whitelist + caller identity verification ──────────────
+// Only these booster multipliers exist as products. Anything else in a request
+// or a stored session (e.g. 100000000) is forged data.
+const ALLOWED_BOOSTER_MULTIPLIERS = new Set([2, 4, 6, 10]);
+const VALID_SESSION_MULTIPLIERS = new Set([1, 2, 4, 6, 10]);
+
+function securityLog(route: string, msg: string, extra?: Record<string, unknown>) {
+  console.warn(`[SECURITY] ${route} — ${msg}${extra ? " " + JSON.stringify(extra) : ""}`);
+}
+
+// Verifies the caller actually owns pbId. The Authorization header must carry
+// the caller's own PocketBase USER token. users.viewRule is
+// "@request.auth.id = id", so fetching the record with that token succeeds
+// ONLY for the record owner — this is a cryptographic ownership proof without
+// any extra infrastructure.
+async function verifyCallerOwnsPbId(req: Request, pbId: string): Promise<boolean> {
+  try {
+    const raw = String(req.headers.authorization || "");
+    const token = raw.replace(/^Bearer\s+/i, "").trim();
+    if (!token || !pbId) return false;
+    const r = await fetch(
+      `${PB_URL}/api/collections/users/records/${encodeURIComponent(pbId)}?fields=id`,
+      { headers: { Authorization: token } },
+    );
+    if (!r.ok) return false;
+    const j: any = await r.json().catch(() => null);
+    return j?.id === pbId;
+  } catch {
+    return false;
+  }
+}
+
+// Returns true when the caller proved ownership of pbId; otherwise sends a 401
+// and returns false (callers must `return` immediately).
+async function requireCallerIdentity(req: Request, res: Response, pbId: string, route: string): Promise<boolean> {
+  const ok = await verifyCallerOwnsPbId(req, pbId);
+  if (!ok) {
+    securityLog(route, "identity check failed — missing/invalid token or token does not own pbId", {
+      pbId,
+      ip: String(req.ip || req.socket?.remoteAddress || ""),
+    });
+    res.status(401).json({
+      error: "UNAUTHORIZED",
+      message: "Session verification failed. Please sign in again (or update the app).",
+    });
+    return false;
+  }
+  return true;
+}
+
+// ─── Server-side processing of pending referral commission log entries ──────
+// Replaces the old CLIENT-side processPendingReferralEarnings (which required a
+// permissive users.updateRule that attackers abused to write balances directly).
+// Concurrency-safe: each entry is latched (processed=true) BEFORE crediting, so
+// two simultaneous logins can never double-credit the same entry.
+async function processPendingReferralLog(userId: string): Promise<void> {
+  try {
+    const pending = await pbGet(
+      `/api/collections/referral_earnings_log/records?filter=${encodeURIComponent(`referrer_id="${userId}" && processed=false`)}&perPage=200`,
+    );
+    const items = pending.items || [];
+    if (!items.length) return;
+    const latched: any[] = [];
+    for (const r of items) {
+      const p = await pbPatch(`/api/collections/referral_earnings_log/records/${r.id}`, { processed: true });
+      if (!p.code) latched.push(r);
+    }
+    const total = latched.reduce((s: number, r: any) => s + (Number(r.amount) || 0), 0);
+    if (total <= 0) return;
+    const u = await pbGet(`/api/collections/users/records/${userId}?fields=id,referral_balance,referral_earnings`);
+    if (u.code) return;
+    await pbPatch(`/api/collections/users/records/${userId}`, {
+      referral_balance: (Number(u.referral_balance) || 0) + total,
+      referral_earnings: (Number(u.referral_earnings) || 0) + total,
+    });
+    console.log(`[referral_earnings_log] Server-processed ${latched.length} pending entries → +${total} referral_balance for ${userId}`);
+  } catch (e: any) {
+    console.warn("[referral_earnings_log] server-side processing failed:", e.message);
+  }
+}
+
 async function ensureCollectionRules() {
   try {
     const token = await getAdminToken();
@@ -800,18 +881,41 @@ async function ensureCollectionRules() {
         listRule: "@request.auth.id != \"\"",
         // A user can view their own record — needed so pbGetSelf() works in APK
         viewRule: "@request.auth.id = id",
-        // Allow public creation so APK can create PB user directly when Express unreachable
-        createRule: "",
-        // CRITICAL: allow a user to update their own record.
-        // Without this, pbStartMining / pbClaimMining / pbActivateBooster balance writes all fail
-        // silently in the APK because the PB SDK authenticates as a regular user, not admin.
+        // Public creation kept for APK signup when Express is unreachable, BUT
+        // every economic field is now value-capped: money fields may only be
+        // the exact starter values (or omitted); server-managed fields must be
+        // omitted entirely. An attacker can no longer create a pre-loaded account.
+        createRule:
+          "(@request.data.shib_balance:isset = false || @request.data.shib_balance = 100)" +
+          " && (@request.data.power_tokens:isset = false || @request.data.power_tokens = 500)" +
+          " && (@request.data.referral_balance:isset = false || @request.data.referral_balance = 0)" +
+          " && (@request.data.referral_earnings:isset = false || @request.data.referral_earnings = 0)" +
+          " && (@request.data.total_claims:isset = false || @request.data.total_claims = 0)" +
+          " && (@request.data.total_wins:isset = false || @request.data.total_wins = 0)" +
+          " && (@request.data.fraud_attempts:isset = false || @request.data.fraud_attempts = 0)" +
+          " && (@request.data.status:isset = false || @request.data.status = \"active\")" +
+          " && @request.data.vip_level:isset = false" +
+          " && @request.data.hit_tickets:isset = false" +
+          " && @request.data.active_booster_multiplier:isset = false" +
+          " && @request.data.booster_expires:isset = false" +
+          " && @request.data.current_mining_session:isset = false" +
+          " && @request.data.daily_streak:isset = false" +
+          " && @request.data.last_daily_claim:isset = false" +
+          " && @request.data.weekly_tournament_points:isset = false" +
+          " && @request.data.is_admin_promoted:isset = false" +
+          " && @request.data.admin_promoted_level:isset = false" +
+          " && @request.data.kyc_status:isset = false" +
+          " && @request.data.is_blacklist_1:isset = false" +
+          " && @request.data.is_blacklist_2:isset = false",
+        // SECURITY LOCKDOWN: a user may update their own record, but every
+        // money/progression field is server-managed ONLY (`:isset = false`
+        // guards). This closes the attack where a stolen/derived PB user token
+        // wrote shib_balance / vip_level / booster fields directly.
+        // Money now moves EXCLUSIVELY through Express routes (admin token).
         //
-        // NOTE: referral commission cross-user updates are handled via the referral_earnings_log
-        // collection (see ensureReferralEarningsLogCollection). The claimer writes a pending entry,
-        // and the referrer processes it on their next app open (self-update, always allowed).
-        //
-        // KYC fields are server-managed ONLY — the `:isset = false` guards stop a
-        // client from self-verifying or editing their verified payout destination.
+        // Referral commissions: the server credits the referrer directly on
+        // mine/claim, and pending referral_earnings_log entries are processed
+        // server-side on login (processPendingReferralLog).
         updateRule:
           "@request.auth.id = id" +
           " && @request.data.kyc_status:isset = false" +
@@ -825,14 +929,34 @@ async function ensureCollectionRules() {
           " && @request.data.submission_count:isset = false" +
           " && @request.data.wa_verified_phone:isset = false" +
           " && @request.data.wa_verified_at:isset = false" +
-          // Arcade Hit Tickets are SERVER-credited only (gamehub creditTickets via
-          // admin token) and SERVER-debited on redeem (/api/app/hub/redeem). With
-          // this guard a client PB token can never mint or move tickets directly.
-          " && @request.data.hit_tickets:isset = false",
+          " && @request.data.hit_tickets:isset = false" +
+          // ── Money & progression: server-only ──
+          " && @request.data.shib_balance:isset = false" +
+          " && @request.data.power_tokens:isset = false" +
+          " && @request.data.vip_level:isset = false" +
+          " && @request.data.referral_balance:isset = false" +
+          " && @request.data.referral_earnings:isset = false" +
+          " && @request.data.active_booster_multiplier:isset = false" +
+          " && @request.data.booster_expires:isset = false" +
+          " && @request.data.current_mining_session:isset = false" +
+          " && @request.data.total_claims:isset = false" +
+          " && @request.data.total_wins:isset = false" +
+          " && @request.data.daily_streak:isset = false" +
+          " && @request.data.last_daily_claim:isset = false" +
+          " && @request.data.weekly_tournament_points:isset = false" +
+          // ── Enforcement state: a cheater must never un-flag/un-ban himself ──
+          " && @request.data.fraud_attempts:isset = false" +
+          " && @request.data.status:isset = false" +
+          " && @request.data.is_admin_promoted:isset = false" +
+          " && @request.data.admin_promoted_level:isset = false" +
+          " && @request.data.is_blacklist_1:isset = false" +
+          " && @request.data.is_blacklist_2:isset = false" +
+          " && @request.data.blacklist_1_notified:isset = false" +
+          " && @request.data.blacklist_1_notified_at:isset = false",
         // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
         deleteRule: "@request.auth.id = id",
       }, token);
-      console.log("[users] listRule + viewRule + createRule + updateRule + deleteRule patched — APK self-CRUD enabled");
+      console.log("[users] Rules locked down — money/progression fields server-only ✓");
     }
     // deleted_emails: public read (APK checks before sign-up without auth), authenticated create
     const deCol = await pbGet("/api/collections/deleted_emails");
@@ -889,16 +1013,16 @@ async function ensureMiningSessionsRules() {
       // User can list/view only their own sessions
       listRule:   "user = @request.auth.id",
       viewRule:   "user = @request.auth.id",
-      // Any authenticated user can open a new session (APK pbStartMining)
-      createRule: "@request.auth.id != \"\"",
-      // CRITICAL: user can update their own session.
-      // This is the rule that was missing — pbClaimMining's update call was returning
-      // 403, causing the claim to silently fail in every APK build.
-      updateRule: "user = @request.auth.id",
+      // SECURITY LOCKDOWN: sessions are created and claimed EXCLUSIVELY by the
+      // Express server (admin token). The old client-writable rules let an
+      // attacker inject sessions with booster_multiplier=100000000 and forge
+      // claimed_amount directly. createRule/updateRule = null closes both.
+      createRule: null,
+      updateRule: null,
       // No user deletion — sessions are permanent audit records
       deleteRule: null,
     }, token);
-    console.log("[mining_sessions] Rules patched — APK can create + claim sessions via PB SDK");
+    console.log("[mining_sessions] Rules locked down — server-only create/update ✓");
   } catch (e: any) {
     console.warn("[mining_sessions] Rules patch failed:", e.message);
   }
@@ -920,16 +1044,20 @@ async function ensureReferralEarningsLogCollection() {
     const token = await getAdminToken();
     const check = await pbGet("/api/collections/referral_earnings_log");
     if (!check.code) {
-      // Collection already exists — just ensure rules are correct
+      // Collection already exists — just ensure rules are correct.
+      // SECURITY LOCKDOWN: entries are written and processed EXCLUSIVELY by the
+      // Express server (admin token). The old authed createRule let attackers
+      // forge arbitrary commission entries; the owner-updateRule let them mark
+      // entries processed or replay them. Users keep read access to their own log.
       const patchRes = await pbHttp("PATCH", `/api/collections/${check.id}`, {
         listRule:   "referrer_id = @request.auth.id",
         viewRule:   "referrer_id = @request.auth.id",
-        createRule: "@request.auth.id != \"\"",
-        updateRule: "referrer_id = @request.auth.id",
+        createRule: null,
+        updateRule: null,
         deleteRule: null,
       }, token);
       if (!patchRes.code) {
-        console.log("[referral_earnings_log] Rules patched");
+        console.log("[referral_earnings_log] Rules locked down — server-only writes ✓");
       }
       return;
     }
@@ -950,26 +1078,19 @@ async function ensureReferralEarningsLogCollection() {
       return;
     }
     console.log("[referral_earnings_log] Collection created — patching rules...");
-    // Patch rules in a separate step (required for older PB versions)
+    // Patch rules in a separate step (required for older PB versions).
+    // SECURITY: server-only writes — see comment in the exists-branch above.
     const patchRes = await pbHttp("PATCH", `/api/collections/${created.id}`, {
       listRule:   "referrer_id = @request.auth.id",
       viewRule:   "referrer_id = @request.auth.id",
-      createRule: "@request.auth.id != \"\"",
-      updateRule: "referrer_id = @request.auth.id",
+      createRule: null,
+      updateRule: null,
       deleteRule: null,
     }, token);
     if (patchRes.code) {
       console.warn("[referral_earnings_log] Rules patch failed:", JSON.stringify(patchRes).slice(0, 200));
-      // Fall back to open createRule so at least writes work
-      await pbHttp("PATCH", `/api/collections/${created.id}`, {
-        listRule:   "@request.auth.id != \"\"",
-        viewRule:   "@request.auth.id != \"\"",
-        createRule: "@request.auth.id != \"\"",
-        updateRule: "@request.auth.id != \"\"",
-        deleteRule: null,
-      }, token);
     } else {
-      console.log("[referral_earnings_log] Secure referral payout pipeline active");
+      console.log("[referral_earnings_log] Secure referral payout pipeline active (server-only writes)");
     }
   } catch (e: any) {
     console.warn("[referral_earnings_log] Setup failed:", e.message);
@@ -2704,10 +2825,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/app/user/:pbId/claim-referral", async (req: Request, res: Response) => {
     try {
       const { pbId } = req.params;
-      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,referral_balance,shib_balance`);
+
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "claim-referral"))) return;
+
+      // Process any pending referral commission log entries FIRST so the claim
+      // includes commissions earned since last login (server-side, latch-first).
+      await processPendingReferralLog(pbId);
+
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,referral_balance,shib_balance,is_blacklist_1,is_blacklist_2`);
       if (user.code) return res.status(404).json({ error: "User not found" });
       const balance = user.referral_balance || 0;
       if (balance <= 0) return res.status(400).json({ error: "No referral rewards to claim" });
+
+      // ── Soft anti-cheat (NON-BLOCKING): flag suspicious referral patterns.
+      // Tier 1 on first infraction, tier 2 if already tier-1. Claim always proceeds.
+      try {
+        const logs = await pbGet(
+          `/api/collections/referral_earnings_log/records?filter=${encodeURIComponent(`referrer_id="${pbId}"`)}&sort=-created&perPage=100`,
+        );
+        const entries = logs.items || [];
+        if (entries.length) {
+          const bigAmount = entries.some((r: any) => (Number(r.amount) || 0) > 200);
+          const minuteBuckets: Record<string, number> = {};
+          for (const r of entries) {
+            const k = String(r.created || "").slice(0, 16);
+            if (k) minuteBuckets[k] = (minuteBuckets[k] || 0) + 1;
+          }
+          const burst = Object.values(minuteBuckets).some((n) => n >= 5);
+          if ((bigAmount || burst) && !user.is_blacklist_2) {
+            await pbPatch(`/api/collections/users/records/${pbId}`,
+              user.is_blacklist_1 ? { is_blacklist_2: true } : { is_blacklist_1: true },
+            ).catch(() => {});
+            securityLog("claim-referral", "referral infraction flagged", { pbId, bigAmount, burst });
+          }
+        }
+      } catch { /* non-blocking — claim proceeds */ }
+
       const newShib = (user.shib_balance || 0) + balance;
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         shib_balance: newShib,
@@ -2820,6 +2974,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
           if (!updated.code) u = { ...u, referral_code: code };
         }
+
+        // Server-side referral commission processing (replaces the old client-side
+        // path that required a permissive users.updateRule). Fire-and-forget.
+        processPendingReferralLog(u.id).catch(() => {});
+
         return res.json(formatUser(u));
       }
 
@@ -3118,6 +3277,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!updated.code) u = { ...u, referral_code: code };
       }
 
+      // Server-side referral commission processing (login path). Fire-and-forget.
+      processPendingReferralLog(u.id).catch(() => {});
+
       res.json(formatUser(u));
     } catch (e: any) {
       console.error("[/api/app/user/:id]", e.message);
@@ -3125,27 +3287,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ── Update user balance ───────────────────────────────────────────────────
+  // ── Update user balance — PERMANENTLY DISABLED ────────────────────────────
+  // SECURITY LOCKDOWN: this route accepted a client-supplied absolute
+  // shib_balance and wrote it directly — a free-money endpoint. It has no
+  // callers in the current app (api.updateBalance was dead code) and no
+  // legitimate use: every balance change flows through a server-computed route.
   app.put(
     "/api/app/user/:pbId/balance",
     async (req: Request, res: Response) => {
-      try {
-        const { pbId } = req.params;
-        const { shibBalance } = req.body;
-        const update: any = {};
-        if (shibBalance !== undefined) update.shib_balance = shibBalance;
-        // power_tokens is intentionally excluded — PT must only be modified via
-        // /api/app/game/reward or /api/app/ad/claim (server-enforced with rate limiting).
-        const updated = await pbPatch(
-          `/api/collections/users/records/${pbId}`,
-          update,
-        );
-        if (updated.code) return res.status(400).json({ error: updated.message });
-        res.json(formatUser(updated));
-      } catch (e: any) {
-        console.error("[/api/app/user/:pbId/balance]", e.message);
-        res.status(500).json({ error: "Failed to update balance" });
-      }
+      securityLog("user/balance", "blocked call to disabled direct-balance route", {
+        pbId: String(req.params.pbId || ""),
+        ip: String(req.ip || req.socket?.remoteAddress || ""),
+      });
+      res.status(410).json({ error: "This endpoint has been permanently disabled." });
     },
   );
 
@@ -3156,6 +3310,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!pbId || !multiplier)
         return res.status(400).json({ error: "pbId and multiplier required" });
 
+      // SECURITY: hard whitelist — only 2x/4x/6x/10x boosters exist. Anything
+      // else (e.g. 100000000) is a forged request. Reject BEFORE any DB work.
+      const boosterMult = Number(multiplier);
+      if (!Number.isInteger(boosterMult) || !ALLOWED_BOOSTER_MULTIPLIERS.has(boosterMult)) {
+        securityLog("boosters/activate", "rejected non-whitelisted multiplier", { pbId, multiplier, ip: String(req.ip || "") });
+        return res.status(400).json({ error: "Invalid multiplier" });
+      }
+
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "boosters/activate"))) return;
+
       const [user, settings] = await Promise.all([
         pbGet(`/api/collections/users/records/${pbId}`),
         fetchSettings(),
@@ -3165,7 +3330,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!settings) return res.status(503).json({ error: "Settings unavailable" });
 
       // Determine cost
-      const costKey = `boost_${multiplier}x_cost`;
+      const costKey = `boost_${boosterMult}x_cost`;
       const cost = settings[costKey];
       if (cost === undefined)
         return res.status(400).json({ error: "Invalid multiplier" });
@@ -3177,7 +3342,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const expiresAt = (Date.now() + 3600000).toString();
       const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
         power_tokens: user.power_tokens - cost,
-        active_booster_multiplier: multiplier,
+        active_booster_multiplier: boosterMult,
         booster_expires: expiresAt,
       });
 
@@ -3185,7 +3350,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({
         success: true,
-        multiplier,
+        multiplier: boosterMult,
         expiresAt,
         newPowerTokens: user.power_tokens - cost,
       });
@@ -3203,6 +3368,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { pbId, multiplier } = req.body;
       if (!pbId || !multiplier)
         return res.status(400).json({ error: "pbId and multiplier required" });
+
+      // SECURITY: hard whitelist — only 2x/4x/6x/10x boosters exist. Anything
+      // else (e.g. 100000000) is a forged request. Reject BEFORE any DB work.
+      const boosterMult = Number(multiplier);
+      if (!Number.isInteger(boosterMult) || !ALLOWED_BOOSTER_MULTIPLIERS.has(boosterMult)) {
+        securityLog("boosters/activate-and-mine", "rejected non-whitelisted multiplier", { pbId, multiplier, ip: String(req.ip || "") });
+        return res.status(400).json({ error: "Invalid multiplier" });
+      }
+
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "boosters/activate-and-mine"))) return;
 
       const [user, settings] = await Promise.all([
         pbGet(`/api/collections/users/records/${pbId}`),
@@ -3229,7 +3405,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Booster cost
-      const costKey = `boost_${multiplier}x_cost`;
+      const costKey = `boost_${boosterMult}x_cost`;
       const boosterCost = settings[costKey];
       if (boosterCost === undefined)
         return res.status(400).json({ error: "Invalid multiplier" });
@@ -3249,7 +3425,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 1. Deduct total cost AND set booster in one PATCH
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         power_tokens: currentPT - totalCost,
-        active_booster_multiplier: multiplier,
+        active_booster_multiplier: boosterMult,
         booster_expires: boosterExpiresAt,
       });
 
@@ -3266,7 +3442,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const dur = settings.mining_duration_minutes || 60;
       // Lock the user's CURRENT VIP level into this session (like booster_multiplier).
       const lockedVip = normalizeVipLevel(user.vip_level);
-      const expectedReward = effectiveRatePerSec(rate, lockedVip) * dur * 60 * multiplier;
+      const expectedReward = effectiveRatePerSec(rate, lockedVip) * dur * 60 * boosterMult;
 
       const session = await pbPost("/api/collections/mining_sessions/records", {
         user: pbId,
@@ -3274,7 +3450,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         claimed_amount: 0,
         is_verified: false,
         ip_address: String(req.ip || req.socket?.remoteAddress || ""),
-        booster_multiplier: multiplier,
+        booster_multiplier: boosterMult,
         vip_level: lockedVip,
       });
 
@@ -3300,7 +3476,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         endTimeMs,
         durationMs,
         serverTime: serverNow,
-        multiplier,
+        multiplier: boosterMult,
         expectedReward,
         miningRatePerSec: rate,
         vipLevel: lockedVip,
@@ -3415,6 +3591,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!pbId)
         return res.status(400).json({ error: "pbId required" });
 
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "mine/start"))) return;
+
       // Fetch user and settings in parallel
       const [userRecord, settings] = await Promise.all([
         pbGet(`/api/collections/users/records/${pbId}`),
@@ -3445,8 +3624,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (userRecord.booster_expires) {
         const expires = parseInt(userRecord.booster_expires);
         if (expires > Date.now()) {
-          activeMultiplier = userRecord.active_booster_multiplier || 1;
+          activeMultiplier = Number(userRecord.active_booster_multiplier) || 1;
         }
+      }
+      // SECURITY: clamp against whitelist — covers user records poisoned with a
+      // forged active_booster_multiplier before the rule lockdown.
+      if (!VALID_SESSION_MULTIPLIERS.has(activeMultiplier)) {
+        securityLog("mine/start", "non-whitelisted stored booster multiplier — clamped to 1", { pbId, activeMultiplier });
+        activeMultiplier = 1;
       }
 
       // Deduct power_token_per_click as mining entry fee
@@ -3604,6 +3789,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!pbId)
         return res.status(400).json({ error: "pbId required" });
 
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "mine/claim"))) return;
+
       // Fetch user and settings first — user.current_mining_session is the canonical reference
       const [user, settings] = await Promise.all([
         pbGet(`/api/collections/users/records/${pbId}`),
@@ -3725,7 +3913,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Server-side reward — 100% authoritative, no client value accepted
-      const boosterMultiplier = session.booster_multiplier || 1;
+      const boosterMultiplier = Number(session.booster_multiplier) || 1;
+      // SECURITY: whitelist check — sessions injected directly into PB with a
+      // forged multiplier (e.g. 100000000) are VOIDED, never paid out.
+      if (!VALID_SESSION_MULTIPLIERS.has(boosterMultiplier)) {
+        securityLog("mine/claim", "session has non-whitelisted booster_multiplier — voiding session", {
+          pbId, sessionId: session.id, boosterMultiplier,
+        });
+        await pbPatch(`/api/collections/mining_sessions/records/${session.id}`, { claimed_amount: -1 }).catch(() => {});
+        await pbPatch(`/api/collections/users/records/${pbId}`, { current_mining_session: "" }).catch(() => {});
+        return res.status(400).json({
+          error: "INVALID_SESSION",
+          message: "This mining session is invalid. Please start a new one.",
+        });
+      }
       const miningRate = settings.mining_rate_per_sec || 0.01736;
 
       // ── VIP reward: pay at the session-locked tier, capped by CURRENT balance
@@ -4383,6 +4584,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const grossAmount = Number(amount);
       if (!Number.isFinite(grossAmount) || grossAmount <= 0)
         return res.status(400).json({ error: "Invalid withdrawal amount" });
+
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "withdrawals"))) return;
 
       // Verify user has sufficient balance
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
@@ -5228,6 +5432,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!pbId || !amount)
         return res.status(400).json({ error: "pbId and amount required" });
 
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "game/reward"))) return;
+
       // ── MATCH RESOLUTION — single source of truth ────────────────────────
       // New clients send matchId directly. OLD clients (pre-matchId APK /
       // bridge.js) claim WITHOUT one even though the WebSocket already created
@@ -5483,13 +5690,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!pbId || !amount)
         return res.status(400).json({ error: "pbId and amount required" });
 
+      // SECURITY: amount must be a sane positive number (this route only DEBITS,
+      // but a negative amount would flip it into a credit).
+      const spendAmt = Number(amount);
+      if (!Number.isFinite(spendAmt) || spendAmt <= 0 || spendAmt > 1_000_000) {
+        securityLog("game/spend", "rejected invalid spend amount", { pbId, amount });
+        return res.status(400).json({ error: "Invalid amount" });
+      }
+
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "game/spend"))) return;
+
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
-      if ((user.power_tokens || 0) < amount)
+      if ((user.power_tokens || 0) < spendAmt)
         return res.json({ success: false, reason: "Insufficient power tokens" });
 
-      const newPT = user.power_tokens - amount;
+      const newPT = user.power_tokens - spendAmt;
       await pbPatch(`/api/collections/users/records/${pbId}`, {
         power_tokens: newPT,
       });
@@ -5808,6 +6026,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { pbId } = req.body || {};
       if (!pbId) return res.status(400).json({ error: "pbId required" });
+
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "vip/upgrade"))) return;
+
       const user = await pbGet(`/api/collections/users/records/${pbId}`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
@@ -5917,6 +6139,209 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error('[/api/app/hub/redeem]', e?.message);
       return res.status(500).json({ error: 'Redemption failed' });
+    }
+  });
+
+  // ── Daily Rewards: Status ────────────────────────────────────────────────
+  app.get("/api/app/daily/status/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+
+      const u = await pbGet(`/api/collections/users/records/${pbId}?fields=id,daily_streak,last_daily_claim`);
+      if (u.code) return res.status(404).json({ error: "User not found" });
+
+      const s = await fetchSettings();
+      const streak = Number(u.daily_streak) || 0;
+      const lastClaimMs = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
+      const serverNowMs = Date.now();
+      // Anti-cheat: if last_daily_claim is in the future (device-clock exploit artifact),
+      // treat it as 0 so the user can claim immediately (resets corrupted state cleanly).
+      const effectiveLastMs = (lastClaimMs > 0 && lastClaimMs > serverNowMs) ? 0 : lastClaimMs;
+      const diffMs = effectiveLastMs ? serverNowMs - effectiveLastMs : Infinity;
+      const H24 = 24 * 3600_000;
+      const H48 = 48 * 3600_000;
+
+      let canClaim = false;
+      let activeDay = 1;
+      let nextClaimAt: string | null = null;
+
+      if (!effectiveLastMs || diffMs >= H48) {
+        canClaim = true; activeDay = 1;
+      } else if (streak >= 7 && diffMs >= H24) {
+        canClaim = true; activeDay = 1;
+      } else if (streak >= 7) {
+        canClaim = false; activeDay = 7;
+        nextClaimAt = new Date(effectiveLastMs + H24).toISOString();
+      } else if (diffMs >= H24) {
+        canClaim = true; activeDay = streak + 1;
+      } else {
+        canClaim = false; activeDay = streak + 1;
+        nextClaimAt = new Date(effectiveLastMs + H24).toISOString();
+      }
+
+      res.json({
+        streak,
+        activeDay,
+        canClaim,
+        nextClaimAt,
+        serverTime: new Date(serverNowMs).toISOString(),
+        rewards: {
+          day1Shib: s?.daily_reward_day1_shib ?? 1000,
+          day2Pt:   s?.daily_reward_day2_pt   ?? 50,
+          day3Shib: s?.daily_reward_day3_shib ?? 3000,
+          day4Pt:   s?.daily_reward_day4_pt   ?? 100,
+          day5Shib: s?.daily_reward_day5_shib ?? 5000,
+          day6Pt:   s?.daily_reward_day6_pt   ?? 200,
+          day7Shib: s?.daily_reward_day7_shib ?? 10000,
+          day7Pt:   s?.daily_reward_day7_pt   ?? 500,
+        },
+      });
+    } catch (e: any) {
+      console.error("[/api/app/daily/status]", e.message);
+      res.status(500).json({ error: "Failed to fetch daily status" });
+    }
+  });
+
+  // ── Daily Claim Settings (admin-configured images + amounts) ────────────
+  app.get("/api/app/daily/settings", async (req: Request, res: Response) => {
+    try {
+      const result = await pbGet('/api/collections/daily_claim_settings/records?perPage=1');
+      const rec = result?.items?.[0];
+      if (!rec) {
+        return res.json({
+          id: '', day1ImageUrl: null, day1Amount: 1000,
+          day2ImageUrl: null, day2Amount: 50,
+          day3ImageUrl: null, day3Amount: 3000,
+          day4ImageUrl: null, day4Amount: 100,
+          day5ImageUrl: null, day5Amount: 5000,
+          day6ImageUrl: null, day6Amount: 200,
+          day7ShibImageUrl: null, day7ShibAmount: 10000,
+          day7PowerImageUrl: null, day7PowerAmount: 500,
+        });
+      }
+      const BASE = `https://api.webcod.in/api/files/daily_claim_settings/${rec.id}`;
+      const fu = (f: string | undefined) => (f ? `${BASE}/${f}` : null);
+      res.json({
+        id: rec.id,
+        day1ImageUrl: fu(rec.day_1_image),       day1Amount: rec.day_1_amount ?? 1000,
+        day2ImageUrl: fu(rec.day_2_image),       day2Amount: rec.day_2_amount ?? 50,
+        day3ImageUrl: fu(rec.day_3_image),       day3Amount: rec.day_3_amount ?? 3000,
+        day4ImageUrl: fu(rec.day_4_image),       day4Amount: rec.day_4_amount ?? 100,
+        day5ImageUrl: fu(rec.day_5_image),       day5Amount: rec.day_5_amount ?? 5000,
+        day6ImageUrl: fu(rec.day_6_image),       day6Amount: rec.day_6_amount ?? 200,
+        day7ShibImageUrl: fu(rec.day_7_shiba_image), day7ShibAmount: rec.day_7_shiba_amount ?? 10000,
+        day7PowerImageUrl: fu(rec.day_7_power_image), day7PowerAmount: rec.day_7_power_amount ?? 500,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/daily/settings]", e.message);
+      res.status(500).json({ error: "Failed to fetch daily settings" });
+    }
+  });
+
+  // ── Daily Rewards: Claim ─────────────────────────────────────────────────
+  app.post("/api/app/daily/claim/:pbId", async (req: Request, res: Response) => {
+    try {
+      const { pbId } = req.params;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+
+      // SECURITY: caller must prove ownership of pbId with their own PB token
+      if (!(await requireCallerIdentity(req, res, pbId, "daily/claim"))) return;
+
+      const u = await pbGet(`/api/collections/users/records/${pbId}?fields=id,daily_streak,last_daily_claim,shib_balance,power_tokens`);
+      if (u.code) return res.status(404).json({ error: "User not found" });
+
+      const s = await fetchSettings();
+      const streak = Number(u.daily_streak) || 0;
+      const lastClaimMs = u.last_daily_claim ? new Date(u.last_daily_claim).getTime() : 0;
+      const serverNowMs = Date.now();
+      // Anti-cheat: if last_daily_claim is in the future (device-clock exploit artifact),
+      // treat it as 0 — this resets the corrupted state and allows an immediate claim.
+      const effectiveLastMs = (lastClaimMs > 0 && lastClaimMs > serverNowMs) ? 0 : lastClaimMs;
+      const diffMs = effectiveLastMs ? serverNowMs - effectiveLastMs : Infinity;
+      const H24 = 24 * 3600_000;
+      const H48 = 48 * 3600_000;
+
+      let canClaim = false;
+      let claimDay = 1;
+
+      if (!effectiveLastMs || diffMs >= H48) {
+        canClaim = true; claimDay = 1;
+      } else if (streak >= 7 && diffMs >= H24) {
+        canClaim = true; claimDay = 1;
+      } else if (streak >= 7) {
+        canClaim = false;
+      } else if (diffMs >= H24) {
+        canClaim = true; claimDay = streak + 1;
+      }
+
+      if (!canClaim) {
+        const nextMs = effectiveLastMs + H24;
+        const remainingSec = Math.ceil((nextMs - serverNowMs) / 1000);
+        return res.status(429).json({ error: "Not yet eligible", nextClaimAt: new Date(nextMs).toISOString(), remainingSec });
+      }
+
+      // Fetch authoritative amounts from daily_claim_settings (primary) → settings (fallback)
+      let dsRec: any = null;
+      try {
+        const dsResult = await pbGet('/api/collections/daily_claim_settings/records?perPage=1');
+        dsRec = dsResult?.items?.[0] ?? null;
+      } catch { /* ignore */ }
+
+      const rewardMap: Record<number, { shib: number; pt: number }> = dsRec ? {
+        1: { shib: dsRec.day_1_amount ?? 1000,  pt: 0 },
+        2: { shib: 0,                             pt: dsRec.day_2_amount ?? 50 },
+        3: { shib: dsRec.day_3_amount ?? 3000,  pt: 0 },
+        4: { shib: 0,                             pt: dsRec.day_4_amount ?? 100 },
+        5: { shib: dsRec.day_5_amount ?? 5000,  pt: 0 },
+        6: { shib: 0,                             pt: dsRec.day_6_amount ?? 200 },
+        7: { shib: dsRec.day_7_shiba_amount ?? 10000, pt: dsRec.day_7_power_amount ?? 500 },
+      } : {
+        1: { shib: s?.daily_reward_day1_shib ?? 1000,  pt: 0 },
+        2: { shib: 0,                                   pt: s?.daily_reward_day2_pt ?? 50 },
+        3: { shib: s?.daily_reward_day3_shib ?? 3000,  pt: 0 },
+        4: { shib: 0,                                   pt: s?.daily_reward_day4_pt ?? 100 },
+        5: { shib: s?.daily_reward_day5_shib ?? 5000,  pt: 0 },
+        6: { shib: 0,                                   pt: s?.daily_reward_day6_pt ?? 200 },
+        7: { shib: s?.daily_reward_day7_shib ?? 10000, pt: s?.daily_reward_day7_pt ?? 500 },
+      };
+      const reward = rewardMap[claimDay] ?? { shib: 0, pt: 0 };
+      const newStreak = claimDay; // streak = how many consecutive days in current cycle
+      const newShibBalance = (Number(u.shib_balance) || 0) + reward.shib;
+      const newPt = (Number(u.power_tokens) || 0) + reward.pt;
+      const nowIso = new Date(serverNowMs).toISOString();
+
+      const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
+        daily_streak: newStreak,
+        last_daily_claim: nowIso,
+        shib_balance: newShibBalance,
+        power_tokens: newPt,
+      });
+      if (updated.code) return res.status(500).json({ error: "Failed to update user record" });
+
+      // Audit log (best-effort)
+      pbPost("/api/collections/daily_claims/records", {
+        user_id: pbId,
+        day_number: claimDay,
+        reward_shib: reward.shib,
+        reward_pt: reward.pt,
+      }).catch(() => {});
+
+      const nextClaimAt = new Date(serverNowMs + H24).toISOString();
+      res.json({
+        success: true,
+        claimDay,
+        newStreak,
+        rewardShib: reward.shib,
+        rewardPt: reward.pt,
+        newShibBalance,
+        newPt,
+        nextClaimAt,
+        serverTime: nowIso,
+      });
+    } catch (e: any) {
+      console.error("[/api/app/daily/claim]", e.message);
+      res.status(500).json({ error: "Claim failed" });
     }
   });
 

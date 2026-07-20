@@ -166,19 +166,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         return true;
       }
       return false;
-    } catch {
-      // PB SDK fallback
-      try {
-        const userRec = await pb.collection('users').getOne(pbId, { fields: 'id,power_tokens' });
-        const current = userRec.power_tokens || 0;
-        if (current < amount) return false;
-        await pb.collection('users').update(pbId, { power_tokens: current - amount });
-        await refreshBalance();
-        return true;
-      } catch (e) {
-        console.warn('[Wallet] spendPowerTokens PB fallback failed', e);
-        return false;
-      }
+    } catch (e) {
+      // SERVER-ONLY: no client-side PB fallback. power_tokens is guarded by the
+      // users updateRule (`power_tokens:isset = false`) so only the server can
+      // move it — fail closed and let the user retry when the backend is back.
+      console.warn('[Wallet] spendPowerTokens failed (server unreachable or rejected)', e);
+      return false;
     }
   }
 
@@ -187,41 +180,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     try {
       await api.gameReward(pbId, amount, type);
       await refreshBalance();
-    } catch {
-      // PocketBase SDK direct fallback — used when Express backend is unreachable.
-      // Replicates the server's cap logic exactly using last_session_score stored
-      // by the game WebSocket session, so anti-cheat is preserved even offline.
-      try {
-        const userRec = await pb.collection('users').getOne(pbId, {
-          fields: 'id,power_tokens,last_session_score,total_accumulated_score,total_wins',
-        });
-
-        // ABSOLUTE_MAX_SCORE * 2 — matches server constant
-        const ABSOLUTE_MAX = 4000;
-        let safeAmount = Math.min(Math.max(0, Math.round(Number(amount) || 0)), ABSOLUTE_MAX);
-
-        // Replicate server anti-cheat: cap at 2× server-validated session score
-        const serverScore = Number(userRec.last_session_score) || 0;
-        if (serverScore > 0 && safeAmount > serverScore * 2) {
-          safeAmount = serverScore * 2;
-        }
-
-        if (safeAmount <= 0) {
-          await refreshBalance().catch(() => {});
-          return;
-        }
-
-        await pb.collection('users').update(pbId, {
-          power_tokens:            (Number(userRec.power_tokens) || 0) + safeAmount,
-          total_accumulated_score: (Number(userRec.total_accumulated_score) || 0) + safeAmount,
-          total_wins:              type === 'game_win' ? (userRec.total_wins || 0) + 1 : userRec.total_wins || 0,
-          last_session_score:      0, // reset after claim — matches server behaviour
-        });
-        await refreshBalance();
-      } catch (e) {
-        await refreshBalance().catch(() => {});
-        throw e;
-      }
+    } catch (e) {
+      // SERVER-ONLY: no client-side PB fallback. Rewards are validated against
+      // the WebSocket-committed session score on the server; PocketBase rules
+      // block client writes to power_tokens entirely. Fail closed — surface the
+      // error so the caller can show a retry message (nothing was credited).
+      await refreshBalance().catch(() => {});
+      throw e;
     }
   }
 
@@ -240,100 +205,23 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       await fetchWalletData();
       return { success: true };
     } catch (expressErr: any) {
-      // Express returned a real validation error (4xx) — surface it, don't fall back.
+      // Express returned a real validation error (4xx) — surface it.
       const status = Number(expressErr?.status);
       if (status >= 400 && status < 500) {
         return { success: false, error: expressErr?.data?.error || expressErr?.message || 'Withdrawal rejected' };
       }
-      // PB SDK fallback — write directly to PocketBase, destination from verified KYC record
-      try {
-        const userRec = await pb.collection('users').getOne(pbId, {
-          fields: 'id,shib_balance,vip_level,kyc_status,kyc_country,kyc_bep20_address,kyc_binance_email',
-        });
-
-        if (userRec.kyc_status !== 'verified') {
-          return { success: false, error: 'Account not verified. Complete verification to withdraw.' };
-        }
-        const destination = method === 'Binance Email'
-          ? (userRec.kyc_binance_email || '')
-          : (userRec.kyc_bep20_address || '');
-        if (method === 'Binance Email' && (userRec.kyc_country !== 'India' || !destination)) {
-          return { success: false, error: 'Binance Email withdrawals are not available for your account.' };
-        }
-        if (!destination) {
-          return { success: false, error: 'No verified withdrawal destination on file. Contact support.' };
-        }
-
-        const currentBalance = userRec.shib_balance || 0;
-
-        if (currentBalance < amount) {
-          return { success: false, error: 'Insufficient balance' };
-        }
-
-        // VIP wallet lock: required SHIB balance for the active tier cannot be withdrawn.
-        const locked = lockedBalanceForVipLevel(userRec.vip_level);
-        const available = Math.max(0, currentBalance - locked);
-        if (amount > available) {
-          return {
-            success: false,
-            error: `VIP ${normalizeVipLevel(userRec.vip_level)} locks ${locked} SHIB in your wallet. You can withdraw up to ${available} SHIB. Contact support@shibahit.com to remove your VIP tier.`,
-          };
-        }
-
-        const completedRes = await pb.collection('withdrawals').getList(1, 200, {
-          filter: `user="${pbId}" && status="completed"`,
-          fields: 'id',
-        });
-        const completedCount = completedRes.totalItems || 0;
-        const minAmount = await fetchMinAmountFromPB(completedCount);
-
-        if (amount < minAmount) {
-          return { success: false, error: `Minimum withdrawal is ${minAmount} SHIB` };
-        }
-
-        // Net after fee — BEP-20 carries the dynamic network fee from
-        // settings.bep20_fees (3680 default); Binance Email is free.
-        let bep20Fee = 3680;
-        try {
-          const sRec = await pb.collection('settings').getFirstListItem('');
-          if (Number(sRec.bep20_fees) > 0) bep20Fee = Number(sRec.bep20_fees);
-        } catch {}
-        const netAmount = method === 'BEP-20' ? Math.max(0, amount - bep20Fee) : amount;
-        if (netAmount < minAmount) {
-          return { success: false, error: `Minimum withdrawal is ${minAmount} SHIB after fees` };
-        }
-
-        // Deduct balance first
-        await pb.collection('users').update(pbId, {
-          shib_balance: currentBalance - amount,
-        });
-
-        // Create withdrawal record — store net amount (after fees), destination from KYC
-        try {
-          await pb.collection('withdrawals').create({
-            user: pbId,
-            method,
-            address_or_email: destination,
-            amount: netAmount,
-            status: 'pending',
-          });
-        } catch (createErr) {
-          // Rollback balance on failure
-          await pb.collection('users').update(pbId, { shib_balance: currentBalance }).catch(() => {});
-          throw createErr;
-        }
-
-        await refreshBalance();
-        await fetchWalletData();
-        return { success: true };
-      } catch (e: any) {
-        return { success: false, error: e?.message ?? 'Withdrawal failed' };
-      }
+      // SERVER-ONLY: no client-side PB fallback. Withdrawals debit shib_balance,
+      // which is guarded by the users updateRule (`shib_balance:isset = false`) —
+      // only the server can move it. Fail closed; the balance is untouched.
+      return {
+        success: false,
+        error: 'Withdrawals are temporarily unavailable. Please check your connection and try again.',
+      };
     }
   }
 
-  // Redeem Hit Tickets for SHIB. Express-first, PocketBase SDK fallback —
-  // mirrors the Express-first/PB-fallback pattern used by createWithdrawal above.
+  // Redeem Hit Tickets for SHIB. SERVER-ONLY (no PB fallback) — hit_tickets and
+  // shib_balance are guarded fields; only the Express server can move them.
   async function redeem(
     tickets: number,
   ): Promise<{ success: boolean; shib?: number; error?: string }> {
