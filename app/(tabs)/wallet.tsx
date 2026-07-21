@@ -112,7 +112,7 @@ function MiningHistoryItem({ item }: { item: MiningHistoryRecord }) {
 export default function WalletScreen() {
   const insets = useSafeAreaInsets();
   const { shibBalance, lockedShibBalance, availableShibBalance, powerTokens, hitTickets, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
-  const { pbUser } = useAuth();
+  const { pbUser, refreshKycStatus } = useAuth();
   const { showMiningInterstitial } = useAds();
   const { isKycVerified } = useKycGate();
   const { settings } = useAdmin();
@@ -129,12 +129,17 @@ export default function WalletScreen() {
   const canUseBinance = pbUser?.kycCountry === 'India' && !!pbUser?.kycBinanceEmail;
   const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>(canUseBinance ? 'Binance Email' : 'BEP-20');
 
-  // Whole-tab KYC gate: popup every time a non-verified user lands on Wallet
+  // Whole-tab KYC gate + KYC data refresh on every wallet focus.
+  // refreshKycStatus() ensures kycBep20Address / kycBinanceEmail / kycCountry
+  // are always up-to-date — covers users who are already verified when they
+  // login (status never "changes" so the AuthContext background poll misses
+  // the reload) and users who just got approved mid-session.
   useFocusEffect(
     useCallback(() => {
       setShowKycGate(!isKycVerified);
+      refreshKycStatus().catch(() => {});
       return () => setShowKycGate(false);
-    }, [isKycVerified]),
+    }, [isKycVerified, refreshKycStatus]),
   );
 
   const fetchMiningHistory = useCallback(async (pbId: string) => {

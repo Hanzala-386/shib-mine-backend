@@ -790,13 +790,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { ...prev, kycStatus: s, kycRejectReason: reason };
     });
 
-    // ── FIX #2+
-    // When status changes to 'verified', reload the full PB user record so
-    // that the newly approved KYC fields (kyc_country, kyc_binance_email,
-    // kyc_bep20_address, etc.) are immediately reflected in pbUser state.
+    // Always reload the full PB user record when verified — not just when
+    // status changes. This covers two failure modes:
+    //  1. Status already 'verified' at login but kycBep20Address/kycBinanceEmail
+    //     were missing from the cached/old session record.
+    //  2. Status just changed to 'verified' (existing case).
     // Without this, Wallet.tsx sees stale nulls and shows
     // "No verified destination on file" / hides the Binance Email option.
-    if (statusChanged && s === 'verified') {
+    const missingDestination = !pbUser?.kycBep20Address && !pbUser?.kycBinanceEmail;
+    if (s === 'verified' && (statusChanged || missingDestination)) {
       await refreshUser().catch(() => {});
     }
   }
