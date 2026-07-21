@@ -86,6 +86,9 @@
       var el = document.getElementById('shib-match-gate');
       if (el) el.style.display = 'none';
     } catch (e) {}
+    /* Gate just lifted — start the init grace clock NOW so any C3
+     * initialisation jitter in the first 1.5 s can't fire a false GAME_OVER. */
+    if (gameReadyAt === 0) gameReadyAt = Date.now();
   }
   function gateFail() {
     if (!gateArmed || sessionReady) return;
@@ -184,6 +187,25 @@
   var pendingHits        = 0;
   var localPT            = 0;      /* STRICTLY ADDITIVE — never resets on score drop */
   var scoreVarHooked     = false;
+
+  /* ── Init grace period ────────────────────────────────────────────────
+   *  On low-end Android devices the Construct 3 runtime initialises
+   *  slowly. During those first frames the layout manager may briefly
+   *  sit on the "death" layout, or the score hook may fire a 0→X→0
+   *  transition as C3 resets variables. Either event would instantly
+   *  fire GAME_OVER with 0 PT before the player even touches the screen.
+   *
+   *  Fix: track `gameReadyAt` (set when the match gate lifts / bridge
+   *  becomes ready) and suppress all GAME_OVER signals for INIT_GRACE_MS
+   *  after that moment — except for TIME_UP which must always go through.
+   * ─────────────────────────────────────────────────────────────────── */
+  var INIT_GRACE_MS = 1500;   /* ms to ignore GAME_OVER after game ready */
+  var gameReadyAt   = 0;      /* 0 = not ready yet; set on gate-lift/bridge-ready */
+
+  function isInitGrace() {
+    /* Still in grace when: not ready yet OR < INIT_GRACE_MS since ready */
+    return gameReadyAt === 0 || (Date.now() - gameReadyAt) < INIT_GRACE_MS;
+  }
 
   /* ── Runtime accessor ────────────────────────────────────────────────── */
   function rt() {
@@ -329,8 +351,10 @@
           /* ── Score-reset-to-zero guard ─────────────────────────────────
            *  If score is forcibly reset to 0 mid-session it signals a
            *  RestartLayout / back-button exploit. Fire GAME_OVER immediately.
+           *  Guard: skip during init grace — C3 resets globals to 0 while
+           *  loading assets on slow devices, not an exploit.
            * ────────────────────────────────────────────────────────────── */
-          if (newVal === 0 && prev > 0 && localPT > 0 && !gameOverSent) {
+          if (newVal === 0 && prev > 0 && localPT > 0 && !gameOverSent && !isInitGrace()) {
             console.warn('[Bridge] HOOK: score reset 0 mid-session (prev=' + prev +
               ' localPT=' + localPT + ') → GAME_OVER (exploit blocked)');
             setTimeout(function () { if (!gameOverSent) fireGameOver(rt(), 'back_button'); }, 0);
@@ -372,6 +396,13 @@
   /* ── Shared helper: build & send a GAME_OVER message ────────────────── */
   function fireGameOver(runtime, reason) {
     if (gameOverSent) return;
+    /* Init grace: suppress GAME_OVER for INIT_GRACE_MS after game becomes
+     * ready. TIME_UP always bypasses the grace — server timer is authoritative. */
+    if (reason !== 'time_limit' && isInitGrace()) {
+      console.warn('[Bridge] GAME_OVER("' + reason + '") suppressed — init grace (' +
+        (gameReadyAt ? (Date.now() - gameReadyAt) + 'ms since ready' : 'not ready yet') + ')');
+      return;
+    }
     gameOverSent = true;
 
     var score = Math.min(localPT, ABSOLUTE_MAX_SCORE);
@@ -554,6 +585,9 @@
       post('BRIDGE_READY', {});
       console.log('[Bridge] Ready | hook=' + scoreVarHooked);
       dumpAllVars(runtime);
+      /* For legacy / non-gated apps (gate never armed → gateHide never called),
+       * start the init grace clock here so C3 init jitter is still suppressed. */
+      if (!gateArmed && gameReadyAt === 0) gameReadyAt = Date.now();
     }
 
     /* ── Retry hook install if it failed on first ready tick ──────────── */
@@ -618,6 +652,14 @@
       lastLayout = name;
 
       if (name.toLowerCase() === 'death') {
+        /* Init grace: on slow devices C3 may briefly land on the death
+         * layout during initialisation. Skip — do not fire a false GAME_OVER. */
+        if (isInitGrace()) {
+          console.warn('[Bridge] Death layout detected but init grace active — suppressed');
+          setTimeout(tick, 100);
+          return;
+        }
+
         var score     = Math.min(localPT, ABSOLUTE_MAX_SCORE);
         var elapsedMs = sessionStartMs > 0 ? (Date.now() - sessionStartMs) : 0;
 

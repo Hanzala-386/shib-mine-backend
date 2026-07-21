@@ -119,3 +119,9 @@ id = "1UNTMihRO-0w5LRWZca7J"
 uri = "file://shiba-hit-changed-files.zip"
 type = "unspecified"
 title = "All Changed Files — This Session"
+
+[[outputs]]
+id = "9-nPL10hq8OmrnvdMNvFV"
+uri = "file://arcade-game-updated.zip"
+type = "unspecified"
+title = "Arcade Game (public/arcade) — Updated bridge.js"
