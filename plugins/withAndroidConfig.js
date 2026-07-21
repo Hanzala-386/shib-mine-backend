@@ -8,7 +8,7 @@
  *  3. gradle.properties — filters deprecated keys that hard-fail AGP 8.3+
  *  4. NDK version       — Pins to 26.1.10909125 (stable LTS for RN 0.81)
  *  5. C++ config        — Sets -DANDROID_STL=c++_shared + cppFlags "-std=c++17" in cmake
- *  6. subprojects sdk   — Forces compileSdk 35 on any third-party module below it
+ *  6. subprojects sdk   — Forces compileSdk 36 on any third-party module below it
  *  7. ADI registration  — Writes adi-registration.properties into native assets
  *
  * NOTE: The Yodo1 MAS migration (repos, gradle flags, dormant toggle) and the
@@ -196,13 +196,13 @@ function withCppConfig(config) {
   });
 }
 
-/* ─── 7. Root build.gradle — force compileSdkVersion 35 for all subprojects ──── */
+/* ─── 7. Root build.gradle — force compileSdkVersion 36 for all subprojects ──── */
 //
 // react-native-install-referrer (and sometimes other third-party modules)
 // declare a lower compileSdkVersion in their own build.gradle. When AGP 8.x
 // enforces a strict namespace/compileSdk contract, this causes:
 //   "Namespace not specified … compileSdkVersion must be set"
-// We upgrade any module whose compileSdkVersion is below 35 to match the app.
+// We upgrade any module whose compileSdkVersion is below 36 to match the app.
 //
 // ⚠️ LIFECYCLE SAFETY (Gradle 8.13 + RN 0.81):
 // We must NOT unconditionally call `project.afterEvaluate(Closure)` from the root
@@ -253,13 +253,13 @@ subprojects { subproject ->
                     }
                 } catch (ignored) {}
             }
-            if (current == null || current < 35) {
-                ext.compileSdk = 35
+            if (current == null || current < 36) {
+                ext.compileSdk = 36
             }
         } catch (Throwable t) {
             // Best-effort only: an already-finalised (early-evaluated) module may
             // reject a late compileSdk write. Never abort the build over it.
-            subproject.logger.warn("[shib-patch] could not force compileSdk 35 on '" + subproject.name + "': " + t.message)
+            subproject.logger.warn("[shib-patch] could not force compileSdk 36 on '" + subproject.name + "': " + t.message)
         }
     }
     // Avoid "Cannot run Project.afterEvaluate(Closure) when the project is

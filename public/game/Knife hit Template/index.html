@@ -105,6 +105,32 @@ let bossIndex = 0;
 let gameSentToApp = false;
 let selectedKnife = 0;
 
+/* ── Initialization locks ────────────────────────────────
+   Two separate guards prevent false game-overs on low-end
+   Android devices where the WebView fires stale touch events
+   during load and the first animation frames are very slow:
+
+   PAGE_LOCK  — blocks ALL input and gameOver() for 1.5 s
+                after the page script finishes loading.
+                This swallows any "bleed-through" tap that
+                the user made to open the game screen.
+
+   LEVEL_LOCK — blocks gameOver() for 1.2 s after each call
+                to startLevel(). This prevents a missed-knife
+                false game-over caused by the first animation
+                frame running with an outsized Δt on a slow
+                device (CPU busy loading assets).
+   ─────────────────────────────────────────────────────── */
+const PAGE_LOCK_MS  = 1500;  // ms to block after page load
+const LEVEL_LOCK_MS = 1200;  // ms to block after level start
+
+let pageLockUntil  = 0;  // absolute perf timestamp
+let levelLockUntil = 0;
+
+function isPageLocked()  { return performance.now() < pageLockUntil;  }
+function isLevelLocked() { return performance.now() < levelLockUntil; }
+function isGameLocked()  { return isPageLocked() || isLevelLocked();  }
+
 /* ── Server-authoritative WebSocket scoring ──────────── */
 let pbId      = '';      // injected from React Native
 let apiUrl    = '';      // injected from React Native (https://...)
@@ -222,6 +248,10 @@ function startLevel(){
   levelComplete = false;
   levelCompleteTimer = 0;
   bossIndex = (level-1) % BOSSES.length;
+  // Set level lock: ignore game-over for LEVEL_LOCK_MS after level start.
+  // This swallows false "knife missed" events caused by the first animation
+  // frame running with a large Δt on low-end/slow devices.
+  levelLockUntil = performance.now() + LEVEL_LOCK_MS;
   state = 'playing';
 }
 
@@ -299,6 +329,10 @@ function finalizeGameOver() {
 
 function gameOver(){
   if (state === 'gameover') return;
+  // Initialization lock: ignore game-over signals during the grace periods.
+  // isGameLocked() = true for 1.5 s after page load (page lock) OR
+  //                  true for 1.2 s after each startLevel() call (level lock).
+  if (isGameLocked()) return;
   finalizeGameOver();
 }
 
@@ -363,7 +397,10 @@ function drawRoundedRect(x, y, w, h, r, fill, stroke){
 
 /* ── Main game loop ──────────────────────────────────── */
 function update(ts){
-  const dt = Math.min((ts - lastTime) / 16.67, 3);
+  // Cap Δt at 2 frames (33 ms) instead of 3 to reduce physics spikes
+  // on slow/low-end devices where a single frame can take 100+ ms.
+  // This keeps knives from teleporting past the log on the first frame.
+  const dt = Math.min((ts - lastTime) / 16.67, 2);
   lastTime = ts;
 
   if(state === 'playing'){
@@ -556,6 +593,11 @@ function drawGameOver(ts){
 
 /* ── Input ───────────────────────────────────────────── */
 function handleTap(){
+  // Page lock: swallow ALL taps for 1.5 s after load so that any
+  // bleed-through WebView touch (from the user opening the screen)
+  // cannot accidentally start or restart the game.
+  if (isPageLocked()) return;
+
   if(state === 'menu'){
     playSound(SND.button, 0.6);
     gameSentToApp = false;
@@ -616,6 +658,11 @@ document.addEventListener('message', e => {
 
 /* ── Boot ────────────────────────────────────────────── */
 lastTime = performance.now();
+
+// Arm the page-load lock immediately so any WebView bleed-through
+// taps are silently swallowed until the game canvas is stable.
+pageLockUntil = lastTime + PAGE_LOCK_MS;
+
 requestAnimationFrame(update);
 
 // Signal React Native that the game is ready for INJECT_VARS
