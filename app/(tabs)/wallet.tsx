@@ -109,6 +109,37 @@ function MiningHistoryItem({ item }: { item: MiningHistoryRecord }) {
   );
 }
 
+// ── Fresh KYC fetch — bypasses pbUser state entirely ───────────────────────
+// Fetches verified destination fields directly from PocketBase when the
+// withdrawal modal opens. Two-tier fallback:
+//   1. users.getOne  — has the data once the admin approval route ran
+//   2. verification_requests — latest 'Verified' row (covers edge cases where
+//      the users record wasn't patched yet, e.g. admin approved via PB dashboard)
+async function fetchFreshKyc(pbId: string): Promise<{ bep20: string; binance: string; country: string }> {
+  try {
+    const rec = await pb.collection('users').getOne(pbId);
+    if (rec.kyc_bep20_address || rec.kyc_binance_email) {
+      return {
+        bep20:   rec.kyc_bep20_address   || '',
+        binance: rec.kyc_binance_email   || '',
+        country: rec.kyc_country         || '',
+      };
+    }
+  } catch {}
+  try {
+    const rows = await pb.collection('verification_requests').getList(1, 1, {
+      filter: `user = "${pbId}" && status = "Verified"`,
+      sort:   '-created',
+      fields: 'bep20_address,binance_email,country',
+    });
+    const r = rows.items[0];
+    if (r) {
+      return { bep20: r.bep20_address || '', binance: r.binance_email || '', country: r.country || '' };
+    }
+  } catch {}
+  return { bep20: '', binance: '', country: '' };
+}
+
 export default function WalletScreen() {
   const insets = useSafeAreaInsets();
   const { shibBalance, lockedShibBalance, availableShibBalance, powerTokens, hitTickets, withdrawals, withdrawalTier, minWithdrawalAmount, createWithdrawal } = useWallet();
@@ -125,15 +156,21 @@ export default function WalletScreen() {
   const [showKycGate, setShowKycGate] = useState(false);
   const [miningHistory, setMiningHistory] = useState<MiningHistoryRecord[]>([]);
 
-  /* ── KYC destination routing — Binance Email only for verified India users ── */
-  const canUseBinance = pbUser?.kycCountry === 'India' && !!pbUser?.kycBinanceEmail;
-  const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>(canUseBinance ? 'Binance Email' : 'BEP-20');
+  // ── Modal-scoped KYC data — fetched fresh from PB when the modal opens ──
+  // This is the AUTHORITATIVE source for the withdrawal form. It bypasses
+  // pbUser state (which can be stale from a cached login session) and reads
+  // directly from PocketBase so the user always sees their real verified
+  // destination, even if refreshKycStatus() hasn't run yet.
+  const [modalKyc, setModalKyc] = useState<{ bep20: string; binance: string; country: string; loading: boolean }>({
+    bep20: '', binance: '', country: '', loading: false,
+  });
+
+  /* ── KYC destination routing — derived from fresh modalKyc for the modal,
+     pbUser for background display consistency ── */
+  const canUseBinance = modalKyc.country === 'India' && !!modalKyc.binance;
+  const [method, setMethod] = useState<'BEP-20' | 'Binance Email'>('BEP-20');
 
   // Whole-tab KYC gate + KYC data refresh on every wallet focus.
-  // refreshKycStatus() ensures kycBep20Address / kycBinanceEmail / kycCountry
-  // are always up-to-date — covers users who are already verified when they
-  // login (status never "changes" so the AuthContext background poll misses
-  // the reload) and users who just got approved mid-session.
   useFocusEffect(
     useCallback(() => {
       setShowKycGate(!isKycVerified);
@@ -141,6 +178,18 @@ export default function WalletScreen() {
       return () => setShowKycGate(false);
     }, [isKycVerified, refreshKycStatus]),
   );
+
+  // Open withdrawal modal: fetch fresh KYC data from PB, then set method default
+  const openWithdrawModal = useCallback(async () => {
+    if (!pbUser?.pbId) return;
+    setShowWithdraw(true);
+    setModalKyc({ bep20: '', binance: '', country: '', loading: true });
+    const kyc = await fetchFreshKyc(pbUser.pbId);
+    const isIndia = kyc.country === 'India' && !!kyc.binance;
+    setModalKyc({ ...kyc, loading: false });
+    // Default India users to Binance Email (free); others to BEP-20
+    setMethod(isIndia ? 'Binance Email' : 'BEP-20');
+  }, [pbUser?.pbId]);
 
   const fetchMiningHistory = useCallback(async (pbId: string) => {
     try {
@@ -180,10 +229,10 @@ export default function WalletScreen() {
     if (isBep20Locked && method === 'BEP-20') setMethod('Binance Email');
   }, [canUseBinance, isBep20Locked, method]);
 
-  /* ── Verified destination (read-only — server resolves the actual payout target) ── */
+  /* ── Verified destination — reads from freshly-fetched modalKyc, not pbUser ── */
   const destination = method === 'BEP-20'
-    ? (pbUser?.kycBep20Address || '')
-    : (pbUser?.kycBinanceEmail || '');
+    ? modalKyc.bep20
+    : modalKyc.binance;
 
   /* ── Pending withdrawal lock ── */
   const hasPendingWithdrawal = withdrawals.some(w => w.status === 'pending');
@@ -337,7 +386,7 @@ export default function WalletScreen() {
                 } else if (hasPendingWithdrawal) {
                   Alert.alert('Withdrawal Pending', 'Your previous request is currently under review. Please wait for it to be processed before initiating a new one.');
                 } else {
-                  setShowWithdraw(true);
+                  openWithdrawModal();
                 }
               }}
             >
@@ -527,9 +576,15 @@ export default function WalletScreen() {
               {method === 'BEP-20' ? 'BEP-20 Wallet Address' : 'Binance Email'} (Verified)
             </Text>
             <View style={styles.destBox}>
-              <Ionicons name="shield-checkmark" size={15} color={Colors.success} />
+              <Ionicons
+                name={modalKyc.loading ? 'sync-outline' : 'shield-checkmark'}
+                size={15}
+                color={modalKyc.loading ? Colors.textMuted : Colors.success}
+              />
               <Text style={styles.destBoxText} numberOfLines={1}>
-                {destination || 'No verified destination on file'}
+                {modalKyc.loading
+                  ? 'Loading verified address...'
+                  : (destination || 'No verified destination on file')}
               </Text>
               <Ionicons name="lock-closed" size={13} color={Colors.textMuted} />
             </View>
