@@ -299,7 +299,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     try {
       const res = await pb.collection('users').getList(1, 100, {
         sort:   '-weekly_tournament_points',
-        filter: 'tournament_joined = true && weekly_tournament_points > 0',
+        filter: 'tournament_joined = true',
         fields: 'id,display_name,weekly_tournament_points,avatar2',
       });
       if (!mounted.current) return;

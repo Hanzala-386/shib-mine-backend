@@ -3970,6 +3970,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         vip_level: newUserVip,        // persist any anti-drain demotion going forward
       });
 
+      // ── TOURNAMENT FIX #1: server-side sync points after every claim ─────────
+      // Best-effort — never block the claim response. If this fails (network,
+      // cycle not active, etc.) the leaderboard will self-heal on next poll.
+      (async () => {
+        try {
+          const { syncUserTournamentPoints } = await import("./tournament");
+          const points = await syncUserTournamentPoints(pbId);
+          if (points > 0) console.log(`[mine/claim] synced ${points.toFixed(2)} tournament pts for ${pbId}`);
+        } catch (e: any) {
+          console.warn("[mine/claim] tournament sync failed:", e.message);
+        }
+      })();
+
       // Log completed session for admin analytics
       pbPost("/api/collections/session_logs/records", {
         user:               pbId,

@@ -779,6 +779,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     if (!status || status === 'none') return;
     const s = status;
+    const statusChanged = s !== pbUser?.kycStatus || reason !== (pbUser?.kycRejectReason || '');
+
     setPbUser((prev) => {
       if (!prev || (prev.kycStatus === s && (prev.kycRejectReason || '') === reason)) return prev;
       return { ...prev, kycStatus: s, kycRejectReason: reason };
@@ -787,6 +789,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!prev || (prev.kycStatus === s && (prev.kycRejectReason || '') === reason)) return prev;
       return { ...prev, kycStatus: s, kycRejectReason: reason };
     });
+
+    // ── FIX #2+
+    // When status changes to 'verified', reload the full PB user record so
+    // that the newly approved KYC fields (kyc_country, kyc_binance_email,
+    // kyc_bep20_address, etc.) are immediately reflected in pbUser state.
+    // Without this, Wallet.tsx sees stale nulls and shows
+    // "No verified destination on file" / hides the Binance Email option.
+    if (statusChanged && s === 'verified') {
+      await refreshUser().catch(() => {});
+    }
   }
 
   // ── Background referral commission poll (every 60 s while logged in) ────────
