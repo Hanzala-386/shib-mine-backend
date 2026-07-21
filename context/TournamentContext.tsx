@@ -294,46 +294,49 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   useEffect(() => { if (user?.pbId) refreshUserStats(); }, [user?.pbId]);
 
   // ── Tournament leaderboard ───────────────────────────────────────────────
+  // SOURCE: tournament_participants collection (not users), filtered by the
+  // active cycle_id so only current-cycle data shows. Ordered by points DESC.
+  // This is the authoritative table — the server writes participant rows on join
+  // and updates points after each mining claim via syncUserTournamentPoints().
   const refreshLeaderboard = useCallback(async () => {
     setLbLoading(true);
     try {
-      const res = await pb.collection('users').getList(1, 100, {
-        sort:   '-weekly_tournament_points',
-        filter: 'tournament_joined = true',
-        fields: 'id,display_name,weekly_tournament_points,avatar2',
+      const cfg        = configRef.current;
+      const cycleId    = cfg?.cycle_id || '';
+      const rewardMap  = cfg?.reward_structure ?? {};
+
+      // Build filter: always filter by cycle_id when available so a stale row
+      // from a finished cycle is never counted in the new one.
+      const filter = cycleId
+        ? `cycle_id = "${cycleId}"`
+        : '';   // no cycle yet — returns nothing (empty board)
+
+      const res = await pb.collection('tournament_participants').getList(1, 100, {
+        sort:   '-points',
+        ...(filter ? { filter } : {}),
+        fields: 'id,user_id,display_name,points',
       });
       if (!mounted.current) return;
 
-      const rewardMap = configRef.current?.reward_structure ?? {};
-      const entries: TournamentEntry[] = res.items.map((u: any, i: number) => {
-        let name: string = u.display_name || 'Miner';
+      const entries: TournamentEntry[] = res.items.map((p: any, i: number) => {
+        let name: string = p.display_name || 'Miner';
         if (name.includes('@')) name = name.split('@')[0];
         const rank = i + 1;
-
-        let avatarUrl: string | undefined;
-        const av2 = u.avatar2;
-        if (av2) {
-          const filename = Array.isArray(av2) ? av2[0] : av2;
-          if (filename) avatarUrl = `${POCKETBASE_URL}/api/files/users/${u.id}/${filename}`;
-        }
-
         return {
           rank,
-          id:          u.id,
+          id:          p.user_id || p.id,
           displayName: name,
-          points:      Number(u.weekly_tournament_points) || 0,
-          prize:       Number(rewardMap[String(rank)])    || 0,
-          avatarUrl,
+          points:      Number(p.points) || 0,
+          prize:       Number(rewardMap[String(rank)]) || 0,
         };
       });
       if (mounted.current) setLeaderboard(entries);
     } catch {} finally {
       if (mounted.current) setLbLoading(false);
     }
-    // STABLE identity (empty deps): reads reward_structure from configRef, never
-    // the `config` object. Depending on `config` here churned this callback's
-    // identity on every refresh, cascading into the leaderboard screen's infinite
-    // refresh loop (effects depend on refreshTournament → refreshLeaderboard).
+    // STABLE identity (empty deps): reads cycle_id + reward_structure from
+    // configRef (not the `config` state) to avoid churning callback identity
+    // on every config refresh, which caused an infinite leaderboard refresh loop.
   }, []);
 
   // ── Join tournament ──────────────────────────────────────────────────────
