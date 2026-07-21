@@ -340,13 +340,21 @@
           origSetValue(newVal);
           var delta = newVal - prev;
           if (delta > 0 && !gameOverSent) {
-            var newHits = Math.max(1, Math.min(Math.round(delta / 5), 4));
-            for (var h = 0; h < newHits; h++) {
-              localPT += 5;
-              pendingHits++;
+            /* Init grace: C3 event sheets often copy hscore→score at layout
+             * start, producing a false +20 (or whatever lastSessionScore was)
+             * delta that was never earned. Suppress accumulation during grace
+             * so the false delta never enters localPT or SCORE_UPDATE. */
+            if (isInitGrace()) {
+              console.warn('[Bridge] HOOK +' + delta + ' suppressed (init grace)');
+            } else {
+              var newHits = Math.max(1, Math.min(Math.round(delta / 5), 4));
+              for (var h = 0; h < newHits; h++) {
+                localPT += 5;
+                pendingHits++;
+              }
+              console.log('[Bridge] HOOK +' + delta + 'pts →' + newHits +
+                ' hit(s) queued | localPT=' + localPT + ' pending=' + pendingHits);
             }
-            console.log('[Bridge] HOOK +' + delta + 'pts →' + newHits +
-              ' hit(s) queued | localPT=' + localPT + ' pending=' + pendingHits);
           }
           /* ── Score-reset-to-zero guard ─────────────────────────────────
            *  If score is forcibly reset to 0 mid-session it signals a
@@ -640,7 +648,12 @@
     }
 
     /* ── Broadcast SCORE_UPDATE — localPT never drops mid-game ─────────── */
-    if (!gameOverSent && localPT !== lastPostedScore) {
+    /* Init grace: suppress SCORE_UPDATE so RN's sessionPeakScoreRef stays 0
+     * while C3 is initialising. Any false delta accumulated during grace is
+     * not broadcast and therefore cannot poison the peak-score latch in RN,
+     * which would cause handleGameOver to show a fake "20 PT" result even
+     * when the real localPT delivered in GAME_OVER is 0. */
+    if (!gameOverSent && localPT !== lastPostedScore && !isInitGrace()) {
       post('SCORE_UPDATE', { score: localPT });
       lastPostedScore = localPT;
     }
