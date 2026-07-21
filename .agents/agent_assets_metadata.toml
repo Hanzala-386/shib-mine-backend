@@ -107,3 +107,15 @@ id = "vbMlEWkDhK6jh3g6myr2Y"
 uri = "file://dist/iceblock-arcade.zip"
 type = "unspecified"
 title = "Ice Block — upload to /iceblock/"
+
+[[outputs]]
+id = "TaYu-j1pBEFoY32v5yL0k"
+uri = "file://knife-hit-game-updated.zip"
+type = "unspecified"
+title = "Knife Hit Game — Updated (webcod.in upload)"
+
+[[outputs]]
+id = "1UNTMihRO-0w5LRWZca7J"
+uri = "file://shiba-hit-changed-files.zip"
+type = "unspecified"
+title = "All Changed Files — This Session"
