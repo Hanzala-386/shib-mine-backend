@@ -171,8 +171,22 @@ const WS_BURST_MAX    = 18;          // max hits in BURST_WINDOW: 1/300ms tick �
 const WS_SESSION_MS   = 3 * 60_000; // 3-minute hard timer
 const WS_SESSION_GRACE_MS = 15_000;  // grace so the client's GAME_OVER (with the displayed score) lands BEFORE the server auto-commit on max-length games — payout stays bounded by the 185s elapsed clamp regardless
 
+// Per-game payout specs: rawScore from the game → PT via formula, guarded by a
+// realistic PT/sec rate cap to catch impossible scores.
+//   weapon_master  : PT = rawScore × 1   (rawScore already in PT units)
+//   flappy         : PT = rawScore × 15  (1 bounce/pipe ≈ 1 raw/sec max → 15 PT/sec)
+//   fruitcut       : PT = rawScore × 0.5 (fast combos → generous 30 PT/sec cap)
+//   color          : PT = rawScore × 20  (slow accumulation → 25 PT/sec cap)
+const SOLO_GAME_SPECS: Record<string, { maxRawScore: number; ptMultiplier: number; maxPT: number; maxPtPerSec: number }> = {
+  weapon_master: { maxRawScore: 2000, ptMultiplier: 1,    maxPT: 2000, maxPtPerSec: 15 },
+  flappy:        { maxRawScore: 130,  ptMultiplier: 15,   maxPT: 1950, maxPtPerSec: 25 },
+  fruitcut:      { maxRawScore: 4000, ptMultiplier: 0.5,  maxPT: 2000, maxPtPerSec: 30 },
+  color:         { maxRawScore: 100,  ptMultiplier: 20,   maxPT: 2000, maxPtPerSec: 25 },
+};
+
 interface WsGameSession {
   pbId: string;
+  gameId: string;  // 'weapon_master' | 'flappy' | 'fruitcut' | 'color'
   hits: number;
   serverPT: number;
   startMs: number;
@@ -333,6 +347,8 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           const strictClient = appVersionAtLeast(msg.appVersion, "1.0.3");
           const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
           if (user.code) { send({ type: "ERROR", reason: "user_not_found" }); return; }
+          // Validate and normalise gameId; unknown values fall back to weapon_master
+          const gameId = SOLO_GAME_SPECS[msg.gameId as string] ? (msg.gameId as string) : "weapon_master";
           // Clean up any prior session on this connection
           if (sid) {
             const old = wsSessions.get(sid);
@@ -340,7 +356,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           }
           sid = signMatchId(pbId); // HMAC-signed match id (bound to this user) — forged ids fail the claim gate
           const session: WsGameSession = {
-            pbId, hits: 0, serverPT: 0, startMs: Date.now(),
+            pbId, gameId, hits: 0, serverPT: 0, startMs: Date.now(),
             lastHitMs: 0, hitLog: [], rejectLog: [],
             committed: false, blacklisted: false, legacy: !strictClient,
             logId: null, timer: null,
@@ -464,32 +480,30 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           // security — so GAME_OVER reconciles UP to the client score.
           if (msg.score !== undefined) {
             const rawScore = Math.max(0, Number(msg.score) || 0);
+            // Game-specific payout: convert raw game score → PT using the
+            // per-game formula (weapon_master: ×1; flappy: ×15; fruitcut: ×0.5; color: ×20).
+            // Unknown gameId falls back to weapon_master (ptMultiplier=1, behaviour unchanged).
+            const spec = SOLO_GAME_SPECS[session.gameId] || SOLO_GAME_SPECS.weapon_master;
+            const clampedRaw = Math.min(rawScore, spec.maxRawScore);
+            const clientPT   = Math.min(Math.floor(clampedRaw * spec.ptMultiplier), spec.maxPT);
             const serverElapsed = Date.now() - session.startMs;
             const clientElapsed = Number(msg.elapsed_ms) || 0;
-            // The WS session can start LATE relative to real gameplay (legacy
-            // instant start / slow handshake), so serverElapsed may be far
-            // shorter than the real game — clamping to serverElapsed+2s was
-            // capping HONEST scores. Trust the LARGER of the two clocks,
-            // bounded by the 3-minute session hard limit (+5s tolerance).
+            // Trust the LARGER of the two clocks, bounded by the 3-minute hard limit.
             const elapsedMs = Math.max(1000, Math.min(Math.max(clientElapsed, serverElapsed), 185_000));
-            // Time-based cap mirrors bridge.js client check: max 15 pts/sec
-            const maxForTime = Math.ceil((elapsedMs / 1000) * 15);
-            if (rawScore > maxForTime * 1.2 + 20) {
-              // Impossible score for the elapsed time → blacklist the match.
-              // wsCommitSession stores 0 PT + match_status "blacklisted";
-              // any reward claim on this matchId is denied.
+            // Per-game PT/sec rate cap — generous enough for honest play, strict enough
+            // to catch impossible scores (e.g. 130 flappy pipes in < 64 seconds).
+            const maxForTime = Math.ceil((elapsedMs / 1000) * spec.maxPtPerSec);
+            if (clientPT > maxForTime * 1.2 + 20) {
+              // Impossible PT for elapsed time → blacklist the match.
+              // wsCommitSession stores 0 PT + match_status "blacklisted".
               session.blacklisted = true;
               session.serverPT = 0;
-              console.warn(`[ws/game] BLACKLIST ${sid.slice(0, 8)}: impossible score ${rawScore} in ${Math.round(elapsedMs/1000)}s (max ${maxForTime}) (${session.pbId})`);
-              // Account-level flag: an impossible score for the elapsed time
-              // is unambiguous tampering — blacklist the ACCOUNT, not just
-              // the match (tier 1 → tier 2 on repeat).
-              flagUserBlacklist(session.pbId, `impossible score ${rawScore} in ${Math.round(elapsedMs / 1000)}s (max ${maxForTime})`).catch(() => {});
+              console.warn(`[ws/game][${session.gameId}] BLACKLIST ${sid.slice(0, 8)}: raw=${rawScore} pt=${clientPT} in ${Math.round(elapsedMs/1000)}s (cap=${maxForTime}) (${session.pbId})`);
+              flagUserBlacklist(session.pbId, `[${session.gameId}] impossible score raw=${rawScore} pt=${clientPT} in ${Math.round(elapsedMs / 1000)}s (cap=${maxForTime})`).catch(() => {});
             } else {
-              // Never pay LESS than the honest displayed score; never MORE
-              // than the rate/hard caps. Per-hit tally stays as fraud telemetry.
-              session.serverPT = Math.max(session.serverPT, Math.min(rawScore, WS_MAX_PT, maxForTime));
-              console.log(`[ws/game] score reconciled: raw=${rawScore} perHit=${session.hits * WS_PT_PER_HIT} elapsed=${Math.round(elapsedMs/1000)}s cap=${maxForTime} final=${session.serverPT} (${session.pbId})`);
+              // Never pay LESS than the honest displayed PT; never MORE than caps.
+              session.serverPT = Math.max(session.serverPT, Math.min(clientPT, spec.maxPT, maxForTime));
+              console.log(`[ws/game][${session.gameId}] reconciled: raw=${rawScore} pt=${clientPT} perHit=${session.hits * WS_PT_PER_HIT} elapsed=${Math.round(elapsedMs/1000)}s cap=${maxForTime} final=${session.serverPT} (${session.pbId})`);
             }
           }
 

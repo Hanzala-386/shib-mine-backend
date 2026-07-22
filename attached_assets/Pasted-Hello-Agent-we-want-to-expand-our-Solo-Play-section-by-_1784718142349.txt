@@ -1,0 +1,39 @@
+Hello Agent, we want to expand our Solo Play section by adding three new solo arcade games, while keeping the existing PvP Multiplayer Hub (6 games) and solo 'Knife Hit' completely untouched and safe.
+
+The new games must use the exact same server-authoritative backend ledger (game_score collection, HMAC-signed match IDs, anti-cheat limits, and 10-minute expiry sweeper) that 'Knife Hit' currently uses.
+
+Here are the exact game mechanics, calculations, and rules for the 3 new solo games:
+
+1. Flappy Bounce (Solo Play):
+
+Life/Attempt Rule: User gets strictly 1 life/attempt per game session.
+
+Scoring & Payout Formula: 1 Score = 15 Power Tokens (PT). (Example: Score 125 × 15 = 1875 PT).
+
+Max Score Limit: Maximum score a user can make in one game is 130 (Max PT per game = 130 × 15 = 1950 PT).
+
+End-Game Flow: Just like Knife Hit, show a game-over popup with Claim and Double (Rewarded Ad) buttons, plus a Back / Play Again option below it. (Disable physical back button during active gameplay).
+
+2. Fruit Cut (Solo Play):
+
+Scoring & Payout Formula: User gets 50% in Power Tokens based on their score. (Example: Score 1500 score = 750 PT).
+
+Max Score Limit: Maximum score a user can make in one game is 4000 (Max PT per game = 4000 × 50% = 2000 PT).
+
+End-Game Flow: Same game-over popup with Claim / Double ad options and a back button.
+
+3. Color Rush (Solo Play):
+
+Scoring & Payout Formula: 1 Score = 20 Power Tokens (PT).
+
+Max Score Limit: Maximum score a user can make in one game is 100 (Max PT per game = 100 × 20 = 2000 PT).
+
+End-Game Flow: Same game-over popup with Claim / Double ad options and a back button.
+
+Technical Implementation & Questions for You:
+
+Server & Database Integration: Every match start for these games must generate a game_score row (matching the lifecycle: active -> started -> completed/expired/blacklisted) exactly like Knife Hit. The server must calculate the final payout based on server-validated scores, not client inputs.
+
+Asset Handling: We already have game zip files / static templates on our hosting (webcod.in). Do we need to upload new ZIP files for these games, or can we integrate them using the existing static assets/templates currently on the server? Let us know what changes are needed in the frontend/backend structure.
+
+Please review these requirements, confirm how the assets should be integrated, and implement this cleanly without modifying the core PvP hub or breaking the existing Knife Hit mechanics.

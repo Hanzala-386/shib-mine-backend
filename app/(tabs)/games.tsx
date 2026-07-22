@@ -96,6 +96,31 @@ export default function GamesScreen() {
           </View>
         </Pressable>
 
+        {/* More Solo Games — Flappy Bounce, Fruit Cut, Color Rush */}
+        <View style={styles.moreSoloLabel}>
+          <Ionicons name="game-controller" size={14} color={Colors.gold} />
+          <Text style={styles.moreSoloTxt}>More Solo Games</Text>
+        </View>
+        {[
+          { gameId: 'flappy',   icon: '🐦', name: 'Flappy Bounce', formula: 'Score × 15 PT', maxPT: '1950 PT max' },
+          { gameId: 'fruitcut', icon: '🍉', name: 'Fruit Cut',     formula: 'Score × 50% PT', maxPT: '2000 PT max' },
+          { gameId: 'color',    icon: '🎨', name: 'Color Rush',    formula: 'Score × 20 PT', maxPT: '2000 PT max' },
+        ].map((g) => (
+          <Pressable
+            key={g.gameId}
+            testID={`solo-${g.gameId}`}
+            onPress={() => router.push({ pathname: '/solo-arcade', params: { gameId: g.gameId } })}
+            style={({ pressed }) => [styles.soloGameRow, { opacity: pressed ? 0.88 : 1 }]}
+          >
+            <Text style={styles.soloGameIcon}>{g.icon}</Text>
+            <View style={styles.soloGameInfo}>
+              <Text style={styles.soloGameName}>{g.name}</Text>
+              <Text style={styles.soloGameFormula}>{g.formula}  ·  {g.maxPT}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.neonOrange} />
+          </Pressable>
+        ))}
+
         {/* Multiplayer Hub — ready-made golden card + floating trophy */}
         <Pressable
           onPress={() => {
@@ -210,4 +235,23 @@ const styles = StyleSheet.create({
 
   // Redemption
   redeemWrap: { marginTop: 2 },
+
+  // More Solo Games section
+  moreSoloLabel: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginTop: 4, marginBottom: 10,
+  },
+  moreSoloTxt: {
+    color: Colors.gold, fontSize: 13, fontWeight: '700', letterSpacing: 0.4,
+  },
+  soloGameRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10,
+    backgroundColor: 'rgba(18,18,26,0.85)',
+    borderRadius: 16, paddingHorizontal: 16, paddingVertical: 14,
+    borderWidth: 1.5, borderColor: 'rgba(255,107,0,0.28)',
+  },
+  soloGameIcon: { fontSize: 28 },
+  soloGameInfo: { flex: 1, gap: 3 },
+  soloGameName: { color: Colors.textPrimary, fontSize: 15, fontWeight: '800' },
+  soloGameFormula: { color: Colors.textMuted, fontSize: 12 },
 });
