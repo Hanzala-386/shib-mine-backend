@@ -171,18 +171,44 @@ const WS_BURST_MAX    = 18;          // max hits in BURST_WINDOW: 1/300ms tick �
 const WS_SESSION_MS   = 3 * 60_000; // 3-minute hard timer
 const WS_SESSION_GRACE_MS = 15_000;  // grace so the client's GAME_OVER (with the displayed score) lands BEFORE the server auto-commit on max-length games — payout stays bounded by the 185s elapsed clamp regardless
 
-// Per-game payout specs: rawScore from the game → PT via formula, guarded by a
-// realistic PT/sec rate cap to catch impossible scores.
-//   weapon_master  : PT = rawScore × 1   (rawScore already in PT units)
-//   flappy         : PT = rawScore × 15  (1 bounce/pipe ≈ 1 raw/sec max → 15 PT/sec)
-//   fruitcut       : PT = rawScore × 0.5 (fast combos → generous 30 PT/sec cap)
-//   color          : PT = rawScore × 20  (slow accumulation → 25 PT/sec cap)
-const SOLO_GAME_SPECS: Record<string, { maxRawScore: number; ptMultiplier: number; maxPT: number; maxPtPerSec: number }> = {
+// Per-game payout specs — hardcoded fallback defaults, overridden at runtime
+// by the solo_game_config PocketBase collection (admin-editable, 5-min cache refresh).
+type SoloGameSpec = { maxRawScore: number; ptMultiplier: number; maxPT: number; maxPtPerSec: number };
+const SOLO_GAME_SPECS_DEFAULT: Record<string, SoloGameSpec> = {
   weapon_master: { maxRawScore: 2000, ptMultiplier: 1,    maxPT: 2000, maxPtPerSec: 15 },
-  flappy:        { maxRawScore: 130,  ptMultiplier: 15,   maxPT: 1950, maxPtPerSec: 25 },
+  flappy:        { maxRawScore: 120,  ptMultiplier: 15,   maxPT: 1800, maxPtPerSec: 25 },
   fruitcut:      { maxRawScore: 4000, ptMultiplier: 0.5,  maxPT: 2000, maxPtPerSec: 30 },
   color:         { maxRawScore: 100,  ptMultiplier: 20,   maxPT: 2000, maxPtPerSec: 25 },
 };
+// Live cache — populated at boot + refreshed every 5 min from solo_game_config DB
+let soloGameSpecsCache: Record<string, SoloGameSpec> = { ...SOLO_GAME_SPECS_DEFAULT };
+
+function getSoloGameSpec(gameId: string): SoloGameSpec {
+  return soloGameSpecsCache[gameId] ?? soloGameSpecsCache.weapon_master ?? SOLO_GAME_SPECS_DEFAULT.weapon_master;
+}
+
+async function refreshSoloGameSpecsCache(): Promise<void> {
+  try {
+    const res = await pbGet("/api/collections/solo_game_config/records?perPage=50&sort=game_id");
+    if (!Array.isArray(res.items) || res.items.length === 0) return;
+    const fresh: Record<string, SoloGameSpec> = { ...SOLO_GAME_SPECS_DEFAULT };
+    for (const row of res.items) {
+      const gid = row.game_id as string;
+      if (!gid) continue;
+      const def = SOLO_GAME_SPECS_DEFAULT[gid] ?? SOLO_GAME_SPECS_DEFAULT.weapon_master;
+      fresh[gid] = {
+        maxRawScore:  Number(row.max_raw_score)  || def.maxRawScore,
+        ptMultiplier: Number(row.pt_multiplier)   || def.ptMultiplier,
+        maxPT:        Number(row.max_pt)           || def.maxPT,
+        maxPtPerSec:  Number(row.max_pt_per_sec)  || def.maxPtPerSec,
+      };
+    }
+    soloGameSpecsCache = fresh;
+    console.log(`[solo_game_config] specs refreshed (${res.items.length} games)`);
+  } catch (e: any) {
+    console.warn("[solo_game_config] cache refresh failed, keeping last values:", e.message);
+  }
+}
 
 interface WsGameSession {
   pbId: string;
@@ -335,7 +361,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           const { pbId } = msg;
           if (!pbId) { send({ type: "ERROR", reason: "pbId_required" }); return; }
           // Validate and normalise gameId; unknown values fall back to weapon_master
-          const gameId = SOLO_GAME_SPECS[msg.gameId as string] ? (msg.gameId as string) : "weapon_master";
+          const gameId = soloGameSpecsCache[msg.gameId as string] ? (msg.gameId as string) : "weapon_master";
           // VERSION-AWARE routing keyed on APP version (NOT bridge version —
           // bridge.js on webcod.in is SHARED by all APKs, so a bridge flag
           // alone cannot separate 1.0.2 from 1.0.3):
@@ -483,7 +509,7 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
             // Game-specific payout: convert raw game score → PT using the
             // per-game formula (weapon_master: ×1; flappy: ×15; fruitcut: ×0.5; color: ×20).
             // Unknown gameId falls back to weapon_master (ptMultiplier=1, behaviour unchanged).
-            const spec = SOLO_GAME_SPECS[session.gameId] || SOLO_GAME_SPECS.weapon_master;
+            const spec = getSoloGameSpec(session.gameId);
             const clampedRaw = Math.min(rawScore, spec.maxRawScore);
             const clientPT   = Math.min(Math.floor(clampedRaw * spec.ptMultiplier), spec.maxPT);
             const serverElapsed = Date.now() - session.startMs;
@@ -715,6 +741,57 @@ async function ensureWithdrawalRedeemMethod() {
     console.log('[withdrawals] method select → added "Hit Ticket Redeem" ✓');
   } catch (e: any) {
     console.warn("[withdrawals] ensureWithdrawalRedeemMethod failed:", e?.message);
+  }
+}
+
+// ─── Create solo_game_config collection + seed defaults + start refresh ───
+async function setupSoloGameConfig(): Promise<void> {
+  try {
+    const token = await getAdminToken();
+    const check = await pbGet("/api/collections/solo_game_config");
+    if (check.code) {
+      await pbHttp("POST", "/api/collections", {
+        name: "solo_game_config",
+        type: "base",
+        fields: [
+          { name: "game_id",       type: "text",   required: true },
+          { name: "game_name",     type: "text",   required: false },
+          { name: "pt_multiplier", type: "number", required: true },
+          { name: "max_pt",        type: "number", required: true },
+          { name: "max_raw_score", type: "number", required: true },
+          { name: "max_pt_per_sec", type: "number", required: true },
+        ],
+        listRule:   "",   // public read — client can display multipliers
+        viewRule:   "",
+        createRule: null, // admin/server only
+        updateRule: null,
+        deleteRule: null,
+      }, token);
+      console.log("[solo_game_config] Collection created ✓");
+    } else {
+      console.log("[solo_game_config] Collection already exists ✓");
+    }
+    // Seed default rows for each game if they don't exist yet
+    const defaults = [
+      { game_id: "weapon_master", game_name: "Weapon Master", pt_multiplier: 1,    max_pt: 2000, max_raw_score: 2000, max_pt_per_sec: 15 },
+      { game_id: "flappy",        game_name: "Flappy Bounce",  pt_multiplier: 15,   max_pt: 1800, max_raw_score: 120,  max_pt_per_sec: 25 },
+      { game_id: "fruitcut",      game_name: "Fruit Cut",      pt_multiplier: 0.5,  max_pt: 2000, max_raw_score: 4000, max_pt_per_sec: 30 },
+      { game_id: "color",         game_name: "Color Rush",     pt_multiplier: 20,   max_pt: 2000, max_raw_score: 100,  max_pt_per_sec: 25 },
+    ];
+    for (const row of defaults) {
+      const existing = await pbGet(
+        `/api/collections/solo_game_config/records?filter=${encodeURIComponent(`game_id="${row.game_id}"`)}&perPage=1`
+      );
+      if (!existing.items?.length) {
+        await pbPost("/api/collections/solo_game_config/records", row);
+        console.log(`[solo_game_config] Seeded default for ${row.game_id} ✓`);
+      }
+    }
+    await refreshSoloGameSpecsCache();
+    // Refresh cache every 5 minutes so admin DB edits propagate without restart
+    setInterval(refreshSoloGameSpecsCache, 5 * 60 * 1000);
+  } catch (e: any) {
+    console.warn("[solo_game_config] setup failed (using hardcoded defaults):", e.message);
   }
 }
 
@@ -2571,6 +2648,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   getAdminToken()
     .then(() => ensureUserSchema())
     .then(() => ensureOtpCollection())
+    .then(() => setupSoloGameConfig())
     .then(() => ensureDailyUsageCollection())
     .then(() => ensureDeletedEmailsCollection())
     .then(() => ensureFraudEmailsCollection())

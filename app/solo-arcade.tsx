@@ -55,9 +55,9 @@ const GAME_META: Record<string, {
     name: 'Flappy Bounce',
     url:  'https://webcod.in/flappy/index.html',
     lives: 1,
-    maxRaw: 130,
+    maxRaw: 120,
     ptMultiplier: 15,
-    maxPT: 1950,
+    maxPT: 1800,
     formulaLabel: 'score × 15 PT',
   },
   fruitcut: {
@@ -600,7 +600,7 @@ export default function SoloArcadeScreen() {
           </View>
         )}
 
-        {/* Session HUD: timer + live score */}
+        {/* Session HUD: timer + PT counter */}
         {sessionActive && phase === 'game' && (
           <View style={[S.hud, { top: HUDTOP }]} pointerEvents="none">
             <View style={[S.hudPill, timeIsLow && S.hudPillRed]}>
@@ -608,17 +608,11 @@ export default function SoloArcadeScreen() {
               <Text style={[S.hudText, timeIsLow && S.hudTextRed]}>{formatTime(sessionTime)}</Text>
             </View>
             <View style={S.hudPill}>
-              <Ionicons name="star" size={11} color={Colors.textSecondary} />
+              <Ionicons name="star" size={11} color={Colors.gold} />
               <Text style={S.hudText}>
-                {liveScore}<Text style={S.hudTextMuted}>/{meta.maxRaw}</Text>
+                {ptEstimate}<Text style={S.hudTextMuted}>/{meta.maxPT} PT</Text>
               </Text>
             </View>
-            {ptEstimate > 0 && (
-              <View style={[S.hudPill, { borderColor: 'rgba(255,107,0,0.5)' }]}>
-                <Ionicons name="flash" size={11} color={Colors.neonOrange} />
-                <Text style={[S.hudText, { color: Colors.neonOrange }]}>{ptEstimate} PT</Text>
-              </View>
-            )}
           </View>
         )}
 
@@ -658,8 +652,8 @@ export default function SoloArcadeScreen() {
 
             <View style={S.scoreBanner}>
               <Text style={S.scoreBannerLabel}>{meta.name.toUpperCase()}</Text>
-              <Text style={S.scoreBannerNum}>{liveScore}</Text>
-              <Text style={S.scoreBannerSub}>→ {serverPT} PT  ({meta.formulaLabel})</Text>
+              <Text style={S.scoreBannerNum}>{serverPT} PT</Text>
+              <Text style={S.scoreBannerSub}>raw score: {liveScore}  ·  {meta.formulaLabel}</Text>
             </View>
 
             <View style={S.statsBox}>

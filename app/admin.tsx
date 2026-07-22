@@ -161,6 +161,14 @@ export default function AdminScreen() {
     );
   };
 
+  // ── Solo Game Config state ──
+  type SoloGameConfigRow = {
+    id: string; game_id: string; game_name: string;
+    pt_multiplier: string; max_pt: string; max_raw_score: string; max_pt_per_sec: string;
+  };
+  const [soloConfigs, setSoloConfigs]           = useState<SoloGameConfigRow[]>([]);
+  const [soloConfigSaving, setSoloConfigSaving] = useState<string | null>(null);
+
   // ── Task management state ──
   const [tasks, setTasks]                   = useState<AdminTask[]>([]);
   const [submissions, setSubmissions]       = useState<AdminTaskSubmission[]>([]);
@@ -629,6 +637,39 @@ export default function AdminScreen() {
       Alert.alert('Error', e.message || 'Failed to save daily settings.');
     } finally {
       setSavingDailySettings(false);
+    }
+  }
+
+  // ── Solo Game Config: load on mount ──
+  useEffect(() => {
+    if (!isAdmin) return;
+    pb.collection('solo_game_config').getList(1, 50, { sort: 'game_id' })
+      .then(res => setSoloConfigs(res.items.map((r: any) => ({
+        id:             r.id,
+        game_id:        r.game_id ?? '',
+        game_name:      r.game_name ?? r.game_id ?? '',
+        pt_multiplier:  String(r.pt_multiplier ?? ''),
+        max_pt:         String(r.max_pt ?? ''),
+        max_raw_score:  String(r.max_raw_score ?? ''),
+        max_pt_per_sec: String(r.max_pt_per_sec ?? ''),
+      }))))
+      .catch(() => {});
+  }, [isAdmin]);
+
+  async function handleSaveSoloConfig(row: SoloGameConfigRow) {
+    setSoloConfigSaving(row.id);
+    try {
+      await pb.collection('solo_game_config').update(row.id, {
+        pt_multiplier:  parseFloat(row.pt_multiplier)  || 1,
+        max_pt:         parseFloat(row.max_pt)         || 2000,
+        max_raw_score:  parseFloat(row.max_raw_score)  || 2000,
+        max_pt_per_sec: parseFloat(row.max_pt_per_sec) || 15,
+      });
+      Alert.alert('Saved', `${row.game_name || row.game_id} config updated.`);
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to save game config');
+    } finally {
+      setSoloConfigSaving(null);
     }
   }
 
@@ -1392,6 +1433,55 @@ export default function AdminScreen() {
                   Ends the current cycle immediately — winners are paid out and the leaderboard is cleared.
                 </Text>
               </>
+            )}
+          </AdminSection>
+
+          <AdminSection title="Solo Game Config" icon="gamepad-variant">
+            {soloConfigs.length === 0 ? (
+              <Text style={styles.emptyText}>Loading… (collection seeded by backend on first boot)</Text>
+            ) : (
+              soloConfigs.map(row => (
+                <View key={row.id} style={{ marginBottom: 20 }}>
+                  <Text style={[styles.fieldLabel, { marginBottom: 6, color: Colors.neonOrange }]}>
+                    {row.game_name || row.game_id}
+                  </Text>
+                  <AdminField
+                    label="PT Multiplier  (raw score × this = PT)"
+                    value={row.pt_multiplier}
+                    keyboardType="numeric"
+                    onChangeText={v => setSoloConfigs(cs => cs.map(c => c.id === row.id ? { ...c, pt_multiplier: v } : c))}
+                  />
+                  <AdminField
+                    label="Max PT per session"
+                    value={row.max_pt}
+                    keyboardType="numeric"
+                    onChangeText={v => setSoloConfigs(cs => cs.map(c => c.id === row.id ? { ...c, max_pt: v } : c))}
+                  />
+                  <AdminField
+                    label="Max Raw Score (hard cap)"
+                    value={row.max_raw_score}
+                    keyboardType="numeric"
+                    onChangeText={v => setSoloConfigs(cs => cs.map(c => c.id === row.id ? { ...c, max_raw_score: v } : c))}
+                  />
+                  <AdminField
+                    label="Max PT/sec (anti-cheat rate cap)"
+                    value={row.max_pt_per_sec}
+                    keyboardType="numeric"
+                    onChangeText={v => setSoloConfigs(cs => cs.map(c => c.id === row.id ? { ...c, max_pt_per_sec: v } : c))}
+                  />
+                  <Pressable
+                    style={[styles.saveBtn, soloConfigSaving === row.id && { opacity: 0.6 }]}
+                    onPress={() => handleSaveSoloConfig(row)}
+                    disabled={soloConfigSaving === row.id}
+                  >
+                    <LinearGradient colors={[Colors.neonOrange, '#CC4400']} style={styles.saveBtnGradient}>
+                      <Text style={styles.saveBtnText}>
+                        {soloConfigSaving === row.id ? 'Saving…' : `Save ${row.game_name || row.game_id}`}
+                      </Text>
+                    </LinearGradient>
+                  </Pressable>
+                </View>
+              ))
             )}
           </AdminSection>
 
