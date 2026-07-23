@@ -1,9 +1,8 @@
 /* color-arcade.js — Arcade PvP adapter for "Color Rush" (createjs).
  *
- * Color Rush is ENDLESS: there is NO gameplay match timer (spec timerSeconds:
- * null, like Flappy / Fruit Cut). A run ends only on the first wrong-colour
- * collision (the game's endGame()) → PLAYER_OUT; the server settles on the
- * higher locked score.
+ * Color Rush has a 90-second gameplay timer (timerSeconds: 90). A run ends
+ * either on the first wrong-colour collision (endGame()) or when the 90s timer
+ * expires — whichever comes first. The server settles on the higher locked score.
  *
  * Unlike the C3 games this adapter cannot use a runtime scripting API, so it
  * hooks a few named globals that js/game.js and js/canvas.js expose (all are
@@ -25,21 +24,27 @@
  * server 60. On Play, onStart() (cancels RN AFK) + onScore(0) (clears the
  * server AFK, which releases only on a SCORE; acceptScore ignores the
  * non-increase) fire once. Practice: no stage-1, no forfeit, Exit intact.
+ *
+ * GAMEPLAY TIMER (90s): starts when the player taps Play (__arcadeColorStart).
+ * Countdown is shown in the top overlay. At 0:00 the adapter calls goOut() with
+ * the current score — identical to a wrong-colour collision.
  */
 (function () {
   'use strict';
 
-  var STAGE1_SECONDS = 45;
-  var REPORT_MS = 600;          // server scoreDelta.minIntervalMs is 500
-  var WARN_AT_S = 10;
+  var STAGE1_SECONDS       = 45;
+  var GAME_DURATION_SECONDS = 90;   // 1 min 30 sec gameplay limit
+  var REPORT_MS            = 600;   // server scoreDelta.minIntervalMs is 500
+  var WARN_AT_S            = 10;
 
-  var started = false;          // match: onStart / onScore(0) sent (once)
-  var out = false;              // match: onPlayerOut sent (once)
-  var frozen = false;           // host froze us (settlement)
-  var stage1DeadlineAt = 0;     // epoch ms when the pre-game AFK window expires
-  var lastReportAt = 0;
-  var timerEl = null;
-  var blockEl = null;
+  var started           = false;    // match: onStart / onScore(0) sent (once)
+  var out               = false;    // match: onPlayerOut sent (once)
+  var frozen            = false;    // host froze us (settlement)
+  var stage1DeadlineAt  = 0;        // epoch ms when the pre-game AFK window expires
+  var gameDeadlineAt    = 0;        // epoch ms when the 90s gameplay timer expires
+  var lastReportAt      = 0;
+  var timerEl           = null;
+  var blockEl           = null;
 
   function isMatch() {
     try { return !!(window.Arcade && window.Arcade.isMatch()); } catch (e) { return false; }
@@ -107,9 +112,10 @@
   window.__arcadeColorStart = function () {   // startGame()
     if (!isMatch() || started || out || frozen) return;
     started = true;
+    gameDeadlineAt = Date.now() + GAME_DURATION_SECONDS * 1000;
     try { window.Arcade.onStart(); } catch (e) { /* noop */ }
     try { window.Arcade.onScore(0); } catch (e) { /* noop */ }
-    hideTimer();
+    hideTimer();  // hide stage-1 timer; game timer shows from loop
   };
 
   window.__arcadeColorTick = function () {    // updateGame() — per frame
@@ -125,15 +131,26 @@
     goOut(readScore());
   };
 
-  /* ── Stage-1 pre-game AFK driver (rAF — independent of game pause) ──────── */
+  /* ── Stage-1 / game-timer rAF driver ───────────────────────────────────── */
   function loop() {
     requestAnimationFrame(loop);
-    if (frozen || out || started) { return; }
+    if (frozen || out) { return; }
+
+    // Gameplay is active: show 90s countdown and enforce time limit
+    if (started && gameDeadlineAt > 0) {
+      var left = gameDeadlineAt - Date.now();
+      showTimer();
+      paintTimer(left);
+      if (left <= 0) { goOut(readScore()); }
+      return;
+    }
+
+    // Pre-game stage-1 AFK (waiting for player to tap Play)
     if (!isMatch() || !stage1DeadlineAt) { hideTimer(); return; }
-    var left = stage1DeadlineAt - Date.now();
+    var afkLeft = stage1DeadlineAt - Date.now();
     showTimer();
-    paintTimer(left, 'START IN');
-    if (left <= 0) { goOut(0); }              // never tapped Play → forfeit
+    paintTimer(afkLeft, 'START IN');
+    if (afkLeft <= 0) { goOut(0); }              // never tapped Play → forfeit
   }
 
   /* ── Wiring ────────────────────────────────────────────────────────────── */

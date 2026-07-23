@@ -179,9 +179,9 @@ export const ARCADE_GAMES: Record<string, GameSpec> = {
     // so 5/window (~10 pts/s budget vs ~2–3 honest) never clamps honest play
     // while still catching a scripted drip. Cumulative report throttled ~600ms.
     scoreDelta: { maxIncrement: 5, minIntervalMs: 500 },
-    // ENDLESS: no gameplay match timer (like Flappy/Fruit Cut). The run ends on
-    // the first wrong-colour hit → PLAYER_OUT; the higher locked score wins.
-    timerSeconds: null,
+    // 90-second gameplay timer (1 min 30 sec). The adapter and RN solo host both
+    // enforce it. Run ends on wrong-colour hit OR timer expiry — whichever first.
+    timerSeconds: 90,
     // Stage 1 pre-game AFK: adapter forfeits at 45s on the start screen, RN at
     // 50s — this backstop MUST sit above both (ordering invariant), cleared by
     // the first SCORE (adapter emits onScore(0) on the Play tap).

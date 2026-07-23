@@ -748,29 +748,66 @@ async function ensureWithdrawalRedeemMethod() {
 async function setupSoloGameConfig(): Promise<void> {
   try {
     const token = await getAdminToken();
+    // NOTE: this PocketBase version uses "schema" (not "fields") for collection
+    // create and patch — the same key used by referral_earnings_log, deleted_emails, etc.
+    const REQUIRED_SCHEMA = [
+      { name: "game_id",        type: "text",   required: true  },
+      { name: "game_name",      type: "text",   required: false },
+      { name: "pt_multiplier",  type: "number", required: true  },
+      { name: "max_pt",         type: "number", required: true  },
+      { name: "max_raw_score",  type: "number", required: true  },
+      { name: "max_pt_per_sec", type: "number", required: true  },
+    ];
+
     const check = await pbGet("/api/collections/solo_game_config");
-    if (check.code) {
-      await pbHttp("POST", "/api/collections", {
+    if (!check.id) {
+      // Collection does not exist — create it WITHOUT rules (older PB versions reject
+      // rule fields in the creation POST; rules are patched in a separate PATCH call).
+      const createResult = await pbHttp("POST", "/api/collections", {
         name: "solo_game_config",
         type: "base",
-        fields: [
-          { name: "game_id",       type: "text",   required: true },
-          { name: "game_name",     type: "text",   required: false },
-          { name: "pt_multiplier", type: "number", required: true },
-          { name: "max_pt",        type: "number", required: true },
-          { name: "max_raw_score", type: "number", required: true },
-          { name: "max_pt_per_sec", type: "number", required: true },
-        ],
-        listRule:   "",   // public read — client can display multipliers
-        viewRule:   "",
-        createRule: null, // admin/server only
-        updateRule: null,
-        deleteRule: null,
+        schema: REQUIRED_SCHEMA,
       }, token);
-      console.log("[solo_game_config] Collection created ✓");
+      if (createResult.id) {
+        console.log("[solo_game_config] Collection created ✓ id=" + createResult.id);
+        // Patch rules separately (required for older PB versions)
+        await pbHttp("PATCH", `/api/collections/${createResult.id}`, {
+          listRule:   "",   // public read — client can display multipliers
+          viewRule:   "",
+          createRule: null, // admin/server only
+          updateRule: null,
+          deleteRule: null,
+        }, token);
+      } else {
+        console.warn("[solo_game_config] Collection create failed:", JSON.stringify(createResult).substring(0, 200));
+        // Hardcoded defaults will serve — bail out cleanly
+        return;
+      }
     } else {
-      console.log("[solo_game_config] Collection already exists ✓");
+      console.log("[solo_game_config] Collection already exists ✓ id=" + check.id);
+      // Migrate: add any schema fields that are missing from an older version
+      const existingNames: string[] = (check.schema || check.fields || []).map((f: any) => f.name);
+      const missingSchema = REQUIRED_SCHEMA.filter(f => !existingNames.includes(f.name));
+      if (missingSchema.length) {
+        const updatedSchema = [...(check.schema || check.fields || []), ...missingSchema];
+        await pbHttp("PATCH", `/api/collections/${check.id}`, { schema: updatedSchema }, token);
+        console.log(`[solo_game_config] Added missing fields: ${missingSchema.map(f => f.name).join(", ")} ✓`);
+      }
     }
+
+    // Probe the records endpoint until PocketBase's schema cache is warm.
+    // After a fresh collection creation PocketBase may need a moment before the
+    // /records sub-route becomes available (returns 404 transiently).
+    let apiReady = false;
+    for (let probe = 0; probe < 6; probe++) {
+      await new Promise(r => setTimeout(r, probe === 0 ? 0 : 1000));
+      const p = await pbGet("/api/collections/solo_game_config/records?perPage=1");
+      if (Array.isArray(p.items)) { apiReady = true; break; }
+    }
+    if (!apiReady) {
+      console.warn("[solo_game_config] Records API not ready after retries — skipping seed (hardcoded defaults active)");
+    }
+
     // Seed default rows for each game if they don't exist yet
     const defaults = [
       { game_id: "weapon_master", game_name: "Weapon Master", pt_multiplier: 1,    max_pt: 2000, max_raw_score: 2000, max_pt_per_sec: 15 },
@@ -778,15 +815,25 @@ async function setupSoloGameConfig(): Promise<void> {
       { game_id: "fruitcut",      game_name: "Fruit Cut",      pt_multiplier: 0.5,  max_pt: 2000, max_raw_score: 4000, max_pt_per_sec: 30 },
       { game_id: "color",         game_name: "Color Rush",     pt_multiplier: 20,   max_pt: 2000, max_raw_score: 100,  max_pt_per_sec: 25 },
     ];
-    for (const row of defaults) {
-      const existing = await pbGet(
-        `/api/collections/solo_game_config/records?filter=${encodeURIComponent(`game_id="${row.game_id}"`)}&perPage=1`
-      );
-      if (!existing.items?.length) {
-        await pbPost("/api/collections/solo_game_config/records", row);
-        console.log(`[solo_game_config] Seeded default for ${row.game_id} ✓`);
+    if (apiReady) {
+      for (const row of defaults) {
+        const existing = await pbGet(
+          `/api/collections/solo_game_config/records?filter=${encodeURIComponent(`game_id="${row.game_id}"`)}&perPage=1`
+        );
+        if (!existing.items?.length) {
+          const result = await pbPost("/api/collections/solo_game_config/records", row);
+          if (result.id) {
+            console.log(`[solo_game_config] Seeded default for ${row.game_id} ✓`);
+          } else {
+            console.warn(`[solo_game_config] Seed failed for ${row.game_id}:`, JSON.stringify(result));
+          }
+        } else {
+          console.log(`[solo_game_config] Row exists for ${row.game_id} ✓`);
+        }
       }
     }
+
+    // Refresh cache (1.5s delay already elapsed above)
     await refreshSoloGameSpecsCache();
     // Refresh cache every 5 minutes so admin DB edits propagate without restart
     setInterval(refreshSoloGameSpecsCache, 5 * 60 * 1000);

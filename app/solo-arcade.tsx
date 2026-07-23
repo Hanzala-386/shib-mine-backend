@@ -83,6 +83,11 @@ const GAME_META: Record<string, {
 const DEFAULT_GAME_ID = 'flappy';
 const SESSION_SECONDS     = 180;
 const WEBVIEW_MAX_RETRIES = 3;
+// Per-game hard time limit (ms). When the player taps Play and the first
+// ARCADE_SCORE arrives, this timer starts. When it fires the session ends
+// exactly as if the session timer expired. Games without an entry are unbounded
+// (only the 3-minute WS session cap applies).
+const GAME_DURATION_MS: Partial<Record<string, number>> = { color: 90_000 };
 const RETRY_DELAYS = [1500, 2500, 4000];
 
 type Phase = 'game' | 'summary' | 'double_ad' | 'saving' | 'reward';
@@ -121,7 +126,9 @@ export default function SoloArcadeScreen() {
   const gameOverFiredRef = useRef(false);
   const sessionActiveRef = useRef(false);
   const claimInFlightRef = useRef(false);
-  const sessionTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionTimerRef       = useRef<ReturnType<typeof setInterval> | null>(null);
+  const gameTimerRef          = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gameDurationStartedRef = useRef(false);
   const retryTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryCountRef    = useRef(0);
 
@@ -150,6 +157,7 @@ export default function SoloArcadeScreen() {
 
   useEffect(() => () => {
     if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+    if (gameTimerRef.current)    clearTimeout(gameTimerRef.current);
     if (retryTimerRef.current)   clearTimeout(retryTimerRef.current);
     closeWs();
   }, []);
@@ -181,9 +189,11 @@ export default function SoloArcadeScreen() {
     }
   }, []);
 
-  /* ── Stop the session timer ── */
+  /* ── Stop the session timer (also clears game-duration timer) ── */
   const stopSessionTimer = useCallback(() => {
     if (sessionTimerRef.current) { clearInterval(sessionTimerRef.current); sessionTimerRef.current = null; }
+    if (gameTimerRef.current)    { clearTimeout(gameTimerRef.current);  gameTimerRef.current = null; }
+    gameDurationStartedRef.current = false;
     sessionActiveRef.current = false;
   }, []);
 
@@ -456,6 +466,23 @@ export default function SoloArcadeScreen() {
       liveScoreRef.current = s;
       setLiveScore(s);
       setPtEstimate(estimatePT(gameId, s));
+      // Start game-specific duration timer on the first score event (= player tapped Play).
+      // Only applies to games that declare a hard time limit (currently: Color Rush 90s).
+      const gameDurMs = GAME_DURATION_MS[gameId];
+      if (gameDurMs && !gameDurationStartedRef.current && sessionActiveRef.current) {
+        gameDurationStartedRef.current = true;
+        gameTimerRef.current = setTimeout(() => {
+          if (gameOverFiredRef.current) return;
+          sendToGame({ type: 'ARCADE_FREEZE' });
+          const elapsed = Date.now() - sessionStartRef.current;
+          wsSend({ type: 'GAME_OVER', score: liveScoreRef.current, elapsed_ms: Math.max(elapsed, 1000) });
+          setTimeout(() => {
+            if (!gameOverFiredRef.current) {
+              handleGameOver(estimatePT(gameId, liveScoreRef.current), 'time');
+            }
+          }, 5000);
+        }, gameDurMs);
+      }
     }
     if (msg.type === 'ARCADE_OUT') {
       if (gameOverFiredRef.current) return;

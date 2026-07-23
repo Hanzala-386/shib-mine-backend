@@ -24,3 +24,4 @@
 - [Referral commission pipeline](referral-commission-pipeline.md) — referred_by is usually a record ID not a code; code-only lookups pay nothing; cross-user reads need LIST filter, not getOne.
 - [Telegram webhook ownership](telegram-webhook-ownership.md) — prod must own the bot webhook (dev domain sleeps → 404 silent bot); missing bot-token env silently discards updates.
 - [Arcade perf-core adaptive resolution](arcade-perf-core.md) — dpr-cap getter + render-scale ladder per engine; C3 trio = dpr getter × ladder + synthetic resize; EaselJS-NEXT stageX is backing-px.
+- [PB collection create two-step](pb-collection-create-two-step.md) — use `schema:` not `fields:`; no rules in POST body or schema appears blank (400); PATCH rules separately after creation.
