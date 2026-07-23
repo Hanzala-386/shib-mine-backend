@@ -541,22 +541,27 @@ function withInMobiLibsCopy(config) {
 
 /* ─── 12. InMobi mediation adapter dep + fileTree for local AARs ─────────────── */
 //
-// com.google.ads.mediation:inmobi:11.4.0.0
-//   POM declares: play-services-ads:25.4.0, inmobi-ads-kotlin:11.4.0,
-//                 kotlin-stdlib:2.3.0, androidx.annotation:1.8.2,
+// com.google.ads.mediation:inmobi:11.2.0.0
+//   POM declares: play-services-ads:25.1.0, inmobi-ads-kotlin:11.2.0,
+//                 kotlin-stdlib:2.1.10, androidx.annotation:1.8.2,
 //                 com.google.ads.mediation:common:1.1.0
 //
 // The transitive inmobi-ads-kotlin is EXCLUDED because the SDK classes are
 // supplied via the local InMobiSDK.aar (preventing duplicate class errors).
 //
-// GMA version note: this adapter pins play-services-ads 25.4.0 — one patch
-// above the 25.0.0 that RNGMA 16.1.0 bundles. Gradle resolves to 25.4.0 (highest
-// wins). Risk: same upgrade path that broke compileReleaseKotlin with the Unity
-// 4.19.0.0 adapter; mitigated here by the Kotlin 2.2.20 pin which can read
-// the 2.3.0 metadata written by GMA 25.4.0's kotlin-stdlib. Confirm via EAS build.
+// VERSION SELECTION RATIONALE — why 11.2.0.0 and NOT the latest 11.4.0.0:
+//   InMobi 11.3.0+ and 11.4.0.0 both pin play-services-ads:25.4.0 whose
+//   kotlin-stdlib is 2.3.0 (metadata 2.3.0). The Kotlin 2.1.x compiler that
+//   builds :react-native-google-mobile-ads cannot read 2.3.0 metadata →
+//   ":app:compileReleaseKotlin" hard-fails.
+//   InMobi 11.2.0.0 is the HIGHEST version that pins GMA 25.1.0 with
+//   kotlin-stdlib 2.1.10 (metadata 2.1.0) — the same as Unity 4.17.0.0 and
+//   confirmed Kotlin-safe. GMA resolves to 25.1.0 (vs RNGMA's 25.0.0); GMA
+//   25.1.0 itself also uses kotlin-stdlib 2.1.0 — no upgrade risk.
+//   If you need 11.4.0.0: upgrade Kotlin to ≥2.3.0 first (check KSP ceiling).
 //
 const INMOBI_MEDIATION_MARKER  = '// [shib-patch] inmobi-admob-mediation';
-const INMOBI_ADAPTER_DEP       = 'com.google.ads.mediation:inmobi:11.4.0.0';
+const INMOBI_ADAPTER_DEP       = 'com.google.ads.mediation:inmobi:11.2.0.0';
 
 /**
  * Pure transform (exported for tests): inject InMobi mediation adapter +
