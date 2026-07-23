@@ -25,3 +25,4 @@
 - [Telegram webhook ownership](telegram-webhook-ownership.md) — prod must own the bot webhook (dev domain sleeps → 404 silent bot); missing bot-token env silently discards updates.
 - [Arcade perf-core adaptive resolution](arcade-perf-core.md) — dpr-cap getter + render-scale ladder per engine; C3 trio = dpr getter × ladder + synthetic resize; EaselJS-NEXT stageX is backing-px.
 - [PB collection create two-step](pb-collection-create-two-step.md) — use `schema:` not `fields:`; no rules in POST body or schema appears blank (400); PATCH rules separately after creation.
+- [InMobi mediation local AAR pattern](inmobi-mediation-aars.md) — local AARs in android-libs/ + fileTree + exclude transitive SDK dep avoids duplicate-class errors; InMobi 11.4.0.0 pins GMA 25.4.0 (risk: see note).

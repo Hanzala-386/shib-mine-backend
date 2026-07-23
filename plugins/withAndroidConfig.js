@@ -494,6 +494,110 @@ function withKotlinVersionEnforced(config) {
   return config;
 }
 
+/* ─── 11. Copy InMobi .aar files into android/app/libs/ ──────────────────────── */
+//
+// InMobiSDK.aar (2.2 MB) — the InMobi monetisation SDK itself.
+// OMSDK.aar     (85 KB) — IAB Open Measurement SDK required by InMobi for
+//                          viewability tracking.
+//
+// Both files live in <project-root>/android-libs/ (git-committed). They are
+// copied into android/app/libs/ on every `expo prebuild` run so they survive
+// the regenerated android/ directory (which is gitignored and recreated fresh
+// on each EAS build).
+//
+// WHY fileTree + exclude instead of letting the adapter pull inmobi-ads-kotlin
+// from Maven Central transitively:
+//   • Avoids a duplicate-class Gradle error that occurs when both the local
+//     InMobiSDK.aar AND the Maven artifact define the same classes.
+//   • Keeps the exact SDK build the user has verified working.
+//
+const INMOBI_LIBS_MARKER = '// [shib-patch] inmobi-local-aars';
+const INMOBI_SOURCE_LIBS = ['InMobiSDK.aar', 'OMSDK.aar'];
+
+function withInMobiLibsCopy(config) {
+  return withDangerousMod(config, [
+    'android',
+    async (cfg) => {
+      const srcDir  = path.join(cfg.modRequest.projectRoot, 'android-libs');
+      const destDir = path.join(cfg.modRequest.platformProjectRoot, 'app', 'libs');
+
+      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+
+      for (const fname of INMOBI_SOURCE_LIBS) {
+        const src  = path.join(srcDir, fname);
+        const dest = path.join(destDir, fname);
+        if (!fs.existsSync(src)) {
+          console.warn(`[withAndroidConfig] ✗ InMobi lib not found at ${src} — skipping copy`);
+          continue;
+        }
+        fs.copyFileSync(src, dest);
+        console.log(`[withAndroidConfig] ✓ Copied ${fname} → android/app/libs/`);
+      }
+
+      return cfg;
+    },
+  ]);
+}
+
+/* ─── 12. InMobi mediation adapter dep + fileTree for local AARs ─────────────── */
+//
+// com.google.ads.mediation:inmobi:11.4.0.0
+//   POM declares: play-services-ads:25.4.0, inmobi-ads-kotlin:11.4.0,
+//                 kotlin-stdlib:2.3.0, androidx.annotation:1.8.2,
+//                 com.google.ads.mediation:common:1.1.0
+//
+// The transitive inmobi-ads-kotlin is EXCLUDED because the SDK classes are
+// supplied via the local InMobiSDK.aar (preventing duplicate class errors).
+//
+// GMA version note: this adapter pins play-services-ads 25.4.0 — one patch
+// above the 25.0.0 that RNGMA 16.1.0 bundles. Gradle resolves to 25.4.0 (highest
+// wins). Risk: same upgrade path that broke compileReleaseKotlin with the Unity
+// 4.19.0.0 adapter; mitigated here by the Kotlin 2.2.20 pin which can read
+// the 2.3.0 metadata written by GMA 25.4.0's kotlin-stdlib. Confirm via EAS build.
+//
+const INMOBI_MEDIATION_MARKER  = '// [shib-patch] inmobi-admob-mediation';
+const INMOBI_ADAPTER_DEP       = 'com.google.ads.mediation:inmobi:11.4.0.0';
+
+/**
+ * Pure transform (exported for tests): inject InMobi mediation adapter +
+ * local-aar fileTree into the app build.gradle top-level `dependencies {` block.
+ * Idempotent via marker. Returns { contents, changed }.
+ */
+function injectInMobiMediationDeps(contents) {
+  if (typeof contents !== 'string') return { contents, changed: false };
+  if (contents.includes(INMOBI_MEDIATION_MARKER)) return { contents, changed: false };
+
+  const depsBlockRe = /^dependencies\s*\{/m;
+  if (!depsBlockRe.test(contents)) {
+    console.warn('[withAndroidConfig] ✗ InMobi mediation: no top-level dependencies{} block — NOT injected');
+    return { contents, changed: false };
+  }
+
+  const snippet = [
+    INMOBI_MEDIATION_MARKER,
+    // Local InMobiSDK.aar + OMSDK.aar from android/app/libs/
+    '    implementation(fileTree(dir: "libs", include: ["*.aar"]))',
+    // Adapter from Google Maven — exclude transitive SDK (provided by local AAR)
+    `    implementation("${INMOBI_ADAPTER_DEP}") {`,
+    '        exclude group: "com.inmobi.monetization", module: "inmobi-ads-kotlin"',
+    '    }',
+  ].join('\n    ');
+
+  const injected = contents.replace(depsBlockRe, `dependencies {\n    ${snippet}\n`);
+  return { contents: injected, changed: true };
+}
+
+function withInMobiMediationDeps(config) {
+  return withAppBuildGradle(config, (cfg) => {
+    const res = injectInMobiMediationDeps(cfg.modResults.contents);
+    cfg.modResults.contents = res.contents;
+    if (res.changed) {
+      console.log(`[withAndroidConfig] ✓ InMobi mediation deps injected (${INMOBI_ADAPTER_DEP} + local AARs)`);
+    }
+    return cfg;
+  });
+}
+
 /* ─── Compose all patches and export ─────────────────────────────────────────── */
 module.exports = function withAndroidConfig(config) {
   // Build system
@@ -511,6 +615,10 @@ module.exports = function withAndroidConfig(config) {
   config = withUnityMediationDeps(config);
   config = withUnityGameIdManifest(config);
 
+  // InMobi mediation — copy local AARs + inject adapter dep
+  config = withInMobiLibsCopy(config);
+  config = withInMobiMediationDeps(config);
+
   // Kotlin 2.2.20 — SDK-54 ceiling; reads the 2.3.0 metadata of GMA/Unity deps
   config = withKotlinVersionEnforced(config);
 
@@ -526,6 +634,10 @@ module.exports.addUnityGameIdMetaData      = addUnityGameIdMetaData;
 module.exports.UNITY_MEDIATION_MARKER      = UNITY_MEDIATION_MARKER;
 module.exports.UNITY_ADAPTER_DEP           = UNITY_ADAPTER_DEP;
 module.exports.UNITY_SDK_DEP               = UNITY_SDK_DEP;
+module.exports.injectInMobiMediationDeps   = injectInMobiMediationDeps;
+module.exports.INMOBI_MEDIATION_MARKER     = INMOBI_MEDIATION_MARKER;
+module.exports.INMOBI_ADAPTER_DEP          = INMOBI_ADAPTER_DEP;
+module.exports.INMOBI_SOURCE_LIBS          = INMOBI_SOURCE_LIBS;
 module.exports.upsertKotlinGradleProp      = upsertKotlinGradleProp;
 module.exports.injectRootKotlinExt         = injectRootKotlinExt;
 module.exports.KOTLIN_VERSION_PIN          = KOTLIN_VERSION_PIN;
