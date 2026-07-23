@@ -98,6 +98,7 @@ function RootLayoutNav() {
         <Stack.Screen name="privacy" options={{ headerShown: false }} />
         <Stack.Screen name="terms" options={{ headerShown: false }} />
         <Stack.Screen name="solo-play" />
+        <Stack.Screen name="solo-arcade" options={{ gestureEnabled: false }} />
         <Stack.Screen name="hub/index" />
         <Stack.Screen name="hub/arcade-lobby" />
         <Stack.Screen name="hub/arcade-match" options={{ gestureEnabled: false }} />

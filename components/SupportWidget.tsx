@@ -225,7 +225,7 @@ function SupportWidgetInner() {
   const pathname = usePathname();
   const { tournamentTabActive } = useTournament();
   // Focus mode: hide the floating widget on the Tournament tab and inside a live match.
-  const hideForFocusMode = tournamentTabActive || pathname.startsWith('/hub/arcade-match');
+  const hideForFocusMode = tournamentTabActive || pathname.startsWith('/hub/arcade-match') || pathname.startsWith('/solo-arcade');
 
   if (!user?.pbId || hideForFocusMode) return null;
 

@@ -766,7 +766,7 @@ function DailyRewardWidgetInner() {
   }
 
   // Don't render until authenticated; also hide during tournament / live-match focus mode.
-  const hideForFocusMode = tournamentTabActive || pathname.startsWith('/hub/arcade-match');
+  const hideForFocusMode = tournamentTabActive || pathname.startsWith('/hub/arcade-match') || pathname.startsWith('/solo-arcade');
   if (!user?.pbId || mode === 'hidden' || hideForFocusMode) return null;
 
   return (
