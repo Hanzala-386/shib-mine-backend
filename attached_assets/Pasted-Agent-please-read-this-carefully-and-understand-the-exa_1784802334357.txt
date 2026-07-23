@@ -1,0 +1,31 @@
+Agent, please read this carefully and understand the exact problem before making any changes:
+
+1. Games Hub UI Text Update:
+
+On the Games hub page, under the three new solo games (Flappy Bounce, Fruit Cut, Color Rush), remove the current calculation subtext completely.
+
+Replace it uniformly with simple text: "earn more power token" for all three games. (Frontend UI text change only).
+
+2. Fix Live In-Game Counter & Multiplier Sync (Crucial):
+
+The final game-over payout calculation is working fine and fetching correctly from the database. However, the live in-game counter is out of sync.
+
+Example of the bug: If admin sets 1 score = 20 PT in the database, the game-over screen correctly gives the user 200 PT for 10 scores. BUT during live gameplay, the counter next to the Star icon on top is hardcoded or incorrectly calculating using an old value (like 15 PT per score instead of fetching the dynamic multiplier from solo_game_config).
+
+The Fix: The live in-game counter (next to the Star icon) while playing must dynamically fetch and use the exact multiplier from the database (solo_game_config) in real-time, matching what the user will actually earn at the end of the game.
+
+3. Database Table (solo_game_config) Cleanup:
+
+Remove Weapon Master completely from the solo_game_config table. Weapon Master must remain untouched and use its default logic.
+
+Remove the max_pt_per_sec field from the table as it is no longer required.
+
+4. Color Rush Timer Update:
+
+Update the gameplay timer for Color Rush from 45 seconds to 1 minute 30 seconds (90 seconds) universally for both Solo Play and PvP Multiplayer Hub modes. Ensure this update is fully compiled and deployed.
+
+5. Leaderboard "Unranked" Bug Fix:
+
+On the Tournament Leaderboard screen, if a user has earned points (e.g., 1K pts), never show them as "Unranked". Even if they are outside the top 100 list, calculate and display their actual position rank on their status card.
+
+Please review these points thoroughly, fix the live counter synchronization with database multipliers, and ensure everything runs smoothly.

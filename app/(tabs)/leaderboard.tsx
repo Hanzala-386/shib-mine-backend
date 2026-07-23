@@ -811,8 +811,10 @@ export default function LeaderboardScreen() {
   const AD_TOTAL = Platform.OS === 'web' ? 0 : BANNER_HEIGHT + 16 + 8;
   const tabBarH  = Platform.OS === 'web' ? 84 : AD_TOTAL + 56 + insets.bottom;
 
-  // Find my position in tournament leaderboard
+  // Find my position in tournament leaderboard; if outside top 100, compute from loaded data
   const myTournamentEntry = leaderboard.find(e => e.id === pbId);
+  const computedTournamentRank = myTournamentEntry?.rank ??
+    (userPoints > 0 ? leaderboard.filter(e => e.points > userPoints).length + 1 : null);
 
   // ── My tournament stats card ─────────────────────────────────────────────
   const myTournamentCard = isRegistered && (
@@ -825,7 +827,7 @@ export default function LeaderboardScreen() {
         <View style={styles.myRankLeft}>
           <Text style={styles.myRankLabel}>Your Position</Text>
           <Text style={[styles.myRankNum, { color: '#00C853' }]}>
-            {myTournamentEntry ? `#${myTournamentEntry.rank}` : 'Unranked'}
+            {computedTournamentRank != null ? `#${computedTournamentRank}` : 'Unranked'}
           </Text>
           <Text style={styles.myRankName}>{pbUser?.displayName || 'Miner'}</Text>
         </View>

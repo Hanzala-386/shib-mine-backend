@@ -198,9 +198,9 @@ async function refreshSoloGameSpecsCache(): Promise<void> {
       const def = SOLO_GAME_SPECS_DEFAULT[gid] ?? SOLO_GAME_SPECS_DEFAULT.weapon_master;
       fresh[gid] = {
         maxRawScore:  Number(row.max_raw_score)  || def.maxRawScore,
-        ptMultiplier: Number(row.pt_multiplier)   || def.ptMultiplier,
-        maxPT:        Number(row.max_pt)           || def.maxPT,
-        maxPtPerSec:  Number(row.max_pt_per_sec)  || def.maxPtPerSec,
+        ptMultiplier: Number(row.pt_multiplier)  || def.ptMultiplier,
+        maxPT:        Number(row.max_pt)          || def.maxPT,
+        maxPtPerSec:  def.maxPtPerSec, // not stored in DB — use hardcoded default for anti-cheat
       };
     }
     soloGameSpecsCache = fresh;
@@ -751,12 +751,11 @@ async function setupSoloGameConfig(): Promise<void> {
     // NOTE: this PocketBase version uses "schema" (not "fields") for collection
     // create and patch — the same key used by referral_earnings_log, deleted_emails, etc.
     const REQUIRED_SCHEMA = [
-      { name: "game_id",        type: "text",   required: true  },
-      { name: "game_name",      type: "text",   required: false },
-      { name: "pt_multiplier",  type: "number", required: true  },
-      { name: "max_pt",         type: "number", required: true  },
-      { name: "max_raw_score",  type: "number", required: true  },
-      { name: "max_pt_per_sec", type: "number", required: true  },
+      { name: "game_id",       type: "text",   required: true  },
+      { name: "game_name",     type: "text",   required: false },
+      { name: "pt_multiplier", type: "number", required: true  },
+      { name: "max_pt",        type: "number", required: true  },
+      { name: "max_raw_score", type: "number", required: true  },
     ];
 
     const check = await pbGet("/api/collections/solo_game_config");
@@ -808,12 +807,24 @@ async function setupSoloGameConfig(): Promise<void> {
       console.warn("[solo_game_config] Records API not ready after retries — skipping seed (hardcoded defaults active)");
     }
 
-    // Seed default rows for each game if they don't exist yet
+    // Remove weapon_master row from DB if it exists — it uses hardcoded defaults, not DB config.
+    if (apiReady) {
+      const wmCheck = await pbGet(
+        `/api/collections/solo_game_config/records?filter=${encodeURIComponent('game_id="weapon_master"')}&perPage=1`
+      );
+      if (wmCheck.items?.length) {
+        const wmToken = await getAdminToken();
+        await pbHttp("DELETE", `/api/collections/solo_game_config/records/${wmCheck.items[0].id}`, null, wmToken);
+        console.log("[solo_game_config] Removed weapon_master row from DB ✓");
+      }
+    }
+
+    // Seed default rows for flappy/fruitcut/color only.
+    // weapon_master stays hardcoded (uses its own default logic, not DB-configurable).
     const defaults = [
-      { game_id: "weapon_master", game_name: "Weapon Master", pt_multiplier: 1,    max_pt: 2000, max_raw_score: 2000, max_pt_per_sec: 15 },
-      { game_id: "flappy",        game_name: "Flappy Bounce",  pt_multiplier: 15,   max_pt: 1800, max_raw_score: 120,  max_pt_per_sec: 25 },
-      { game_id: "fruitcut",      game_name: "Fruit Cut",      pt_multiplier: 0.5,  max_pt: 2000, max_raw_score: 4000, max_pt_per_sec: 30 },
-      { game_id: "color",         game_name: "Color Rush",     pt_multiplier: 20,   max_pt: 2000, max_raw_score: 100,  max_pt_per_sec: 25 },
+      { game_id: "flappy",    game_name: "Flappy Bounce", pt_multiplier: 15,  max_pt: 1800, max_raw_score: 120  },
+      { game_id: "fruitcut",  game_name: "Fruit Cut",     pt_multiplier: 0.5, max_pt: 2000, max_raw_score: 4000 },
+      { game_id: "color",     game_name: "Color Rush",    pt_multiplier: 20,  max_pt: 2000, max_raw_score: 100  },
     ];
     if (apiReady) {
       for (const row of defaults) {
@@ -5377,6 +5388,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("[shop/buy]", e.message);
       return res.status(500).json({ error: "Purchase failed" });
     }
+  });
+
+  // ── Solo game specs — public endpoint so the live counter mirrors server awards ─
+  app.get("/api/app/solo-game-specs", (_req: Request, res: Response) => {
+    // Return only the fields the client needs for display (ptMultiplier + maxPT).
+    // weapon_master is intentionally excluded — it uses its own hardcoded logic.
+    const out: Record<string, { ptMultiplier: number; maxPT: number }> = {};
+    for (const [gid, spec] of Object.entries(soloGameSpecsCache)) {
+      if (gid === "weapon_master") continue;
+      out[gid] = { ptMultiplier: spec.ptMultiplier, maxPT: spec.maxPT };
+    }
+    return res.json(out);
   });
 
   // ── Game: Fetch user game state (for initial injection into C3) ───────────

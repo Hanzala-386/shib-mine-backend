@@ -129,6 +129,9 @@ export default function SoloArcadeScreen() {
   const sessionTimerRef       = useRef<ReturnType<typeof setInterval> | null>(null);
   const gameTimerRef          = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gameDurationStartedRef = useRef(false);
+  // Dynamic spec refs — overwritten by server fetch on mount; fallback = hardcoded GAME_META
+  const ptMultiplierRef = useRef(meta.ptMultiplier);
+  const maxPTRef        = useRef(meta.maxPT);
   const retryTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryCountRef    = useRef(0);
 
@@ -136,6 +139,7 @@ export default function SoloArcadeScreen() {
   const [phase,         setPhase]         = useState<Phase>('game');
   const [liveScore,     setLiveScore]     = useState(0);
   const [ptEstimate,    setPtEstimate]    = useState(0);
+  const [dynMaxPT,      setDynMaxPT]      = useState(meta.maxPT);
   const [serverPT,      setServerPT]      = useState(0);
   const [earned,        setEarned]        = useState(0);
   const [sessionTime,   setSessionTime]   = useState(SESSION_SECONDS);
@@ -161,6 +165,26 @@ export default function SoloArcadeScreen() {
     if (retryTimerRef.current)   clearTimeout(retryTimerRef.current);
     closeWs();
   }, []);
+
+  // Fetch server-side spec so the live counter matches what the server will award
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const url = new URL('/api/app/solo-game-specs', getApiUrl()).href;
+        const res = await globalThis.fetch(url);
+        if (!res.ok || cancelled) return;
+        const specs: Record<string, { ptMultiplier: number; maxPT: number }> = await res.json();
+        const s = specs[gameId];
+        if (s) {
+          ptMultiplierRef.current = s.ptMultiplier;
+          maxPTRef.current        = s.maxPT;
+          setDynMaxPT(s.maxPT);
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [gameId]);
 
   /* ── WS helpers ── */
   const closeWs = useCallback(() => {
@@ -246,7 +270,7 @@ export default function SoloArcadeScreen() {
         // Safety fallback: if no COMMITTED arrives in 5s, show summary with live estimate
         setTimeout(() => {
           if (!gameOverFiredRef.current) {
-            handleGameOver(estimatePT(gameId, liveScoreRef.current), 'time');
+            handleGameOver(Math.min(Math.floor(liveScoreRef.current * ptMultiplierRef.current), maxPTRef.current), 'time');
           }
         }, 5000);
       }
@@ -465,7 +489,7 @@ export default function SoloArcadeScreen() {
       const s = Math.max(0, Number(msg.score) || 0);
       liveScoreRef.current = s;
       setLiveScore(s);
-      setPtEstimate(estimatePT(gameId, s));
+      setPtEstimate(Math.min(Math.floor(s * ptMultiplierRef.current), maxPTRef.current));
       // Start game-specific duration timer on the first score event (= player tapped Play).
       // Only applies to games that declare a hard time limit (currently: Color Rush 90s).
       const gameDurMs = GAME_DURATION_MS[gameId];
@@ -478,7 +502,7 @@ export default function SoloArcadeScreen() {
           wsSend({ type: 'GAME_OVER', score: liveScoreRef.current, elapsed_ms: Math.max(elapsed, 1000) });
           setTimeout(() => {
             if (!gameOverFiredRef.current) {
-              handleGameOver(estimatePT(gameId, liveScoreRef.current), 'time');
+              handleGameOver(Math.min(Math.floor(liveScoreRef.current * ptMultiplierRef.current), maxPTRef.current), 'time');
             }
           }, 5000);
         }, gameDurMs);
@@ -496,7 +520,7 @@ export default function SoloArcadeScreen() {
       // Safety fallback if no COMMITTED arrives
       setTimeout(() => {
         if (!gameOverFiredRef.current) {
-          handleGameOver(estimatePT(gameId, s), 'death');
+          handleGameOver(Math.min(Math.floor(s * ptMultiplierRef.current), maxPTRef.current), 'death');
         }
       }, 6000);
     }
@@ -637,7 +661,7 @@ export default function SoloArcadeScreen() {
             <View style={S.hudPill}>
               <Ionicons name="star" size={11} color={Colors.gold} />
               <Text style={S.hudText}>
-                {ptEstimate}<Text style={S.hudTextMuted}>/{meta.maxPT} PT</Text>
+                {ptEstimate}<Text style={S.hudTextMuted}>/{dynMaxPT} PT</Text>
               </Text>
             </View>
           </View>

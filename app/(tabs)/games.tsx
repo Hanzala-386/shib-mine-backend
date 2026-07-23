@@ -102,9 +102,9 @@ export default function GamesScreen() {
           <Text style={styles.moreSoloTxt}>More Solo Games</Text>
         </View>
         {[
-          { gameId: 'flappy',   icon: '🐦', name: 'Flappy Bounce', formula: 'Score × 15 PT', maxPT: '1950 PT max' },
-          { gameId: 'fruitcut', icon: '🍉', name: 'Fruit Cut',     formula: 'Score × 50% PT', maxPT: '2000 PT max' },
-          { gameId: 'color',    icon: '🎨', name: 'Color Rush',    formula: 'Score × 20 PT', maxPT: '2000 PT max' },
+          { gameId: 'flappy',   icon: '🐦', name: 'Flappy Bounce' },
+          { gameId: 'fruitcut', icon: '🍉', name: 'Fruit Cut'     },
+          { gameId: 'color',    icon: '🎨', name: 'Color Rush'    },
         ].map((g) => (
           <Pressable
             key={g.gameId}
@@ -115,7 +115,7 @@ export default function GamesScreen() {
             <Text style={styles.soloGameIcon}>{g.icon}</Text>
             <View style={styles.soloGameInfo}>
               <Text style={styles.soloGameName}>{g.name}</Text>
-              <Text style={styles.soloGameFormula}>{g.formula}  ·  {g.maxPT}</Text>
+              <Text style={styles.soloGameFormula}>earn more power token</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={Colors.neonOrange} />
           </Pressable>
