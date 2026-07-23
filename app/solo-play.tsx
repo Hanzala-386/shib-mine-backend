@@ -351,7 +351,7 @@ export default function SoloPlayScreen() {
       // appVersion drives version-aware routing: bridge arms the match gate
       // and server enforces the hard gate ONLY for >= 1.0.3. Old 1.0.2 APKs
       // never send this field → full legacy behavior everywhere.
-      appVersion:        Constants.expoConfig?.version ?? '1.0.3',
+      appVersion:        Constants.expoConfig?.version ?? '1.0.4',
       powerTokens:       data.power_tokens,
       collectedTomatoes: data.collected_tomatoes,
       lastSessionScore:  data.last_session_score,

@@ -301,7 +301,7 @@ export default function SoloArcadeScreen() {
         type:       'GAME_START',
         pbId,
         gameId,
-        appVersion: Constants.expoConfig?.version ?? '1.0.3',
+        appVersion: Constants.expoConfig?.version ?? '1.0.4',
       }));
     };
 

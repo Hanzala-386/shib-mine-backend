@@ -2,7 +2,7 @@
 // IMPORTANT: bump this to match app.json `expo.version` on every production APK build
 // (e.g. change to "1.0.2" for the next release). The force-update gate compares this
 // value against app_config.min_required_version in PocketBase.
-export const INSTALLED_APP_VERSION = '1.0.3';
+export const INSTALLED_APP_VERSION = '1.0.4';
 
 // Semantic version comparison via per-segment numeric compare.
 // Returns true when `current` is strictly lower than `minimum`.
