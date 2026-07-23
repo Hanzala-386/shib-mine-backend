@@ -360,6 +360,8 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
         case "GAME_START": {
           const { pbId } = msg;
           if (!pbId) { send({ type: "ERROR", reason: "pbId_required" }); return; }
+          // Validate and normalise gameId; unknown values fall back to weapon_master
+          const gameId = soloGameSpecsCache[msg.gameId as string] ? (msg.gameId as string) : "weapon_master";
           // VERSION-AWARE routing keyed on APP version (NOT bridge version —
           // bridge.js on webcod.in is SHARED by all APKs, so a bridge flag
           // alone cannot separate 1.0.2 from 1.0.3):
@@ -373,8 +375,6 @@ export function setupGameWebSocket(wss: WebSocketServer): void {
           const strictClient = appVersionAtLeast(msg.appVersion, "1.0.3");
           const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id`);
           if (user.code) { send({ type: "ERROR", reason: "user_not_found" }); return; }
-          // Validate and normalise gameId; unknown values fall back to weapon_master
-          const gameId = soloGameSpecsCache[msg.gameId as string] ? (msg.gameId as string) : "weapon_master";
           // Clean up any prior session on this connection
           if (sid) {
             const old = wsSessions.get(sid);
@@ -670,14 +670,15 @@ async function backfillWithdrawalMaskedNames() {
     const col = await pbGet("/api/collections/withdrawals");
     if (!col.code) {
       const hasField = (col.fields || []).some((f: any) => f.name === "masked_name");
-      if (!hasField) {
+      const hasReason = (col.fields || []).some((f: any) => f.name === "cancellation_reason");
+      if (!hasField || !hasReason) {
         const token = await getAdminToken();
-        const updatedFields = [
-          ...(col.fields || []),
-          { name: "masked_name", type: "text", required: false },
-        ];
+        const newFields: any[] = [];
+        if (!hasField) newFields.push({ name: "masked_name", type: "text", required: false });
+        if (!hasReason) newFields.push({ name: "cancellation_reason", type: "text", required: false });
+        const updatedFields = [...(col.fields || []), ...newFields];
         await pbHttp("PATCH", `/api/collections/${col.id}`, { fields: updatedFields }, token);
-        console.log("[withdrawals] masked_name field added ✓");
+        console.log("[withdrawals] masked_name / cancellation_reason fields added ✓");
       }
     }
 
@@ -753,11 +754,11 @@ async function setupSoloGameConfig(): Promise<void> {
         name: "solo_game_config",
         type: "base",
         fields: [
-          { name: "game_id",        type: "text",   required: true },
-          { name: "game_name",      type: "text",   required: false },
-          { name: "pt_multiplier",  type: "number", required: true },
-          { name: "max_pt",         type: "number", required: true },
-          { name: "max_raw_score",  type: "number", required: true },
+          { name: "game_id",       type: "text",   required: true },
+          { name: "game_name",     type: "text",   required: false },
+          { name: "pt_multiplier", type: "number", required: true },
+          { name: "max_pt",        type: "number", required: true },
+          { name: "max_raw_score", type: "number", required: true },
           { name: "max_pt_per_sec", type: "number", required: true },
         ],
         listRule:   "",   // public read — client can display multipliers
@@ -770,6 +771,7 @@ async function setupSoloGameConfig(): Promise<void> {
     } else {
       console.log("[solo_game_config] Collection already exists ✓");
     }
+    // Seed default rows for each game if they don't exist yet
     const defaults = [
       { game_id: "weapon_master", game_name: "Weapon Master", pt_multiplier: 1,    max_pt: 2000, max_raw_score: 2000, max_pt_per_sec: 15 },
       { game_id: "flappy",        game_name: "Flappy Bounce",  pt_multiplier: 15,   max_pt: 1800, max_raw_score: 120,  max_pt_per_sec: 25 },
@@ -786,6 +788,7 @@ async function setupSoloGameConfig(): Promise<void> {
       }
     }
     await refreshSoloGameSpecsCache();
+    // Refresh cache every 5 minutes so admin DB edits propagate without restart
     setInterval(refreshSoloGameSpecsCache, 5 * 60 * 1000);
   } catch (e: any) {
     console.warn("[solo_game_config] setup failed (using hardcoded defaults):", e.message);
@@ -876,7 +879,6 @@ async function ensureOtpCollection() {
   }
 }
 
-// ─── Patch users + leaderboard-related collection rules ──────────────────────
 // ─── SECURITY: booster whitelist + caller identity verification ──────────────
 // Only these booster multipliers exist as products. Anything else in a request
 // or a stored session (e.g. 100000000) is forged data.
@@ -958,6 +960,7 @@ async function processPendingReferralLog(userId: string): Promise<void> {
   }
 }
 
+// ─── Patch users + leaderboard-related collection rules ──────────────────────
 async function ensureCollectionRules() {
   try {
     const token = await getAdminToken();
@@ -1045,7 +1048,7 @@ async function ensureCollectionRules() {
         // Allow a user to delete ONLY their own record (needed for APK account deletion flow)
         deleteRule: "@request.auth.id = id",
       }, token);
-      console.log("[users] Rules locked down — money/progression fields server-only ✓");
+      console.log("[users] listRule + viewRule + createRule + updateRule + deleteRule patched — APK self-CRUD enabled");
     }
     // deleted_emails: public read (APK checks before sign-up without auth), authenticated create
     const deCol = await pbGet("/api/collections/deleted_emails");
@@ -1412,9 +1415,37 @@ function startMatchExpirySweeper() {
   }, 60_000).unref();
 }
 
+// ─── Migrate users: add is_flagged + flag_reason for security violations ──
+// is_flagged  (bool) — set to true when root/emulator/integrity/autoclicker detected
+// flag_reason (text) — one of: 'root' | 'emulator' | 'play_integrity' | 'autoclicker'
+async function ensureIsFlaggedField() {
+  try {
+    const token = await getAdminToken();
+    const coll  = await pbGet("/api/collections/users");
+    if (coll.code) return;
+    const existingNames: string[] = (coll.schema || coll.fields || []).map((f: any) => f.name);
+    if (existingNames.includes("is_flagged")) {
+      console.log("[users] is_flagged / flag_reason already present ✓");
+      return;
+    }
+    const updatedSchema = [
+      ...(coll.schema || coll.fields || []),
+      { name: "is_flagged",  type: "bool", required: false },
+      { name: "flag_reason", type: "text", required: false },
+    ];
+    await pbHttp("PATCH", `/api/collections/${coll.id}`, { schema: updatedSchema }, token);
+    console.log("[users] is_flagged + flag_reason fields added ✓");
+  } catch (e: any) {
+    console.warn("[users] is_flagged migration failed:", e.message);
+  }
+}
+
 // ─── Migrate users: add referral anti-cheat blacklist tiers ───────────────────
-// is_blacklist_1 / is_blacklist_2 (bool) — soft offense tiers (non-blocking).
-// blacklist_1_notified (bool) + blacklist_1_notified_at (text) — one-time warning guard.
+// is_blacklist_1        (bool) — first soft offense (suspicious referral claim).
+// is_blacklist_2        (bool) — second offense while already on tier 1.
+// blacklist_1_notified  (bool) — guards the one-time warning notifications.
+// blacklist_1_notified_at (text) — ISO timestamp the warnings were sent.
+// All NON-blocking: the user keeps using the app; admin reviews/terminates.
 async function ensureBlacklistFields() {
   try {
     const token = await getAdminToken();
@@ -1856,6 +1887,40 @@ async function ensureTaskSubmissionsCollection() {
   } catch (e: any) { console.warn("[task_submissions] Setup failed:", e.message); }
 }
 
+// ─── Add unique composite index (user_id, task_id) to task_submissions ────
+// This enforces at the PocketBase database engine level that a given user
+// can only ever have ONE submission record per task — regardless of status.
+// Any direct PocketBase SDK call (APK fallback path) that attempts to insert
+// a duplicate will receive a 400/409 from PocketBase before Express even runs.
+async function ensureTaskSubmissionsUniqueIndex() {
+  try {
+    const token = await getAdminToken();
+    const col   = await pbGet("/api/collections/task_submissions");
+    if (col.code) { console.log("[task_submissions] Collection not found — skip index"); return; }
+
+    const UNIQUE_IDX =
+      "CREATE UNIQUE INDEX `idx_user_task` ON `task_submissions` (`user_id`, `task_id`)";
+    const existingIndexes: string[] = col.indexes || [];
+
+    if (existingIndexes.some((s: string) => s.includes("idx_user_task"))) {
+      console.log("[task_submissions] unique index idx_user_task already present ✓");
+      return;
+    }
+
+    const r = await pbHttp("PATCH", `/api/collections/${col.id}`, {
+      indexes: [...existingIndexes, UNIQUE_IDX],
+    }, token);
+
+    if (!r.code) {
+      console.log("[task_submissions] unique composite index (user_id, task_id) created ✓");
+    } else {
+      console.warn("[task_submissions] Index creation failed:", JSON.stringify(r).slice(0, 200));
+    }
+  } catch (e: any) {
+    console.warn("[task_submissions] Index migration failed:", e.message);
+  }
+}
+
 // ─── Migrate proof_screenshot field: text → file ───────────────────────────
 async function migrateProofScreenshotToFile() {
   try {
@@ -1893,6 +1958,35 @@ async function migrateProofScreenshotToFile() {
     }
   } catch (e: any) {
     console.warn("[task_submissions] Migration error:", e.message);
+  }
+}
+
+// ─── Patch tasks + task_submissions collection rules for PB SDK access ────
+// These collections are created with listRule:null (admin-only) by default.
+// This function patches them to allow:
+//   tasks            → public read (listRule: "")    — tasks are public info
+//   task_submissions → authenticated read (listRule: "@request.auth.id != ''")
+async function patchTasksCollectionRules() {
+  try {
+    const token = await getAdminToken();
+    const [tasksCol, subsCol] = await Promise.all([
+      pbGet("/api/collections/tasks"),
+      pbGet("/api/collections/task_submissions"),
+    ]);
+    if (!tasksCol.code) {
+      await pbHttp("PATCH", `/api/collections/${tasksCol.id}`, { listRule: "", viewRule: "" }, token);
+      console.log("[tasks] listRule/viewRule patched → public read ✓");
+    }
+    if (!subsCol.code) {
+      await pbHttp("PATCH", `/api/collections/${subsCol.id}`, {
+        listRule:   "@request.auth.id != ''",
+        viewRule:   "@request.auth.id != ''",
+        createRule: "@request.auth.id != ''",
+      }, token);
+      console.log("[task_submissions] listRule/viewRule/createRule patched → authenticated read+create ✓");
+    }
+  } catch (e: any) {
+    console.warn("[tasks/task_submissions] Rule patch failed:", e.message);
   }
 }
 
@@ -2545,97 +2639,6 @@ function validateEnv() {
   }
 }
 
-// ─── Ensure app_config (Force Update gate) collection ─────────────────────
-// Single-row config that drives the non-bypassable force-update gate.
-// Public read (listRule/viewRule = "") so the APK can fetch it without auth.
-// NOTE: the shared root server also provisions this collection in the same
-// PocketBase (api.webcod.in); this mirror keeps the subdir deploy self-sufficient.
-async function ensureAppConfigCollection() {
-  try {
-    const token = await getAdminToken();
-    const check = await pbGet("/api/collections/app_config");
-    if (!check.code) {
-      // Already exists — ensure public read rules are set.
-      await pbHttp("PATCH", `/api/collections/${check.id}`, {
-        listRule: "", viewRule: "", createRule: null, updateRule: null, deleteRule: null,
-      }, token);
-    } else {
-      // Create without rules (this PB version uses `schema`, rules patched separately).
-      const created = await pbHttp("POST", "/api/collections", {
-        name: "app_config",
-        type: "base",
-        schema: [
-          { name: "current_version",      type: "text", required: false },
-          { name: "min_required_version", type: "text", required: false },
-          { name: "play_store_url",       type: "text", required: false },
-          { name: "update_message",       type: "text", required: false },
-        ],
-      }, token);
-      if (created.code) {
-        console.warn("[app_config] Could not create collection:", JSON.stringify(created).slice(0, 200));
-        return;
-      }
-      await pbHttp("PATCH", `/api/collections/${created.id}`, {
-        listRule: "", viewRule: "", createRule: null, updateRule: null, deleteRule: null,
-      }, token);
-      console.log("[app_config] Collection created (public read)");
-    }
-
-    // Seed the single config row ONCE — NEVER overwrite. The admin edits
-    // min_required_version directly in PB to trigger the update; a restart must
-    // not reset it back to the safe default.
-    const recs = await pbGet("/api/collections/app_config/records?perPage=1&sort=created");
-    if (!recs.items?.length) {
-      await pbPost("/api/collections/app_config/records", {
-        current_version:      "1.0.2",
-        min_required_version: "1.0.1", // SAFE: matches live build so nobody is locked out
-        play_store_url:       "https://play.google.com/store/apps/details?id=com.hanzalasha.shibmine",
-        update_message:       "A critical new update is available. Please update to continue playing!",
-      });
-      console.log("[app_config] Seeded app_config row (min_required_version=1.0.1)");
-    }
-  } catch (e: any) {
-    console.warn("[app_config] Could not setup collection:", e.message);
-  }
-}
-
-// ─── Ensure announcements (Banner Modal) collection ───────────────────────
-// Admin-managed banner popups. Public read so the APK can fetch unauthenticated.
-async function ensureAnnouncementsCollection() {
-  try {
-    const token = await getAdminToken();
-    const check = await pbGet("/api/collections/announcements");
-    if (!check.code) {
-      // Re-lock public read + admin-only writes on every boot (guards against a
-      // pre-existing collection created with permissive write rules).
-      await pbHttp("PATCH", `/api/collections/${check.id}`, {
-        listRule: "", viewRule: "", createRule: null, updateRule: null, deleteRule: null,
-      }, token);
-      return;
-    }
-    const created = await pbHttp("POST", "/api/collections", {
-      name: "announcements",
-      type: "base",
-      schema: [
-        { name: "poster_image",    type: "file",   required: false, options: { maxSelect: 1, maxSize: 10485760, mimeTypes: ["image/jpeg","image/png","image/webp","image/gif"], thumbs: [], protected: false } },
-        { name: "redirect_url",    type: "text",   required: false },
-        { name: "frequency_limit", type: "number", required: false, options: { min: 0, max: null } },
-        { name: "is_active",       type: "bool",   required: false },
-      ],
-    }, token);
-    if (created.code) {
-      console.warn("[announcements] Could not create collection:", JSON.stringify(created).slice(0, 200));
-      return;
-    }
-    await pbHttp("PATCH", `/api/collections/${created.id}`, {
-      listRule: "", viewRule: "", createRule: null, updateRule: null, deleteRule: null,
-    }, token);
-    console.log("[announcements] Collection created (public read)");
-  } catch (e: any) {
-    console.warn("[announcements] Could not setup collection:", e.message);
-  }
-}
-
 // ─── Routes ────────────────────────────────────────────────────────────────
 export async function registerRoutes(app: Express): Promise<Server> {
   // Validate environment variables on startup — catches Railway misconfiguration immediately
@@ -2653,8 +2656,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensurePublicReferralsCollection())
     .then(() => ensureMiningSessionsRules())
     .then(() => ensureReferralEarningsLogCollection())
-    .then(() => ensureAppConfigCollection())
-    .then(() => ensureAnnouncementsCollection())
     .then(() => ensureBrevoKeyInSettings())
     .then(() => backfillWithdrawalMaskedNames())
     .then(() => ensureWithdrawalRedeemMethod())
@@ -2664,6 +2665,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureGameScoreCollection())
     .then(() => ensureGameHistoryCollection())
     .then(() => { startMatchExpirySweeper(); })
+    .then(() => ensureIsFlaggedField())
     .then(() => ensureBlacklistFields())
     .then(() => ensureSessionTokenField())
     .then(() => ensureVerificationSchema())
@@ -2671,9 +2673,117 @@ export async function registerRoutes(app: Express): Promise<Server> {
     .then(() => ensureReferralHistoryCollection())
     .then(() => ensureTasksCollection())
     .then(() => ensureTaskSubmissionsCollection())
+    .then(() => ensureTaskSubmissionsUniqueIndex())
     .then(() => migrateProofScreenshotToFile())
+    .then(() => patchTasksCollectionRules())
     .then(() => ensureProxyApiCollection())
     .catch((e) => console.warn("[PB] Startup init failed:", e));
+
+  // ── Security: Network check (VPN / proxy / geo guard verdict) ────────────
+  // Whitelisted inside the guard middleware — always returns 200 with the
+  // verdict so the client can poll it (boot + every 60 s + app-foreground).
+  app.get("/api/app/security/network-check", async (req: Request, res: Response) => {
+    try {
+      if (!(await isNetworkGuardEnabled())) {
+        return res.json({ blocked: false, reason: null });
+      }
+      const verdict = await checkNetworkAccess(req.ip || "");
+      return res.json({ blocked: verdict.blocked, reason: verdict.reason });
+    } catch {
+      return res.json({ blocked: false, reason: null }); // fail-open
+    }
+  });
+
+  // ── Security: Flag a device / user as cheating on PocketBase ─────────────
+  // Called by SecurityContext when root / emulator / autoclicker is detected.
+  // Writes is_flagged=true + flag_reason to the user's PB record so admins
+  // can audit flagged accounts from the PocketBase admin dashboard.
+  app.post("/api/app/security/flag-device", async (req: Request, res: Response) => {
+    try {
+      const { pbId, reason } = req.body;
+      if (!pbId) return res.status(400).json({ error: "pbId required" });
+
+      const token = await getAdminToken();
+      await pbHttp("PATCH", `/api/collections/users/records/${pbId}`, {
+        is_flagged:  true,
+        flag_reason: String(reason ?? "unknown").slice(0, 64),
+      }, token);
+
+      console.warn(`[security] Device flagged: pbId=${pbId} reason=${reason}`);
+      return res.json({ flagged: true });
+    } catch (e: any) {
+      console.warn("[security] flag-device error:", e.message);
+      return res.status(500).json({ error: "Failed to flag device" });
+    }
+  });
+
+  // ── Security: Verify Google Play Integrity token ───────────────────────────
+  // The client (lib/playIntegrity.ts) requests an on-device attestation token
+  // from Google Play Services and forwards it here for server-side verification.
+  //
+  // Prerequisites to activate:
+  //   1. Enable Play Integrity API in Google Cloud Console.
+  //   2. Create an API key and set GOOGLE_PLAY_INTEGRITY_KEY on Railway.
+  //   3. Replace PACKAGE_NAME below with your actual bundle identifier.
+  //
+  // Without GOOGLE_PLAY_INTEGRITY_KEY the endpoint returns pass=true (fail-open)
+  // so legitimate users are never blocked while credentials are being set up.
+  app.post("/api/app/security/verify-integrity", async (req: Request, res: Response) => {
+    try {
+      const { token: integrityToken, pbId } = req.body;
+      if (!integrityToken) return res.status(400).json({ error: "token required" });
+
+      const apiKey = process.env.GOOGLE_PLAY_INTEGRITY_KEY;
+      if (!apiKey) {
+        // No credentials yet — fail open so legitimate users are not blocked
+        return res.json({ pass: true, verdict: "SKIPPED_NO_CREDENTIALS" });
+      }
+
+      // Replace with your actual Android package name:
+      const PACKAGE_NAME = process.env.ANDROID_PACKAGE_NAME ?? "com.shibahit.app";
+
+      const gResp = await fetch(
+        `https://playintegrity.googleapis.com/v1/${PACKAGE_NAME}:decodeIntegrityToken?key=${apiKey}`,
+        {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ integrity_token: integrityToken }),
+        },
+      );
+
+      if (!gResp.ok) {
+        // Google API error — fail open to avoid false-blocking legit users
+        console.warn("[integrity] Google API error:", gResp.status);
+        return res.json({ pass: true, verdict: "GOOGLE_API_ERROR" });
+      }
+
+      const data = await gResp.json();
+      const verdicts: string[] =
+        data?.tokenPayloadExternal?.deviceIntegrity?.deviceRecognitionVerdict ?? [];
+
+      // Device passes if it meets BASIC or STRONG integrity
+      const pass =
+        verdicts.includes("MEETS_DEVICE_INTEGRITY") ||
+        verdicts.includes("MEETS_STRONG_INTEGRITY") ||
+        verdicts.includes("MEETS_BASIC_INTEGRITY");
+
+      if (!pass && pbId) {
+        // Fail + flag the user in PocketBase
+        const adminTok = await getAdminToken();
+        await pbHttp("PATCH", `/api/collections/users/records/${pbId}`, {
+          is_flagged:  true,
+          flag_reason: "play_integrity",
+        }, adminTok).catch(() => {});
+        console.warn(`[integrity] FAIL — pbId=${pbId} verdicts=${JSON.stringify(verdicts)}`);
+      }
+
+      return res.json({ pass, verdicts });
+    } catch (e: any) {
+      console.warn("[integrity] verify error:", e.message);
+      // Fail open on unexpected errors
+      return res.json({ pass: true, error: e.message });
+    }
+  });
 
   // ── OTP: Request account-deletion OTP ─────────────────────────────────────
   app.post("/api/auth/request-delete-otp", async (req: Request, res: Response) => {
@@ -2806,21 +2916,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ── Security: Network check (VPN / proxy / geo guard verdict) ────────────
-  // Whitelisted inside the guard middleware — always returns 200 with the
-  // verdict so the client can poll it (boot + every 60 s + app-foreground).
-  app.get("/api/app/security/network-check", async (req: Request, res: Response) => {
-    try {
-      if (!(await isNetworkGuardEnabled())) {
-        return res.json({ blocked: false, reason: null });
-      }
-      const verdict = await checkNetworkAccess(req.ip || "");
-      return res.json({ blocked: verdict.blocked, reason: verdict.reason });
-    } catch {
-      return res.json({ blocked: false, reason: null }); // fail-open
-    }
-  });
-
   // ── Settings ──────────────────────────────────────────────────────────────
   app.get("/api/app/settings", async (_req: Request, res: Response) => {
     try {
@@ -2860,6 +2955,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         playStoreUrl: s.play_store_url || s.app_store_link || '',
         ratePopupFrequency: s.rate_popup_frequency || 5,
         minimumVersion: s.minimum_version || '',
+        dailyRewardDay1Shib: s.daily_reward_day1_shib ?? 1000,
+        dailyRewardDay2Pt:   s.daily_reward_day2_pt   ?? 50,
+        dailyRewardDay3Shib: s.daily_reward_day3_shib ?? 3000,
+        dailyRewardDay4Pt:   s.daily_reward_day4_pt   ?? 100,
+        dailyRewardDay5Shib: s.daily_reward_day5_shib ?? 5000,
+        dailyRewardDay6Pt:   s.daily_reward_day6_pt   ?? 200,
+        dailyRewardDay7Shib: s.daily_reward_day7_shib ?? 10000,
+        dailyRewardDay7Pt:   s.daily_reward_day7_pt   ?? 500,
       });
     } catch (e: any) {
       console.error("[/api/app/settings]", e.message);
@@ -3621,47 +3724,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ serverTime: Date.now() });
   });
 
-  // ── Tournament: server-time + config ──────────────────────────────────────
-  // Returns the current tournament config (including cycle_id) enriched with
-  // server-authoritative time. Fully-manual model: the client derives phase
-  // (none / prestart / live) from is_active + start_time/end_time + cycle_id.
-  app.get("/api/app/tournament/config", async (_req: Request, res: Response) => {
-    const serverTime = Date.now();
-    try {
-      const cfgRes = await pbGet(
-        "/api/collections/tournament_config/records?sort=-created&perPage=1",
-      );
-      const raw = cfgRes?.items?.[0];
-      if (!raw) return res.json({ config: null, serverTime });
-
-      // IMPORTANT: reward_structure is returned as the RAW JSON STRING exactly as
-      // stored in PocketBase. The mobile client runs `JSON.parse(reward_structure)`
-      // in TournamentContext.loadConfig. If we pre-parse it into an object here,
-      // JSON.parse("[object Object]") throws, the catch swallows it, and every rank
-      // prize falls back to 0 — the winning amounts render blank on the leaderboard.
-      // This shape MUST stay identical to the PocketBase-direct fallback.
-      return res.json({
-        config: {
-          id:               raw.id,
-          cycle_id:         raw.cycle_id || "",
-          prize_pool_total: Number(raw.prize_pool_total) || 0,
-          winners_count:    Number(raw.winners_count)    || 3,
-          reward_structure: raw.reward_structure || "{}",
-          banner:           raw.banner     || "",
-          banner_url:       raw.banner_url || "",
-          week_start:       raw.week_start || "",
-          start_time:       raw.start_time || raw.week_start || "",
-          end_time:         raw.end_time   || "",
-          is_active:        !!raw.is_active,
-        },
-        serverTime,
-      });
-    } catch (e: any) {
-      console.error("[/api/app/tournament/config]", e?.message);
-      return res.json({ config: null, serverTime });
-    }
-  });
-
   // ── Temporary SMTP debug — shows Railway env var state (key masked) ────────
   app.get("/api/debug/smtp-config", (_req: Request, res: Response) => {
     const rawUser = process.env.SMTP_USER || '(not set)';
@@ -3755,7 +3817,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const rate = settings?.mining_rate_per_sec || 0.01736;
       const dur = settings?.mining_duration_minutes || 60;
-      // Lock the user's CURRENT VIP level into this session (like booster_multiplier).
+      // Lock the user's CURRENT VIP level into this session (like booster_multiplier)
+      // so a mid-session upgrade/downgrade never applies retroactively.
       const lockedVip = normalizeVipLevel(userRecord.vip_level);
       const expectedReward = effectiveRatePerSec(rate, lockedVip) * dur * 60 * activeMultiplier;
 
@@ -4985,13 +5048,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     async (req: Request, res: Response) => {
       try {
         const { id } = req.params;
-        const { status } = req.body;
+        const { status, reason } = req.body;
         if (!["pending", "completed", "rejected"].includes(status))
           return res.status(400).json({ error: "Invalid status" });
 
+        const patchBody: Record<string, any> = { status };
+        if (status === "rejected" && reason) {
+          patchBody.cancellation_reason = reason;
+        }
+
         const updated = await pbPatch(
           `/api/collections/withdrawals/records/${id}`,
-          { status },
+          patchBody,
         );
 
         // Auto-create personal notification when status → completed
@@ -5005,7 +5073,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.warn("[withdrawals/complete] Notification failed:", e.message)
           );
 
-          // Referral anti-cheat: fire the one-time tier-1 warning on approval.
+          // Referral anti-cheat: if this user is on blacklist tier 1 and the
+          // one-time warning has not been sent yet, fire the two warning
+          // notifications EXACTLY ONCE on admin approval, then latch the guard.
           try {
             const flaggedUser = await pbGet(
               `/api/collections/users/records/${updated.user}`,
@@ -5037,8 +5107,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
 
-        // If rejected, refund the amount
-        if (status === "rejected") {
+        // If rejected, refund the amount + create cancellation notification
+        if (status === "rejected" && updated && !updated.code && updated.user) {
           const withdrawal = updated;
           const user = await pbGet(
             `/api/collections/users/records/${withdrawal.user}`,
@@ -5048,6 +5118,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
               shib_balance: (user.shib_balance || 0) + withdrawal.amount,
             });
           }
+
+          const cancelMsg = reason
+            ? `Your withdrawal has been cancelled. Reason: ${reason}`
+            : "Your withdrawal request has been cancelled. Please contact support if you have any questions.";
+          pbPost("/api/collections/notifications/records", {
+            title: "Withdrawal Cancelled",
+            message: cancelMsg,
+            type: "personal",
+            target_user: updated.user,
+          }).catch((e: any) =>
+            console.warn("[withdrawals/rejected] Notification failed:", e.message)
+          );
         }
 
         res.json({ success: true, status });
@@ -5125,6 +5207,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           pbUpdate.rate_popup_frequency = body.ratePopupFrequency;
         if (body.minimumVersion !== undefined)
           pbUpdate.minimum_version = body.minimumVersion;
+        if (body.dailyRewardDay1Shib !== undefined)
+          pbUpdate.daily_reward_day1_shib = body.dailyRewardDay1Shib;
+        if (body.dailyRewardDay2Pt !== undefined)
+          pbUpdate.daily_reward_day2_pt = body.dailyRewardDay2Pt;
+        if (body.dailyRewardDay3Shib !== undefined)
+          pbUpdate.daily_reward_day3_shib = body.dailyRewardDay3Shib;
+        if (body.dailyRewardDay4Pt !== undefined)
+          pbUpdate.daily_reward_day4_pt = body.dailyRewardDay4Pt;
+        if (body.dailyRewardDay5Shib !== undefined)
+          pbUpdate.daily_reward_day5_shib = body.dailyRewardDay5Shib;
+        if (body.dailyRewardDay6Pt !== undefined)
+          pbUpdate.daily_reward_day6_pt = body.dailyRewardDay6Pt;
+        if (body.dailyRewardDay7Shib !== undefined)
+          pbUpdate.daily_reward_day7_shib = body.dailyRewardDay7Shib;
+        if (body.dailyRewardDay7Pt !== undefined)
+          pbUpdate.daily_reward_day7_pt = body.dailyRewardDay7Pt;
 
         const updated = await pbPatch(
           `/api/collections/settings/records/${id}`,
@@ -5843,14 +5941,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Return ALL active tasks with their submission status.
+      // Previously approved/rejected tasks were filtered out here, which caused a
+      // race window: on app restart the stale React Query cache briefly showed
+      // "Upload Proof" before the fresh fetch arrived.
+      // Now the server always returns the full task list with submission attached —
+      // the frontend renders a "Task Locked" / "Already Participated" state instead
+      // of hiding the card entirely. The DB unique index + Express duplicate check
+      // are the authoritative submission guards; the UI state is informational only.
       res.json(tasks.map((t: any) => ({
-        id: t.id,
-        title: t.title,
-        description: t.description || "",
-        link: t.link || "",
+        id:            t.id,
+        title:         t.title,
+        description:   t.description   || "",
+        link:          t.link          || "",
         reward_amount: t.reward_amount || 0,
-        reward_type: t.reward_type || "PT",
-        submission: submissionsMap[t.id] || null,
+        reward_type:   t.reward_type   || "PT",
+        submission:    submissionsMap[t.id] || null,
       })));
     } catch (e: any) {
       console.error("[/api/app/tasks]", e.message);
@@ -5887,9 +5993,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,email`);
       if (user.code) return res.status(404).json({ error: "User not found" });
 
-      // Zero-trust duplicate check: block ANY existing submission regardless of
-      // status. This closes the rejected-then-resubmit exploit — a rejected
-      // submission keeps the (user_id, task_id) slot permanently locked.
+      // Zero-trust duplicate check: reject ANY existing submission regardless of status.
+      // This covers the rejected-then-resubmit exploit — once a record exists for
+      // (user_id, task_id), PocketBase's unique index also enforces this at DB level.
       const existing = await pbGet(
         `/api/collections/task_submissions/records?filter=${encodeURIComponent(`user_id="${pbId}" && task_id="${taskId}"`)}&perPage=1`,
       );
@@ -5897,24 +6003,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(409).json({ error: "You have already participated in this task" });
       }
 
-      // Metadata from PocketBase is authoritative; client-provided values are a
-      // fallback for cases where the server-side fetch fails (e.g., race-condition
-      // between task deactivation and fetch) so the record is never blank.
-      const clientTitle  = String(req.body.task_title   || "");
-      const clientEmail  = String(req.body.user_email   || "");
-      const clientAmount = req.body.reward_amount ? Number(req.body.reward_amount) : 0;
-      const clientType   = String(req.body.reward_type  || "PT");
-
       // Forward to PocketBase as multipart so the image is stored as a real file
       const form = new FormData();
       form.append("user_id",      pbId);
       form.append("task_id",      taskId);
-      form.append("task_title",   task.title   || clientTitle);
-      form.append("user_email",   user.email   || clientEmail);
+      form.append("task_title",   task.title || "");
+      form.append("user_email",   user.email || "");
       form.append("status",       "pending");
       form.append("admin_notes",  "");
-      form.append("reward_amount", String(task.reward_amount ?? clientAmount));
-      form.append("reward_type",  task.reward_type || clientType);
+      form.append("reward_amount", String(task.reward_amount || 0));
+      form.append("reward_type",  task.reward_type || "PT");
 
       if (req.file) {
         // Never trust the client filename — generate a safe one from validated MIME.
@@ -6019,7 +6117,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // PATCH status to "approved" — do NOT touch the screenshot file.
       // Removing the file while updating status can fail silently in PocketBase,
-      // causing the record to appear deleted. Screenshot cleanup is deferred.
+      // causing the record to look deleted. Screenshot cleanup is deferred.
       const approveForm = new FormData();
       approveForm.append("status",      "approved");
       approveForm.append("admin_notes", notes || "");
@@ -6196,55 +6294,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ─── Redeem Hit Tickets → credit the user's WALLET BALANCE (shib_balance) ───
-  // Redemption tops up the active balance; it NEVER creates a withdrawal. The user
-  // requests a withdrawal from their balance separately via the normal flow.
-  app.post('/api/app/hub/redeem', async (req: Request, res: Response) => {
-    const { pbId, tickets, token } = req.body ?? {};
-    const n = Math.floor(Number(tickets));
-    if (!pbId || !Number.isFinite(n)) {
-      return res.status(400).json({ error: 'pbId and tickets are required' });
-    }
-    // Auth — this endpoint runs under the PB admin token, so it MUST verify the caller
-    // itself: the supplied PB token has to belong to pbId or a user could redeem
-    // another account's tickets. Mirrors the WS hub's verifyToken check.
-    try {
-      const authUser = await pbHttp('GET', `/api/collections/users/records/${pbId}`, null, token || '');
-      if (!authUser?.id || authUser.id !== pbId) {
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-    } catch {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    try {
-      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,hit_tickets`);
-      if (!user?.id) return res.status(404).json({ error: 'User not found' });
-      const currentTickets = Number(user.hit_tickets) || 0;
-      const check = validateRedeem(n, currentTickets);
-      if (!check.ok) return res.status(400).json({ error: check.error });
-      const shib = ticketsToShib(n);
-      // Single atomic PB write: debit Hit Tickets + credit the SHIB wallet balance together.
-      const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
-        'hit_tickets-': n,
-        'shib_balance+': shib,
-      });
-      if (!updated?.id) return res.status(502).json({ error: 'Redemption failed' });
-      // TOCTOU guard: if a concurrent redeem over-drew tickets below zero, reverse this
-      // write so a stale-read double-redeem can never inflate shib_balance.
-      if (Number(updated.hit_tickets) < 0) {
-        await pbPatch(`/api/collections/users/records/${pbId}`, {
-          'hit_tickets+': n,
-          'shib_balance-': shib,
-        }).catch(() => {});
-        return res.status(409).json({ error: 'Redemption conflict, please retry' });
-      }
-      return res.json({ success: true, shib });
-    } catch (e: any) {
-      console.error('[/api/app/hub/redeem]', e?.message);
-      return res.status(500).json({ error: 'Redemption failed' });
-    }
-  });
-
+  const httpServer = createServer(app);
   // ── Daily Rewards: Status ────────────────────────────────────────────────
   app.get("/api/app/daily/status/:pbId", async (req: Request, res: Response) => {
     try {
@@ -6448,7 +6498,119 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  const httpServer = createServer(app);
+  // ── Tournament: server-time + config ──────────────────────────────────────
+  // Returns the current tournament config (including cycle_id) enriched with
+  // server-authoritative time. Fully-manual model: the client derives phase
+  // (none / prestart / live) from is_active + start_time/end_time + cycle_id.
+  app.get('/api/app/tournament/config', async (req: Request, res: Response) => {
+    try {
+      const serverTime = Date.now();
+      try {
+        const cfgRes = await pbGet(
+          '/api/collections/tournament_config/records?sort=-created&perPage=1',
+        );
+        const raw = cfgRes?.items?.[0];
+        if (!raw) return res.json({ config: null, serverTime });
+
+        // Fully-manual model: the client derives phase (none / prestart / live)
+        // from is_active + start_time/end_time + cycle_id. No weekly intermission.
+        //
+        // IMPORTANT: reward_structure is returned as the RAW JSON STRING exactly as
+        // stored in PocketBase. The mobile client runs `JSON.parse(reward_structure)`
+        // in TournamentContext.loadConfig. If we pre-parse it into an object here,
+        // JSON.parse("[object Object]") throws, the catch swallows it, and every rank
+        // prize falls back to 0 — the winning amounts render blank on the leaderboard.
+        // This shape MUST stay identical to the PocketBase-direct fallback.
+        return res.json({
+          config: {
+            id:               raw.id,
+            cycle_id:         raw.cycle_id || '',
+            prize_pool_total: Number(raw.prize_pool_total) || 0,
+            winners_count:    Number(raw.winners_count)    || 3,
+            reward_structure: raw.reward_structure || '{}',
+            banner:           raw.banner     || '',
+            banner_url:       raw.banner_url || '',
+            week_start:       raw.week_start || '',
+            start_time:       raw.start_time || raw.week_start || '',
+            end_time:         raw.end_time   || '',
+            is_active:        !!raw.is_active,
+          },
+          serverTime,
+        });
+      } catch (innerErr: any) {
+        return res.json({ config: null, serverTime });
+      }
+    } catch (e: any) {
+      console.error('[/api/app/tournament/config]', e.message);
+      res.status(500).json({ error: 'Failed to load tournament config' });
+    }
+  });
+
+  // ── Tournament: server-side points sync (ANTI-CHEAT) ──────────────────────
+  // Called by the APK after each mining claim.
+  // Reads mining_sessions directly — the client NEVER pushes point values.
+  app.post('/api/app/tournament/sync-points/:pbId', async (req: Request, res: Response) => {
+    const { pbId } = req.params;
+    if (!pbId) return res.status(400).json({ error: 'pbId required' });
+    try {
+      const { syncUserTournamentPoints } = await import('./tournament');
+      const points = await syncUserTournamentPoints(pbId);
+      return res.json({ success: true, points });
+    } catch (e: any) {
+      console.error('[/api/app/tournament/sync-points]', e.message);
+      res.status(500).json({ error: 'Sync failed' });
+    }
+  });
+
+  // ─── Redeem Hit Tickets → credit the user's WALLET BALANCE (shib_balance) ───
+  // Redemption tops up the active balance; it NEVER creates a withdrawal. The user
+  // requests a withdrawal from their balance separately via the normal flow.
+  app.post('/api/app/hub/redeem', async (req: Request, res: Response) => {
+    const { pbId, tickets, token } = req.body ?? {};
+    const n = Math.floor(Number(tickets));
+    if (!pbId || !Number.isFinite(n)) {
+      return res.status(400).json({ error: 'pbId and tickets are required' });
+    }
+    // Auth — this endpoint runs under the PB admin token, so it MUST verify the caller
+    // itself: the supplied PB token has to belong to pbId or a user could redeem
+    // another account's tickets. Mirrors the WS hub's verifyToken check.
+    try {
+      const authUser = await pbHttp('GET', `/api/collections/users/records/${pbId}`, null, token || '');
+      if (!authUser?.id || authUser.id !== pbId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+    } catch {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    try {
+      const user = await pbGet(`/api/collections/users/records/${pbId}?fields=id,hit_tickets`);
+      if (!user?.id) return res.status(404).json({ error: 'User not found' });
+      const currentTickets = Number(user.hit_tickets) || 0;
+      const check = validateRedeem(n, currentTickets);
+      if (!check.ok) return res.status(400).json({ error: check.error });
+      const shib = ticketsToShib(n);
+      // Single atomic PB write: debit Hit Tickets + credit the SHIB wallet balance together.
+      const updated = await pbPatch(`/api/collections/users/records/${pbId}`, {
+        'hit_tickets-': n,
+        'shib_balance+': shib,
+      });
+      if (!updated?.id) return res.status(502).json({ error: 'Redemption failed' });
+      // TOCTOU guard: if a concurrent redeem over-drew tickets below zero, reverse this
+      // write so a stale-read double-redeem can never inflate shib_balance.
+      if (Number(updated.hit_tickets) < 0) {
+        await pbPatch(`/api/collections/users/records/${pbId}`, {
+          'hit_tickets+': n,
+          'shib_balance-': shib,
+        }).catch(() => {});
+        return res.status(409).json({ error: 'Redemption conflict, please retry' });
+      }
+      return res.json({ success: true, shib });
+    } catch (e: any) {
+      console.error('[/api/app/hub/redeem]', e?.message);
+      return res.status(500).json({ error: 'Redemption failed' });
+    }
+  });
+
   return httpServer;
 }
 
