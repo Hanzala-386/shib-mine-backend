@@ -39,3 +39,6 @@ yarn-error.*
 .vercel
 
 .env
+
+# Backend build output (built on-demand, not committed)
+shib-mine-backend/server_dist/
