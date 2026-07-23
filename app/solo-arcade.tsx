@@ -704,7 +704,6 @@ export default function SoloArcadeScreen() {
             <View style={S.scoreBanner}>
               <Text style={S.scoreBannerLabel}>{meta.name.toUpperCase()}</Text>
               <Text style={S.scoreBannerNum}>{serverPT} PT</Text>
-              <Text style={S.scoreBannerSub}>raw score: {liveScore}  ·  {meta.formulaLabel}</Text>
             </View>
 
             <View style={S.statsBox}>
@@ -742,10 +741,6 @@ export default function SoloArcadeScreen() {
             </Pressable>
 
             {claimError && <Text style={S.claimErrTxt}>{claimError}</Text>}
-
-            <Pressable style={S.backBtn} onPress={reloadGame}>
-              <Text style={S.backTxt}>Play Again</Text>
-            </Pressable>
 
             {(serverPT === 0 || !!claimError) && (
               <Pressable style={S.retryLink} onPress={() => router.back()}>

@@ -846,8 +846,8 @@ async function setupSoloGameConfig(): Promise<void> {
 
     // Refresh cache (1.5s delay already elapsed above)
     await refreshSoloGameSpecsCache();
-    // Refresh cache every 5 minutes so admin DB edits propagate without restart
-    setInterval(refreshSoloGameSpecsCache, 5 * 60 * 1000);
+    // Background poll every 30s as a safety net (endpoint also refreshes on each call)
+    setInterval(refreshSoloGameSpecsCache, 30 * 1000);
   } catch (e: any) {
     console.warn("[solo_game_config] setup failed (using hardcoded defaults):", e.message);
   }
@@ -5391,9 +5391,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ── Solo game specs — public endpoint so the live counter mirrors server awards ─
-  app.get("/api/app/solo-game-specs", (_req: Request, res: Response) => {
-    // Return only the fields the client needs for display (ptMultiplier + maxPT).
-    // weapon_master is intentionally excluded — it uses its own hardcoded logic.
+  // Always refreshes from DB before responding so admin edits propagate instantly.
+  app.get("/api/app/solo-game-specs", async (_req: Request, res: Response) => {
+    try { await refreshSoloGameSpecsCache(); } catch {}
     const out: Record<string, { ptMultiplier: number; maxPT: number }> = {};
     for (const [gid, spec] of Object.entries(soloGameSpecsCache)) {
       if (gid === "weapon_master") continue;
