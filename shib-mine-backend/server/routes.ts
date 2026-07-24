@@ -4607,7 +4607,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           derived === "rejected" &&
           (row.reject_reason || "") === "Released by admin (unverified)" &&
           kycStatus === "none";
-        if (derived !== "none" && derived !== kycStatus && !isUnverifyAudit) {
+        // Also heal when status matches but KYC destination fields are missing —
+        // this happens when an admin approved via the PB dashboard directly instead
+        // of the Express approve endpoint, setting kyc_status but not copying fields.
+        const verifiedButFieldsMissing =
+          derived === "verified" &&
+          kycStatus === "verified" &&
+          !user.kyc_binance_email &&
+          !user.kyc_bep20_address;
+        if ((derived !== "none" && derived !== kycStatus && !isUnverifyAudit) || verifiedButFieldsMissing) {
           const patch: Record<string, unknown> =
             derived === "verified"
               ? {
@@ -4627,7 +4635,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (!healed.code) {
             kycStatus = derived;
             rejectReason = String(patch.kyc_reject_reason ?? "");
-            console.log(`[verification/status] self-heal: user ${pbId} kyc_status → ${derived} (from request row ${row.id})`);
+            console.log(`[verification/status] self-heal: user ${pbId} kyc_status → ${derived} (fields-missing=${verifiedButFieldsMissing}) (row ${row.id})`);
           } else {
             console.warn("[verification/status] self-heal patch failed:", JSON.stringify(healed).slice(0, 150));
           }
