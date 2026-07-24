@@ -4824,11 +4824,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
 
       // ── Destination pulled from the VERIFIED record (never from the client).
-      // Binance Email channel is available ONLY for India; all other countries
-      // withdraw via their verified BEP20 address.
-      const isIndiaUser = user.kyc_country === BINANCE_WITHDRAW_COUNTRY;
+      // Use Binance Email if the user has a verified kyc_binance_email on file
+      // and explicitly chose that method — country gate only governs registration,
+      // not withdrawal for users who have already verified their email.
       const resolvedMethod: "Binance Email" | "BEP-20" =
-        method === "Binance Email" && isIndiaUser && user.kyc_binance_email
+        method === "Binance Email" && user.kyc_binance_email
           ? "Binance Email"
           : "BEP-20";
       const destination: string =
